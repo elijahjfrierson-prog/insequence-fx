@@ -1,0 +1,157 @@
+name: Build InSequence FX
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS (Apple Silicon .pkg)
+            os: macos-14
+            artifact: InSequence-FX-macOS
+          - name: Windows (Setup.exe)
+            os: windows-2022
+            artifact: InSequence-FX-Windows-x64
+          - name: Linux (.deb + tests)
+            os: ubuntu-22.04
+            artifact: InSequence-FX-Linux-x86_64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libx11-dev libxrandr-dev libxinerama-dev \
+            libxcursor-dev libfreetype6-dev libfontconfig1-dev libgl1-mesa-dev libxrender-dev \
+            libxcomposite-dev libxext-dev libgtk-3-dev pkg-config \
+            libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev \
+            xvfb mesa-utils ffmpeg
+
+      - name: Cache FFmpeg (macOS)
+        if: runner.os == 'macOS'
+        uses: actions/cache@v4
+        with:
+          path: ~/ffmpeg-lgpl
+          key: ffmpeg-7.1-lgpl-arm64-macos11-v1
+
+      - name: Build FFmpeg (macOS, LGPL + VideoToolbox)
+        if: runner.os == 'macOS'
+        run: ./scripts/build_ffmpeg_macos.sh "$HOME/ffmpeg-lgpl"
+
+      - name: Fetch FFmpeg (Windows, LGPL shared)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $u = 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n7.1-latest-win64-lgpl-shared-7.1.zip'
+          Invoke-WebRequest -Uri $u -OutFile ff.zip
+          Expand-Archive ff.zip -DestinationPath fftmp
+          $d = Get-ChildItem fftmp | Select-Object -First 1
+          Move-Item $d.FullName ffmpeg
+          Get-ChildItem ffmpeg/lib, ffmpeg/bin
+
+      - name: Configure (macOS)
+        if: runner.os == 'macOS'
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 -DFFMPEG_DIR="$HOME/ffmpeg-lgpl"
+
+      - name: Configure (Linux)
+        if: runner.os == 'Linux'
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Configure (Windows)
+        if: runner.os == 'Windows'
+        run: cmake -S . -B build -A x64 -DFFMPEG_DIR="${{ github.workspace }}/ffmpeg"
+
+      # Unbounded -j runs hosted runners out of memory compiling JUCE.
+      - name: Build
+        run: cmake --build build --config Release --parallel 2
+
+      - name: Tests
+        if: runner.os != 'Windows'
+        env:
+          DYLD_LIBRARY_PATH: ${{ runner.os == 'macOS' && format('{0}/ffmpeg-lgpl/lib', env.HOME) || '' }}
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Tests (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:PATH = "${{ github.workspace }}\ffmpeg\bin;$env:PATH"
+          ctest --test-dir build -C Release --output-on-failure
+
+      - name: Render check (Linux, real GPU pipeline on Mesa)
+        if: runner.os == 'Linux'
+        run: |
+          xvfb-run -a -s "-screen 0 1920x1080x24" bash scripts/render_check.sh build
+
+      - name: Package .pkg (macOS)
+        if: runner.os == 'macOS'
+        env:
+          APPLE_DEVELOPER_ID: ${{ secrets.APPLE_DEVELOPER_ID }}
+          APPLE_INSTALLER_ID: ${{ secrets.APPLE_INSTALLER_ID }}
+        run: |
+          mkdir -p artifacts
+          FFMPEG_DIR="$HOME/ffmpeg-lgpl" ./scripts/package_macos_pkg.sh
+          mv InSequence-FX-macOS.pkg artifacts/
+
+      - name: Verify macOS installer
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          pkgutil --expand artifacts/InSequence-FX-macOS.pkg /tmp/pkg_expanded
+          test -s /tmp/pkg_expanded/Resources/license.txt || { echo "no EULA pane"; exit 1; }
+          sudo installer -pkg artifacts/InSequence-FX-macOS.pkg -target /
+          APP="/Applications/InSequence FX.app"
+          test -x "$APP/Contents/MacOS/InSequence FX" || { echo "app not in /Applications"; exit 1; }
+          v=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP/Contents/Info.plist")
+          echo "installed version: $v"; test "$v" = "1.0.0"
+          "$APP/Contents/MacOS/InSequence FX" --selftest
+
+      - name: Package Setup.exe (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+          $iscc = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
+          & $iscc installer/windows/InSequenceFX.iss
+          Copy-Item InSequence-FX-Windows-Setup.exe artifacts/
+
+      - name: Verify Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $exe = 'artifacts/InSequence-FX-Windows-Setup.exe'
+          if ((Get-Item $exe).Length -lt 1MB) { throw "installer too small" }
+          Start-Process -Wait -FilePath $exe -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART'
+          $app = "$env:ProgramFiles\HumHouse\InSequence FX"
+          foreach ($p in @("$app\InSequence FX.exe", "$app\LICENSE.txt", "$app\avcodec-61.dll")) {
+            if (-not (Test-Path -LiteralPath $p)) { throw "missing $p" }
+          }
+          $p = Start-Process -Wait -PassThru -FilePath "$app\InSequence FX.exe" -ArgumentList '--selftest'
+          if ($p.ExitCode -ne 0) { throw "selftest failed: $($p.ExitCode)" }
+
+      - name: Stage artifacts (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p artifacts
+          bash scripts/package_linux_deb.sh build artifacts
+          cp installer/LICENSE.txt artifacts/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: artifacts/
+          if-no-files-found: error
