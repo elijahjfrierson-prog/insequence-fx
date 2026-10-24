@@ -232,6 +232,8 @@ void reapplyGrid (SongAnalysis& a, double bpm, Ticks offset)
 }
 
 // ------------------------------------------------------------------ sync
+// Per-frame log energy in 24 log-spaced bands (100 Hz - 9 kHz), z-scored per band. Captures melody/harmony,
+// not just drum onsets, so repetitive drum loops still correlate to a single unique position.
 static std::vector<float> normalizedEnv (const std::vector<float>& x, int rate)
 {
     auto env = computeOnsets (x, rate).all;
@@ -242,22 +244,73 @@ static std::vector<float> normalizedEnv (const std::vector<float>& x, int rate)
     return env;
 }
 
+static std::vector<std::vector<float>> bandFeatures (const std::vector<float>& x, int rate)
+{
+    constexpr int nb = 24;
+    std::vector<std::vector<float>> out (nb);
+    if (x.size() < (size_t) kFft) return out;
+    juce::dsp::FFT fft (kFftOrder);
+    std::vector<float> win (kFft), buf (2 * kFft);
+    for (int i = 0; i < kFft; ++i) win[(size_t) i] = 0.5f - 0.5f * std::cos (juce::MathConstants<float>::twoPi * i / (kFft - 1));
+    int edges[nb + 1];
+    for (int k = 0; k <= nb; ++k) edges[k] = std::max (1, (int) (100.0 * std::pow (90.0, (double) k / nb) / ((double) rate / kFft)));
+    size_t frames = (x.size() - kFft) / kHop + 1;
+    for (auto& v : out) v.resize (frames);
+    for (size_t f = 0; f < frames; ++f)
+    {
+        const float* s = x.data() + f * kHop;
+        for (int i = 0; i < kFft; ++i) buf[(size_t) i] = s[i] * win[(size_t) i];
+        std::fill (buf.begin() + kFft, buf.end(), 0.0f);
+        fft.performFrequencyOnlyForwardTransform (buf.data(), true);
+        for (int k = 0; k < nb; ++k)
+        {
+            double e = 1e-9;
+            for (int bn = edges[k]; bn < std::max (edges[k] + 1, edges[k + 1]) && bn <= kFft / 2; ++bn) e += buf[(size_t) bn] * buf[(size_t) bn];
+            out[(size_t) k][f] = (float) std::log (e);
+        }
+    }
+    for (auto& v : out)
+    {
+        // remove slow trend (1 s moving average) so level differences between mic and master don't matter
+        std::vector<float> sm (v.size());
+        const int w = (int) (0.5 * rate / kHop);
+        double acc = 0; size_t lo = 0, hi = 0;
+        for (size_t i = 0; i < v.size(); ++i)
+        {
+            while (hi < v.size() && hi <= i + (size_t) w) acc += v[hi++];
+            while (lo + (size_t) w < i) acc -= v[lo++];
+            sm[i] = (float) (acc / (double) (hi - lo));
+        }
+        double m2 = 0; for (size_t i = 0; i < v.size(); ++i) { v[i] -= sm[i]; m2 += v[i] * v[i]; }
+        float sd = (float) std::sqrt (m2 / std::max<size_t> (1, v.size())) + 1e-6f;
+        for (auto& q : v) q /= sd;
+    }
+    return out;
+}
+
 SyncResult syncToSong (const std::vector<float>& song, const std::vector<float>& take, int rate)
 {
     SyncResult r;
     if (take.size() < (size_t) rate || song.size() < (size_t) rate) { r.note = "Audio too short to sync"; return r; }
-    auto a = normalizedEnv (song, rate), b = normalizedEnv (take, rate);
+    auto fa = bandFeatures (song, rate), fb = bandFeatures (take, rate);
+    auto ea = normalizedEnv (song, rate), eb = normalizedEnv (take, rate);
+    fa.push_back (ea); fb.push_back (eb);
+    const auto& a = fa[0]; const auto& b = fb[0];
     const double hop = (double) kHop / rate;
     size_t n = a.size() + b.size();
     int order = 1; while ((size_t) (1 << order) < n) ++order;
     size_t N = (size_t) 1 << order;
     juce::dsp::FFT fft (order);
-    std::vector<std::complex<float>> A (N), B (N), C (N), FA (N), FB (N), Cc (N);
-    for (size_t i = 0; i < a.size(); ++i) A[i] = a[i];
-    for (size_t i = 0; i < b.size(); ++i) B[i] = b[i];
-    fft.perform (A.data(), FA.data(), false); fft.perform (B.data(), FB.data(), false);
-    for (size_t i = 0; i < N; ++i) Cc[i] = FA[i] * std::conj (FB[i]);
-    fft.perform (Cc.data(), C.data(), true);
+    std::vector<std::complex<float>> A (N), B (N), FA (N), FB (N), Acc (N), C (N);
+    for (size_t k = 0; k < fa.size(); ++k)
+    {
+        std::fill (A.begin(), A.end(), std::complex<float>()); std::fill (B.begin(), B.end(), std::complex<float>());
+        for (size_t i = 0; i < fa[k].size(); ++i) A[i] = fa[k][i];
+        for (size_t i = 0; i < fb[k].size(); ++i) B[i] = fb[k][i];
+        fft.perform (A.data(), FA.data(), false); fft.perform (B.data(), FB.data(), false);
+        for (size_t i = 0; i < N; ++i) Acc[i] += FA[i] * std::conj (FB[i]);
+    }
+    fft.perform (Acc.data(), C.data(), true);
     // lag L (in frames): song[i + L] ~ take[i]; negative lags wrap to the end
     std::vector<float> corr (N);
     for (size_t i = 0; i < N; ++i) corr[i] = C[i].real();
@@ -275,10 +328,8 @@ SyncResult syncToSong (const std::vector<float>& song, const std::vector<float>&
     }
     mean /= std::max (1L, cnt); double sd = std::sqrt (std::max (0.0, sq / std::max (1L, cnt) - mean * mean)) + 1e-9;
     double z = (bv - mean) / sd, ratio = second > 0 ? bv / second : 3.0;
-    if (juce::SystemStats::getEnvironmentVariable ("ISFX_DEBUG_SYNC", {}).isNotEmpty())
-        std::cerr << "sync dbg best=" << best << " bv=" << bv << " mean=" << mean << " sd=" << sd << " second=" << second
-                  << " a=" << a.size() << " b=" << b.size() << " N=" << N << " corr0=" << corr[0] << "\n";
-    r.confidence = (float) juce::jlimit (0.0, 1.0, (z - 5.0) / 10.0 * 0.6 + (ratio - 1.0) / 0.6 * 0.4);
+    // a true match stands clearly above every other alignment (ratio); z guards against flat/noisy correlations
+    r.confidence = (float) (juce::jlimit (0.0, 1.0, (ratio - 1.05) / 0.2) * juce::jlimit (0.0, 1.0, (z - 2.5) / 2.0));
 
     // sample-accurate refinement with raw audio around the frame lag
     double coarse = best * hop;
