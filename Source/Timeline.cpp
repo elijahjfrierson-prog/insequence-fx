@@ -432,19 +432,59 @@ void Timeline::mouseDown (const juce::MouseEvent& e)
         {   // FL-style: reorder tracks; clips travel with their track
             auto canSwap = [&] (int o) { return o >= 0 && o < (int) s.tracks.size() && s.tracks[(size_t) o].kind == s.tracks[(size_t) tr].kind; };
             juce::PopupMenu m;
+            bool hasSong = false; int sameKind = 0;
+            for (auto& c : s.clips) if (c.track == tr && st.project.songId.isNotEmpty() && c.mediaId == st.project.songId) hasSong = true;
+            for (auto& T : s.tracks) if (T.kind == s.tracks[(size_t) tr].kind) ++sameKind;
             m.addItem (1, "Move track up", canSwap (tr - 1));
             m.addItem (2, "Move track down", canSwap (tr + 1));
+            m.addItem (4, "Move to top", canSwap (tr - 1));
+            m.addItem (5, "Move to bottom", canSwap (tr + 1));
+            m.addSeparator();
+            m.addItem (6, audio ? "Add audio track" : "Add video track");
+            m.addItem (7, "Delete track (and its clips)", ! hasSong && sameKind > 1);
             if (audio) { m.addSeparator(); m.addItem (3, "Plug-ins..."); }
-            m.showMenuAsync (juce::PopupMenu::Options(), [this, tr, canSwap] (int r)
+            m.showMenuAsync (juce::PopupMenu::Options(), [this, tr, audio] (int r)
             {
                 auto& sq = st.project.seq();
                 if (r == 3) { if (onTrackPlugins) onTrackPlugins (tr); return; }
-                if (r != 1 && r != 2) return;
-                const int o = r == 1 ? tr - 1 : tr + 1;
-                if (o < 0 || o >= (int) sq.tracks.size() || sq.tracks[(size_t) o].kind != sq.tracks[(size_t) tr].kind) return;
-                st.edit ("Move track");
-                std::swap (sq.tracks[(size_t) tr], sq.tracks[(size_t) o]);
-                for (auto& c : sq.clips) { if (c.track == tr) c.track = o; else if (c.track == o) c.track = tr; }
+                if (tr < 0 || tr >= (int) sq.tracks.size()) return;
+                const auto kind = sq.tracks[(size_t) tr].kind;
+                auto same = [&] (int o) { return o >= 0 && o < (int) sq.tracks.size() && sq.tracks[(size_t) o].kind == kind; };
+                auto swapT = [&] (int a, int b)
+                {
+                    std::swap (sq.tracks[(size_t) a], sq.tracks[(size_t) b]);
+                    for (auto& c : sq.clips) { if (c.track == a) c.track = b; else if (c.track == b) c.track = a; }
+                };
+                if (r == 1 || r == 2 || r == 4 || r == 5)
+                {
+                    const int d = (r == 1 || r == 4) ? -1 : 1;
+                    if (! same (tr + d)) return;
+                    st.edit ("Move track");
+                    int cur = tr;
+                    do { swapT (cur, cur + d); cur += d; } while ((r == 4 || r == 5) && same (cur + d));
+                }
+                else if (r == 6)
+                {
+                    st.edit ("Add track");
+                    if (! audio) insertVideoTrack (sq);
+                    else
+                    {
+                        int n = 0; for (auto& T : sq.tracks) if (T.kind == TrackKind::Audio) ++n;
+                        Track t; t.kind = TrackKind::Audio; t.name = "A" + juce::String (n + 1);
+                        const int at = tr + 1;
+                        sq.tracks.insert (sq.tracks.begin() + at, t);
+                        for (auto& c : sq.clips) if (c.track >= at) ++c.track;
+                    }
+                }
+                else if (r == 7)
+                {
+                    st.edit ("Delete track");
+                    sq.clips.erase (std::remove_if (sq.clips.begin(), sq.clips.end(), [&] (const Clip& c) { return c.track == tr; }), sq.clips.end());
+                    sq.tracks.erase (sq.tracks.begin() + tr);
+                    for (auto& c : sq.clips) if (c.track > tr) --c.track;
+                    st.selected.clear();
+                }
+                else return;
                 sq.sortClips();
                 if (onEdited) onEdited();
                 repaint();
