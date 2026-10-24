@@ -38,6 +38,7 @@ public:
     std::function<void (const juce::String&)> onTitle;
 private:
     void timerCallback() override;
+    int focusSweep = 0;
     void scrollBarMoved (juce::ScrollBar*, double) override;
     void refresh (bool inspectorToo);
     void seek (Ticks t);

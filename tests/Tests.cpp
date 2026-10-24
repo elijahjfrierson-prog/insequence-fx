@@ -954,6 +954,20 @@ int main (int argc, char** argv)
             const size_t n0 = ls.clips.size();
             CHECK (liftClips (rp, ls, { "a" }, true, 3) == 0 && ls.findClip ("a") == nullptr && ls.clips.size() == n0 - 1, "extract pulls the clip out");
         }
+        {
+            Clip kc; kc.id = "k"; kc.start = secToTicks (2); kc.length = secToTicks (4);
+            setKey (kc, "scale", secToTicks (2), 2.0f); setKey (kc, "scale", 0, 1.0f);
+            setKey (kc, "rotation", 0, 0.0f, 1); setKey (kc, "rotation", secToTicks (2), 90.0f);
+            applyKeyframes (kc, secToTicks (3));
+            CHECK (std::abs (kc.fx.get ("scale", 0) - 1.5f) < 1e-4f && kc.fx.get ("rotation", -1) == 0.0f, "keyframes: linear + hold evaluate at clip time");
+            applyKeyframes (kc, secToTicks (10));
+            CHECK (kc.fx.get ("scale", 0) == 2.0f && kc.fx.get ("rotation", 0) == 90.0f, "keyframes clamp to last key");
+            Project kp = Project::makeNew(); kc.track = 0; kp.seq().clips = { kc };
+            auto kf = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("keys.isfx");
+            juce::String kerr; Project kq;
+            CHECK (saveProject (kp, kf, kerr) && loadProject (kf, kq, kerr) && kq.seq().clips.size() == 1
+                   && kq.seq().clips[0].keys["scale"].size() == 2 && kq.seq().clips[0].keys["rotation"][0].interp == 1, "keyframes saved with the project");
+        }
     }
     {
         Project sp = Project::makeNew();

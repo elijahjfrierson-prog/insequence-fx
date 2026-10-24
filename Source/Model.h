@@ -101,6 +101,9 @@ struct Clip
     TransitionType transIn = TransitionType::Cut;
     Ticks transLen = 0;
     juce::String name;       // display name override (Rename)
+    // keyframes per fx param: (time from clip start, value), sorted; interp 0 = linear, 1 = hold, 2 = ease in/out
+    struct Key { Ticks t = 0; float v = 0; int interp = 0; };
+    std::map<juce::String, std::vector<Key>> keys;
     bool enabled = true;     // Enable/Disable: a disabled clip stays on the timeline but is not seen or heard
     int label = 0;           // label colour index (0 = default)
     FxStack fx;              // per-clip: exposure, contrast, saturation, scale, posX, posY, rotation, flash
@@ -113,6 +116,13 @@ struct Clip
         return srcIn + (Ticks) std::llround ((double) (t - start) * speed);
     }
 };
+
+// value of a keyframed param at clip-relative time rel (clamped to first/last key)
+float keyValue (const std::vector<Clip::Key>& k, Ticks rel);
+// writes every keyframed param of c into c.fx at timeline time t
+void applyKeyframes (Clip& c, Ticks t);
+void setKey (Clip& c, const juce::String& param, Ticks rel, float v, int interp = 0);
+
 
 enum class TrackKind { Video = 0, Audio };
 

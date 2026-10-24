@@ -501,6 +501,20 @@ std::shared_ptr<Lut3D> Renderer::lutFor (const juce::String& path)
 // ---------------------------------------------------------------- render
 bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int H, std::vector<juce::uint8>& rgba, int decodeH)
 {
+    {
+        static thread_local bool keyed = false;
+        bool anyKeys = false;
+        for (auto& c : s.clips) anyKeys |= ! c.keys.empty();
+        if (anyKeys && ! keyed)
+        {
+            Sequence ks = s;
+            for (auto& c : ks.clips) applyKeyframes (c, t);
+            keyed = true;
+            const bool r = render (p, ks, t, W, H, rgba, decodeH);
+            keyed = false;
+            return r;
+        }
+    }
     renderStart = ++useClock;
     if (W <= 0 || H <= 0) return false;
     const size_t NP = (size_t) W * H;
@@ -870,7 +884,14 @@ bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int 
 
     // ---- grade + LUT + acid color
     auto lut = lutFor (postFx.lutPath);
-    const float gExp = std::pow (2.0f, sv ("exposure")) * (1 - sv ("hatStrobe") * 0.35f * be.hat);
+    float shutter = 1.0f;
+    if (const float bf2 = sv ("blackFlash2"); bf2 > 0 && be.sinceSnare < 0.3)
+    {
+        const int fi = (int) (be.sinceSnare * (double) p.fps);
+        const float d = (float) std::exp (-be.sinceSnare / 0.12);
+        shutter = fi % 2 == 0 ? 1.0f - 0.92f * bf2 * d : 1.0f + 1.2f * bf2 * d;
+    }
+    const float gExp = std::pow (2.0f, sv ("exposure")) * (1 - sv ("hatStrobe") * 0.35f * be.hat) * shutter;
     const float temp = sv ("temperature"), tint = sv ("tint"), con = sv ("contrast"), sat = sv ("saturation");
     const float fade = sv ("fade"), splitT = sv ("splitTone"), crush = sv ("crush"), lutMix = sv ("lutMix");
     const float hueC = sv ("hueCycle"), post = sv ("posterize"), sol = sv ("solarize"), therm = sv ("thermal");

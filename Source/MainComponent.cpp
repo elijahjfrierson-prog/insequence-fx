@@ -433,6 +433,22 @@ void MainComponent::togglePlay()
 
 void MainComponent::timerCallback()
 {
+    // Space = play/stop everywhere: buttons, combos and sliders never keep keyboard focus (JUCE buttons eat Space)
+    if (++focusSweep % 15 == 0)
+    {
+        std::function<void (juce::Component&)> sweep = [&] (juce::Component& c)
+        {
+            for (auto* ch : c.getChildren())
+            {
+                if (dynamic_cast<juce::Button*> (ch) || dynamic_cast<juce::ComboBox*> (ch) || dynamic_cast<juce::Slider*> (ch))
+                { ch->setWantsKeyboardFocus (false); ch->setMouseClickGrabsKeyboardFocus (false); }
+                sweep (*ch);
+            }
+        };
+        sweep (*this);
+        if (auto* f = juce::Component::getCurrentlyFocusedComponent(); f == nullptr || (! dynamic_cast<juce::TextEditor*> (f) && ! isParentOf (f) && f != this && isShowing()))
+            if (f == nullptr && isShowing()) grabKeyboardFocus();
+    }
     if (! player.isPlaying()) { preview.setLive (false); return; }
     auto t = player.position();
     auto dur = st.project.seq().duration();

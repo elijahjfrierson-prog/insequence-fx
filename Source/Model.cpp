@@ -176,6 +176,17 @@ juce::var toVar (const Project& p)
             co->setProperty ("opacity", c.opacity); co->setProperty ("volume", c.volume);
             co->setProperty ("trans", (int) c.transIn); co->setProperty ("transLen", t2s (c.transLen));
             co->setProperty ("fx", fxToVar (c.fx));
+            if (! c.keys.empty())
+            {
+                auto* ko = new juce::DynamicObject();
+                for (auto& [id, ks] : c.keys)
+                {
+                    juce::Array<juce::var> a;
+                    for (auto& k : ks) a.add (juce::Array<juce::var> { t2s (k.t), k.v, k.interp });
+                    ko->setProperty (id, a);
+                }
+                co->setProperty ("keys", juce::var (ko));
+            }
             if (c.name.isNotEmpty()) co->setProperty ("name", c.name);
             if (! c.enabled) co->setProperty ("enabled", false);
             if (c.reverse) co->setProperty ("reverse", true);
@@ -253,6 +264,11 @@ bool fromVar (const juce::var& v, Project& p, juce::String& error)
                     c.volume = cv.hasProperty ("volume") ? (float) (double) cv["volume"] : 1.0f;
                     c.transIn = (TransitionType) (int) cv["trans"]; c.transLen = s2t (cv["transLen"]);
                     fxFromVar (cv["fx"], c.fx);
+                    if (auto* ko = cv["keys"].getDynamicObject())
+                        for (auto& pr : ko->getProperties())
+                            if (auto* a = pr.value.getArray())
+                                for (auto& k : *a)
+                                    if (k.size() >= 2) setKey (c, pr.name.toString(), s2t (k[0]), (float) (double) k[1], k.size() > 2 ? (int) k[2] : 0);
                     c.name = cv["name"].toString(); c.enabled = cv.hasProperty ("enabled") ? (bool) cv["enabled"] : true; c.reverse = (bool) cv["reverse"]; c.label = (int) cv["label"]; c.keep = (bool) cv["keep"];
                     if (c.track >= 0 && c.track < (int) s.tracks.size()) s.clips.push_back (c);
                 }
@@ -318,5 +334,30 @@ bool History::redo (Project& p)
     undoStack.emplace_back (p, redoStack.back().second);
     p = std::move (redoStack.back().first); redoStack.pop_back();
     return true;
+}
+float keyValue (const std::vector<Clip::Key>& k, Ticks rel)
+{
+    if (k.empty()) return 0;
+    if (rel <= k.front().t) return k.front().v;
+    if (rel >= k.back().t) return k.back().v;
+    auto it = std::upper_bound (k.begin(), k.end(), rel, [] (Ticks x, const Clip::Key& y) { return x < y.t; });
+    const auto& b = *it; const auto& a = *(it - 1);
+    if (a.interp == 1 || b.t <= a.t) return a.v;
+    double u = (double) (rel - a.t) / (double) (b.t - a.t);
+    if (a.interp == 2) u = u * u * (3 - 2 * u);
+    return (float) (a.v + (b.v - a.v) * u);
+}
+
+void applyKeyframes (Clip& c, Ticks t)
+{
+    for (auto& [id, ks] : c.keys) if (! ks.empty()) c.fx.set (id, keyValue (ks, t - c.start));
+}
+
+void setKey (Clip& c, const juce::String& param, Ticks rel, float v, int interp)
+{
+    auto& ks = c.keys[param];
+    for (auto& k : ks) if (k.t == rel) { k.v = v; k.interp = interp; return; }
+    ks.push_back ({ rel, v, interp });
+    std::sort (ks.begin(), ks.end(), [] (const Clip::Key& a, const Clip::Key& b) { return a.t < b.t; });
 }
 }

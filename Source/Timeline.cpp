@@ -142,8 +142,32 @@ void Timeline::paint (juce::Graphics& g)
         if (c.keep) label = "[keep] " + label;
         if (c.speed == 0.0) label << "  hold";
         else if (c.speed != 1.0) label << "  " << juce::String (c.speed * 100, 0) << "%";
-        if (! c.fx.p.empty()) label << "  fx";
         g.drawText (label, r.reduced (4, 2), juce::Justification::topLeft, true);
+        {   // CapCut-style badges: how many effects / keyframes / transition on this clip
+            static const juce::StringArray meta { "scale", "posX", "posY", "rotation", "reframe", "maskShape", "maskW", "maskH",
+                                                  "maskFeather", "trAmt", "trDir", "anchorX", "anchorY" };
+            int nfx = 0, nkf = 0;
+            for (auto& [k, v] : c.fx.p) if (! meta.contains (k) && v != 0.0f) ++nfx;
+            for (auto& [k, ks] : c.keys) nkf += (int) ks.size();
+            juce::StringArray bs;
+            if (nfx > 0) bs.add ("fx " + juce::String (nfx));
+            if (nkf > 0) bs.add (juce::String (juce::CharPointer_UTF8 ("\xe2\x97\x86 ")) + juce::String (nkf));
+            if (c.transIn != TransitionType::Cut) bs.add ("tr");
+            if (c.opacity < 1.0f) bs.add (juce::String (juce::roundToInt (c.opacity * 100)) + "%");
+            if (r.getHeight() >= 26)
+            {
+                g.setFont (9.5f);
+                int bx = r.getX() + 4; const int by = r.getBottom() - 14;
+                for (auto& b : bs)
+                {
+                    const int bw = juce::GlyphArrangement::getStringWidthInt (g.getCurrentFont(), b) + 8;
+                    if (bx + bw > r.getRight() - 2) break;
+                    g.setColour (juce::Colours::black.withAlpha (0.55f)); g.fillRoundedRectangle ((float) bx, (float) by, (float) bw, 12.0f, 6.0f);
+                    g.setColour (juce::Colours::white.withAlpha (0.9f)); g.drawText (b, bx, by, bw, 12, juce::Justification::centred);
+                    bx += bw + 3;
+                }
+            }
+        }
         if (m && m->kind == MediaKind::Video && m->sync.status != SyncInfo::None)
         {
             auto col = m->sync.status == SyncInfo::Synced || m->sync.status == SyncInfo::Manual ? good : m->sync.status == SyncInfo::Uncertain ? warn : bad;
@@ -151,6 +175,15 @@ void Timeline::paint (juce::Graphics& g)
         }
         if (sel) { g.setColour (juce::Colours::white); g.drawRoundedRectangle (r.toFloat().reduced (0.5f), 3, 2); }
         if (c.locked) { g.setColour (dim); g.drawText ("L", r.reduced (3), juce::Justification::bottomRight); }
+    }
+
+    // transition dots on every cut: white = empty, black = has a transition. Click one to pick a transition.
+    for (auto& d : cutDots())
+    {
+        if (d.x < kHeader || d.x > W) continue;
+        auto e = juce::Rectangle<float> (7.0f, 7.0f).withCentre (d.centre.toFloat());
+        g.setColour (d.full ? juce::Colours::black : juce::Colours::white); g.fillEllipse (e);
+        g.setColour (d.full ? juce::Colours::white : juce::Colours::black.withAlpha (0.6f)); g.drawEllipse (e, 1.0f);
     }
 
     // ruler
@@ -306,6 +339,25 @@ void Timeline::mouseMove (const juce::MouseEvent& e)
     else setTooltip ("E select/move/trim, P paint, D delete, C cut. Drag in the ruler to select a range. Ctrl+wheel zooms.");
 }
 
+std::vector<Timeline::CutDot> Timeline::cutDots() const
+{
+    const auto& s = st.project.seq();
+    std::vector<CutDot> out;
+    const Ticks tol = secToTicks (0.02);
+    for (auto& c : s.clips)
+    {
+        if (c.track < 0 || c.track >= (int) s.tracks.size() || c.start <= 0) continue;
+        bool adj = c.transIn != TransitionType::Cut;
+        for (auto& o : s.clips)
+            if (! adj && &o != &c && o.track == c.track && std::abs (o.end() - c.start) <= tol) adj = true;
+        if (! adj) continue;
+        const auto& tr = s.tracks[(size_t) c.track];
+        const int x = secToX (ticksToSec (c.start));
+        out.push_back ({ c.id, x, { x, trackY (c.track) + 2 + (tr.height - 5) / 2 }, c.transIn != TransitionType::Cut });
+    }
+    return out;
+}
+
 void Timeline::mouseDown (const juce::MouseEvent& e)
 {
     auto& s = st.project.seq();
@@ -314,6 +366,16 @@ void Timeline::mouseDown (const juce::MouseEvent& e)
     drag = Drag::None;
     beforeDrag = st.project;
     dragStart = t;
+
+    if (pos.x >= kHeader && pos.y >= kRuler)
+        for (auto& d : cutDots())
+            if (d.centre.getDistanceFrom (pos) <= 6)
+            {
+                st.selected = { d.clipId };
+                repaint();
+                clipMenu (d.clipId);
+                return;
+            }
 
     if (pos.x < kHeader && pos.y >= kRuler)   // track header buttons
     {
@@ -679,12 +741,22 @@ void Timeline::clipMenu (const juce::String& id)
     for (int i = 0; i < lns.size(); ++i) lay.addItem (400 + i, lns[i], video && ! lk);
     lay.addSeparator(); lay.addItem (420, "Stack selected clips (top to bottom)", video && ! lk && many);
     m.addSubMenu ("Layout / Split screen", lay, video && ! lk);
+    juce::StringArray fxNames;
+    {
+        juce::PopupMenu fxM;
+        for (auto& d : clipParams())
+            if (auto it = c->fx.p.find (d.id); it != c->fx.p.end() && it->second != d.def)
+            { fxNames.add (d.id); fxM.addItem (5000 + fxNames.size() - 1, juce::String ("Trash  ") + d.name + "  (" + juce::String (it->second, 2) + ")", ! lk); }
+        for (auto& [k, ks] : c->keys)
+            if (! ks.empty() && ! fxNames.contains (k)) { fxNames.add (k); fxM.addItem (5000 + fxNames.size() - 1, "Trash  " + k + " keyframes", ! lk); }
+        m.addSubMenu ("Effects on clip (" + juce::String (fxNames.size()) + ")", fxM, fxNames.size() > 0);
+    }
     m.addItem (32, "Remove Effects", ! lk && (! c->fx.p.empty() || c->opacity != 1.0f || c->transIn != TransitionType::Cut));
     m.addSeparator();
     m.addItem (33, "Rename...");
     m.addSubMenu (st.selected.size() > 1 ? "Label Color (" + juce::String (st.selected.size()) + " clips)" : juce::String ("Label Color"), labelM);
     m.addItem (4, c->locked ? "Unlock clip  (L)" : "Lock clip  (L)");
-    m.showMenuAsync (juce::PopupMenu::Options(), [this, id] (int r)
+    m.showMenuAsync (juce::PopupMenu::Options(), [this, id, fxNames] (int r)
     {
         auto& sq = st.project.seq();
         auto* cl = sq.findClip (id);
@@ -772,6 +844,12 @@ void Timeline::clipMenu (const juce::String& id)
                 if (onEdited) onEdited();
             });
         if (r == 31) { st.edit ("Frame Hold"); auto h = freezeFrame (sq, id, st.playhead, beat); if (h.isNotEmpty()) st.selected = { h }; }
+        if (r >= 5000 && r < 5000 + fxNames.size())
+        {
+            const auto fid = fxNames[r - 5000];
+            st.edit ("Trash effect");
+            for (auto& i : sel) if (auto* k = sq.findClip (i)) { k->fx.p.erase (fid); k->keys.erase (fid); }
+        }
         if (r == 32) { st.edit ("Remove Effects"); for (auto& i : sel) if (auto* k = sq.findClip (i)) { k->fx = {}; k->opacity = 1; k->transIn = TransitionType::Cut; k->transLen = 0; } }
         if (r == 33 && onAskText)
             onAskText ("Rename clip", cl->name, [this, id] (juce::String v)
