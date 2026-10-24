@@ -683,6 +683,23 @@ static void testReverseAndSlowMo()
     CHECK (clean, "clean slow-mo: 60 fps at 50% on a 30 fps timeline uses every real frame once");
 }
 
+static void testSyncShortClip()
+{
+    const int rate = kAnalysisRate;
+    juce::Random rnd (7);
+    std::vector<float> song ((size_t) (rate * 40));
+    float env = 0;
+    for (size_t i = 0; i < song.size(); ++i)
+    {
+        if (i % (size_t) (rate / 8) == 0) env = rnd.nextFloat() < 0.45f ? 1.0f : 0.15f;
+        song[i] = env * (rnd.nextFloat() * 2 - 1);
+    }
+    // a take recorded from 12 s to 30 s of the song; the clip is only 0.8 s cut out of its middle
+    std::vector<float> take (song.begin() + rate * 12, song.begin() + rate * 30);
+    auto r = syncSegment (song, take, rate, secToTicks (9.4), secToTicks (0.8));
+    CHECK (r.ok && std::abs (ticksToSec (r.offset) - 12.0) < 0.01, "short clip syncs by its own sound (offset " + juce::String (ticksToSec (r.offset), 3) + " s)");
+}
+
 static long rssMB()
 {
     auto s = juce::File ("/proc/self/status").loadFileAsString();
@@ -758,6 +775,7 @@ int main (int argc, char** argv)
     testAutoCutAndPresets();
     testLayoutsStacksAndLayers();
     testReverseAndSlowMo();
+    testSyncShortClip();
     std::cout << (failures == 0 ? "ALL TESTS PASSED" : "FAILURES: ") << (failures ? juce::String (failures) : juce::String()) << "\n";
     return failures;
 }

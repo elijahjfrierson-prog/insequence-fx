@@ -632,7 +632,9 @@ void Timeline::clipMenu (const juce::String& id)
         slow.addItem (39, "75%", ! lk); slow.addItem (36, "50%", ! lk); slow.addItem (38, "33%", ! lk); slow.addItem (37, "25%", ! lk);
         slow.addSeparator(); slow.addItem (30, "Custom speed...", ! lk);
         m.addSubMenu ("Slow motion", slow, ! lk && hasMedia);
-        m.addItem (43, "Sync to audio", hasMedia && md != nullptr && md->kind != MediaKind::Image);
+        const int nSel = st.selected.contains (c->id) ? st.selected.size() : 1;
+        m.addItem (43, nSel > 1 ? "Sync " + juce::String (nSel) + " clips to audio" : juce::String ("Sync clip to audio"),
+                   hasMedia && md != nullptr && md->kind != MediaKind::Image);
     }
     m.addItem (31, "Add Frame Hold Segment (1 beat)", ! lk && video && st.playhead > c->start && st.playhead < c->end());
     m.addSubMenu ("Transition in", trans, ! lk);
@@ -704,7 +706,7 @@ void Timeline::clipMenu (const juce::String& id)
                     setClipSpeed (sq, st.project, i, sp);
                 }
         }
-        if (r == 43 && onSyncMedia) { auto mid = cl->mediaId; juce::MessageManager::callAsync ([this, mid] { onSyncMedia (mid); }); return; }
+        if (r == 43 && onSyncClips) { auto ids = sel; juce::MessageManager::callAsync ([this, ids] { onSyncClips (ids); }); return; }
         if (r == 4) { st.edit ("Lock"); cl->locked = ! cl->locked; }
         if (r == 5) { st.edit ("Delete"); deleteClips (sq, sel, false); st.selected.clear(); }
         if (r == 6) { st.edit ("Ripple Delete"); deleteClips (sq, sel, true); st.selected.clear(); }

@@ -288,6 +288,20 @@ static std::vector<std::vector<float>> bandFeatures (const std::vector<float>& x
     return out;
 }
 
+SyncResult syncSegment (const std::vector<float>& song, const std::vector<float>& a, int rate, Ticks srcIn, Ticks len, double minContext)
+{
+    const double total = (double) a.size() / rate, s0 = ticksToSec (srcIn), l = ticksToSec (len);
+    const double w = std::min (total, std::max (minContext, l));
+    const double ws = juce::jlimit (0.0, std::max (0.0, total - w), s0 + l * 0.5 - w * 0.5);
+    const size_t i0 = (size_t) (ws * rate), i1 = std::min (a.size(), (size_t) ((ws + w) * rate));
+    SyncResult r;
+    if (i1 <= i0) { r.note = "no audio"; return r; }
+    std::vector<float> piece (a.begin() + (std::ptrdiff_t) i0, a.begin() + (std::ptrdiff_t) i1);
+    r = syncToSong (song, piece, rate);
+    r.offset -= secToTicks ((double) i0 / rate);
+    return r;
+}
+
 SyncResult syncToSong (const std::vector<float>& song, const std::vector<float>& take, int rate)
 {
     SyncResult r;

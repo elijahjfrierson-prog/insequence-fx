@@ -273,7 +273,7 @@ MainComponent::MainComponent()
     };
     media.onSyncAll = [this] { autoSync(); };
     media.onResync = [this] (const juce::String& id) { autoSync (id); };
-    timeline.onSyncMedia = [this] (const juce::String& id) { autoSync (id); };
+    timeline.onSyncClips = [this] (const juce::StringArray& ids) { syncClips (ids); };
     media.onSetSong = [this] (const juce::String& id) { setSong (id); };
     media.onRelink = [this] (const juce::String& id) { relink (id); };
     media.onRemove = [this] (const juce::String& id) { removeMedia (id); };
@@ -626,6 +626,8 @@ void MainComponent::setSong (const juce::String& id)
     });
 }
 
+static Ticks songZero (const Project& p);
+
 void MainComponent::autoSync (const juce::String& onlyId)
 {
     if (songMono == nullptr || songMono->empty()) { showMsg ("Auto Sync", "Import the song first (the first audio file you import becomes the song)."); return; }
@@ -645,15 +647,92 @@ void MainComponent::autoSync (const juce::String& onlyId)
     }, [this, out]
     {
         st.edit ("Auto Sync");
+        const Ticks zero = songZero (st.project);
         int ok = 0, unsure = 0, bad = 0;
         for (auto& [id, si] : *out) if (auto* m = st.project.findMedia (id))
         {
             if (m->sync.status == SyncInfo::Manual) continue;
             m->sync = si;
+            m->sync.offset += zero;
             ok += si.status == SyncInfo::Synced; unsure += si.status == SyncInfo::Uncertain; bad += si.status == SyncInfo::Failed;
         }
         layoutSyncedTakes (st.project);
         status.setText (juce::String (ok) + " synced, " + juce::String (unsure) + " uncertain (orange: check placement), " + juce::String (bad) + " not matched", juce::dontSendNotification);
+        refresh (true);
+    });
+}
+
+static Ticks songZero (const Project& p)
+{
+    for (auto& c : p.seq().clips) if (c.mediaId == p.songId) return c.start - c.srcIn;
+    return 0;
+}
+
+void MainComponent::syncClips (const juce::StringArray& ids)
+{
+    if (songMono == nullptr || songMono->empty()) { showMsg ("Sync to audio", "Import the song first (the first audio file you import becomes the song)."); return; }
+    struct Job { juce::String clipId; juce::File file; Ticks srcIn, len; };
+    std::vector<Job> jobs;
+    int skipped = 0;
+    for (auto& id : ids)
+        if (auto* c = st.project.seq().findClip (id))
+        {
+            auto* m = st.project.findMedia (c->mediaId);
+            const bool hasSound = m != nullptr && (m->kind == MediaKind::Audio || (m->kind == MediaKind::Video && m->hasAudio));
+            if (! hasSound || c->mediaId == st.project.songId || m->missing || c->locked || c->reverse || std::abs (c->speed - 1.0) > 1e-6) { ++skipped; continue; }
+            jobs.push_back ({ c->id, juce::File (m->path), c->srcIn, c->length });
+        }
+    if (jobs.empty()) { showMsg ("Sync to audio", "Pick clips that have their own sound and play at 100% (not reversed or slow-mo)."); return; }
+    auto out = std::make_shared<std::vector<std::pair<juce::String, SyncResult>>>();
+    auto mono = songMono;
+    runTask ("Syncing clips", [jobs, out, mono] (ProgressCb p, std::function<bool()> cancel)
+    {
+        std::map<juce::String, std::vector<float>> audio;
+        for (size_t i = 0; i < jobs.size() && ! cancel(); ++i)
+        {
+            auto& j = jobs[i];
+            p ((double) i / jobs.size(), "Matching clip " + juce::String ((int) i + 1) + " of " + juce::String ((int) jobs.size()));
+            auto key = j.file.getFullPathName();
+            if (audio.find (key) == audio.end()) { juce::String e; decodeAudio (j.file, kAnalysisRate, 1, audio[key], e); }
+            out->push_back ({ j.clipId, syncSegment (*mono, audio[key], kAnalysisRate, j.srcIn, j.len) });
+        }
+    }, [this, out, skipped]
+    {
+        st.edit ("Sync clips");
+        auto& sq = st.project.seq();
+        const Ticks zero = songZero (st.project);
+        int ok = 0, weak = 0;
+        juce::StringArray moved;
+        for (auto& [id, r] : *out)
+        {
+            auto* c = sq.findClip (id);
+            if (c == nullptr) continue;
+            const Ticks ns = zero + r.offset + c->srcIn;
+            if (! r.ok || r.confidence < 0.25f || ns < 0) { ++weak; continue; }
+            c->start = ns; ++ok; moved.add (id);
+        }
+        // a synced video clip that lands on another clip moves up to a free layer instead of covering it
+        for (auto& id : moved)
+        {
+            auto* c = sq.findClip (id);
+            if (c == nullptr || sq.tracks[(size_t) c->track].kind != TrackKind::Video) continue;
+            auto collides = [&sq, &id] (int tr, Ticks a, Ticks b)
+            {
+                for (auto& o : sq.clips) if (o.id != id && o.track == tr && o.start < b && o.end() > a) return true;
+                return false;
+            };
+            if (! collides (c->track, c->start, c->end())) continue;
+            int dest = -1;
+            for (int t = c->track + 1; t < (int) sq.tracks.size() && dest < 0; ++t)
+                if (sq.tracks[(size_t) t].kind == TrackKind::Video && ! sq.tracks[(size_t) t].locked && ! collides (t, c->start, c->end())) dest = t;
+            if (dest < 0) { dest = insertVideoTrack (sq); c = sq.findClip (id); }
+            c->track = dest;
+        }
+        sq.sortClips();
+        status.setText (juce::String (ok) + " clip" + (ok == 1 ? "" : "s") + " synced to the song"
+                        + (weak > 0 ? ", " + juce::String (weak) + " not confidently matched (left in place)" : juce::String())
+                        + (skipped > 0 ? ", " + juce::String (skipped) + " skipped (no sound, locked, reversed or speed changed)" : juce::String()),
+                        juce::dontSendNotification);
         refresh (true);
     });
 }
