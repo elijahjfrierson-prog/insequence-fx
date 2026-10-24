@@ -111,6 +111,7 @@ juce::var toVar (const Project& p)
     root->setProperty ("name", p.name);
     root->setProperty ("active", p.active);
     root->setProperty ("songId", p.songId);
+    root->setProperty ("plugins", p.plugins);
     root->setProperty ("fps", p.fps);
     root->setProperty ("aspectW", p.aspectW);
     root->setProperty ("aspectH", p.aspectH);
@@ -193,7 +194,7 @@ bool fromVar (const juce::var& v, Project& p, juce::String& error)
     if (v["format"].toString() != "InSequenceFX") { error = "Not an InSequence FX project"; return false; }
     if ((int) v["version"] > Project::kVersion) { error = "Project was made by a newer InSequence FX"; return false; }
     Project r;
-    r.name = v["name"].toString(); r.active = (int) v["active"]; r.songId = v["songId"].toString();
+    r.name = v["name"].toString(); r.active = (int) v["active"]; r.songId = v["songId"].toString(); r.plugins = v["plugins"];
     r.fps = v.hasProperty ("fps") ? (double) v["fps"] : 30.0;
     r.aspectW = v.hasProperty ("aspectW") ? (int) v["aspectW"] : 16;
     r.aspectH = v.hasProperty ("aspectH") ? (int) v["aspectH"] : 9;

@@ -1,0 +1,448 @@
+#include "App.h"
+
+namespace isfx
+{
+Timeline::Timeline (AppState& s) : st (s) { setWantsKeyboardFocus (false); }
+
+int Timeline::trackY (int i) const
+{
+    int y = kRuler;
+    const auto& tr = st.project.seq().tracks;
+    for (int k = 0; k < i && k < (int) tr.size(); ++k) y += tr[(size_t) k].height;
+    return y;
+}
+
+int Timeline::trackAt (int y) const
+{
+    const auto& tr = st.project.seq().tracks;
+    int yy = kRuler;
+    for (int k = 0; k < (int) tr.size(); ++k) { if (y >= yy && y < yy + tr[(size_t) k].height) return k; yy += tr[(size_t) k].height; }
+    return y < kRuler ? -1 : (int) tr.size() - 1;
+}
+
+const Clip* Timeline::clipAt (juce::Point<int> p, int& edge) const
+{
+    edge = 0;
+    int tr = trackAt (p.y);
+    if (tr < 0 || p.x < kHeader) return nullptr;
+    const auto& s = st.project.seq();
+    for (auto& c : s.clips)
+    {
+        if (c.track != tr) continue;
+        int x0 = secToX (ticksToSec (c.start)), x1 = secToX (ticksToSec (c.end()));
+        if (p.x >= x0 && p.x <= x1)
+        {
+            int w = std::min (7, (x1 - x0) / 3);
+            if (p.x - x0 <= w) edge = -1; else if (x1 - p.x <= w) edge = 1;
+            return &c;
+        }
+    }
+    return nullptr;
+}
+
+void Timeline::paint (juce::Graphics& g)
+{
+    using namespace theme;
+    const auto& p = st.project; const auto& s = p.seq();
+    g.fillAll (bg);
+    const int W = getWidth(), H = getHeight();
+    const double t0 = scrollSec, t1 = xToSec (W);
+
+    // track lanes
+    for (int i = 0; i < (int) s.tracks.size(); ++i)
+    {
+        auto& tr = s.tracks[(size_t) i];
+        int y = trackY (i), h = tr.height;
+        g.setColour (i % 2 ? panel : panel.darker (0.15f)); g.fillRect (kHeader, y, W - kHeader, h);
+        g.setColour (line); g.drawHorizontalLine (y + h - 1, 0, (float) W);
+    }
+
+    // beat grid
+    if (p.song.valid && st.showGrid)
+    {
+        double beat = p.song.beatSec(), pxBeat = beat * pxPerSec;
+        int per = pxBeat > 160 ? 4 : pxBeat > 60 ? 2 : 1;
+        if (pxBeat < 6) per = 0;
+        juce::int64 n0 = (juce::int64) std::floor (p.song.beatAt (secToTicks (t0)) * std::max (1, per)) - 1;
+        juce::int64 n1 = (juce::int64) std::ceil (p.song.beatAt (secToTicks (t1)) * std::max (1, per)) + 1;
+        for (juce::int64 n = std::max<juce::int64> (n0, 0); n <= n1; ++n)
+        {
+            int perB = std::max (1, per);
+            Ticks t = p.song.subdivTime (n, perB);
+            int x = secToX (ticksToSec (t));
+            bool isBeat = n % perB == 0, isBar = isBeat && (n / perB) % p.song.beatsPerBar == 0;
+            if (! isBeat && per == 0) continue;
+            if (! isBar && pxBeat * p.song.beatsPerBar < 24) continue;
+            g.setColour (isBar ? line.brighter (0.5f) : isBeat ? line.brighter (0.1f) : line.withAlpha (0.5f));
+            g.drawVerticalLine (x, (float) kRuler, (float) H);
+        }
+    }
+
+    // range
+    if (st.rangeB > st.rangeA)
+    {
+        int a = secToX (ticksToSec (st.rangeA)), b = secToX (ticksToSec (st.rangeB));
+        g.setColour (accent2.withAlpha (0.12f)); g.fillRect (a, 0, b - a, H);
+        g.setColour (accent2.withAlpha (0.7f)); g.drawVerticalLine (a, 0, (float) H); g.drawVerticalLine (b, 0, (float) H);
+    }
+
+    // clips
+    for (auto& c : s.clips)
+    {
+        if (c.track < 0 || c.track >= (int) s.tracks.size()) continue;
+        auto& tr = s.tracks[(size_t) c.track];
+        int x0 = secToX (ticksToSec (c.start)), x1 = secToX (ticksToSec (c.end()));
+        if (x1 < kHeader || x0 > W) continue;
+        juce::Rectangle<int> r (x0, trackY (c.track) + 2, std::max (2, x1 - x0), tr.height - 5);
+        const MediaItem* m = p.findMedia (c.mediaId);
+        bool audio = tr.kind == TrackKind::Audio, sel = st.selected.contains (c.id);
+        auto base = audio ? juce::Colour (0xff1f6f5c) : juce::Colour (0xff3a3f7a);
+        if (m && m->missing) base = bad.darker (0.6f);
+        if (tr.hidden || tr.mute) base = base.withSaturation (0.1f).darker (0.4f);
+        g.setColour (base); g.fillRoundedRectangle (r.toFloat(), 3);
+        juce::Graphics::ScopedSaveState ss (g);
+        g.reduceClipRegion (r);
+        if (! audio && m)
+        {
+            auto it = st.thumbs.find (m->id);
+            if (it != st.thumbs.end() && it->second.isValid() && r.getWidth() > 24)
+            {
+                auto& im = it->second;
+                int tw = im.getWidth() * r.getHeight() / std::max (1, im.getHeight());
+                for (int x = r.getX(); x < r.getRight(); x += tw * 4) g.drawImage (im, x, r.getY(), tw, r.getHeight(), 0, 0, im.getWidth(), im.getHeight());
+                g.setColour (base.withAlpha (0.35f)); g.fillRect (r);
+            }
+        }
+        if (m)
+        {
+            auto wit = st.waves.find (m->id);
+            if (wit != st.waves.end() && (audio || r.getHeight() > 30))
+            {
+                auto& wf = wit->second;
+                g.setColour (audio ? good.withAlpha (0.8f) : juce::Colours::white.withAlpha (0.25f));
+                float mid = r.getCentreY() + (audio ? 0.0f : r.getHeight() * 0.25f), amp = r.getHeight() * (audio ? 0.45f : 0.2f);
+                for (int x = std::max (r.getX(), kHeader); x < std::min (r.getRight(), W); ++x)
+                {
+                    double ts = ticksToSec (c.srcAt (secToTicks (xToSec (x))));
+                    double te = ticksToSec (c.srcAt (secToTicks (xToSec (x + 1))));
+                    int b0 = (int) (ts * wf.bucketsPerSec), b1 = std::max (b0 + 1, (int) (te * wf.bucketsPerSec));
+                    float pk = 0;
+                    for (int b = std::max (0, b0); b < b1 && b < (int) wf.peaks.size(); ++b) pk = std::max (pk, wf.peaks[(size_t) b]);
+                    g.drawVerticalLine (x, mid - pk * amp, mid + pk * amp);
+                }
+            }
+        }
+        g.setColour (text); g.setFont (11.0f);
+        juce::String label = m ? m->name : juce::String ("(missing)");
+        if (c.speed != 1.0) label << "  " << juce::String (c.speed * 100, 0) << "%";
+        if (! c.fx.p.empty()) label << "  fx";
+        g.drawText (label, r.reduced (4, 2), juce::Justification::topLeft, true);
+        if (m && m->kind == MediaKind::Video && m->sync.status != SyncInfo::None)
+        {
+            auto col = m->sync.status == SyncInfo::Synced || m->sync.status == SyncInfo::Manual ? good : m->sync.status == SyncInfo::Uncertain ? warn : bad;
+            g.setColour (col); g.fillEllipse ((float) r.getRight() - 10, (float) r.getY() + 3, 6, 6);
+        }
+        if (sel) { g.setColour (juce::Colours::white); g.drawRoundedRectangle (r.toFloat().reduced (0.5f), 3, 2); }
+        if (c.locked) { g.setColour (dim); g.drawText ("L", r.reduced (3), juce::Justification::bottomRight); }
+    }
+
+    // ruler
+    g.setColour (panel2); g.fillRect (0, 0, W, kRuler);
+    g.setColour (dim); g.setFont (10.0f);
+    if (p.song.valid)
+    {
+        double barSec = p.song.beatSec() * p.song.beatsPerBar;
+        int step = 1; while (barSec * step * pxPerSec < 48) step *= 2;
+        int b0 = std::max (0, (int) std::floor (p.song.beatAt (secToTicks (t0)) / p.song.beatsPerBar));
+        for (int b = b0 - b0 % step; ; b += step)
+        {
+            double sec = ticksToSec (p.song.gridTime ((double) b * p.song.beatsPerBar));
+            if (sec > t1) break;
+            int x = secToX (sec);
+            g.setColour (dim); g.drawVerticalLine (x, 14, (float) kRuler);
+            g.drawText (juce::String (b + 1), x + 2, 1, 40, 12, juce::Justification::left);
+        }
+        // detected drum hits
+        for (auto& e : p.song.events)
+        {
+            double sec = ticksToSec (e.time);
+            if (sec < t0 || sec > t1) continue;
+            int x = secToX (sec);
+            g.setColour (e.type == EventType::Kick ? accent : e.type == EventType::Snare ? warn : accent2.withAlpha (0.6f));
+            int y = e.type == EventType::Kick ? 22 : e.type == EventType::Snare ? 18 : 14;
+            g.fillRect (x, y, 1, 4);
+        }
+    }
+    else
+    {
+        double step = 1; while (step * pxPerSec < 60) step *= 2;
+        for (double sec = std::floor (t0 / step) * step; sec < t1; sec += step)
+        {
+            int x = secToX (sec);
+            g.drawVerticalLine (x, 16, (float) kRuler);
+            g.drawText (juce::String ((int) sec / 60) + ":" + juce::String ((int) sec % 60).paddedLeft ('0', 2), x + 2, 2, 50, 12, juce::Justification::left);
+        }
+    }
+
+    // headers
+    g.setColour (panel2); g.fillRect (0, kRuler, kHeader, H - kRuler);
+    for (int i = 0; i < (int) s.tracks.size(); ++i)
+    {
+        auto& tr = s.tracks[(size_t) i];
+        int y = trackY (i);
+        g.setColour (text); g.setFont (12.0f);
+        g.drawText (tr.name, 6, y + 4, kHeader - 10, 14, juce::Justification::left);
+        const char* lab[3] = { tr.kind == TrackKind::Audio ? "M" : "H", "L", "" };
+        bool on[2] = { tr.kind == TrackKind::Audio ? tr.mute : tr.hidden, tr.locked };
+        for (int k = 0; k < 2; ++k)
+        {
+            juce::Rectangle<int> b (6 + k * 22, y + 22, 18, 16);
+            g.setColour (on[k] ? accent : line); g.fillRoundedRectangle (b.toFloat(), 3);
+            g.setColour (text); g.setFont (10.0f); g.drawText (lab[k], b, juce::Justification::centred);
+        }
+        g.setColour (line); g.drawHorizontalLine (y + tr.height - 1, 0, (float) kHeader);
+    }
+    g.setColour (line); g.drawVerticalLine (kHeader - 1, 0, (float) H);
+    g.setColour (panel2); g.fillRect (0, 0, kHeader, kRuler);
+    g.setColour (dim); g.setFont (10.0f);
+    g.drawText (p.song.valid ? juce::String (p.song.bpm, 2) + " BPM" : juce::String ("no song"), 4, 0, kHeader - 6, kRuler, juce::Justification::centredLeft);
+
+    // playhead
+    int px = secToX (ticksToSec (st.playhead));
+    if (px >= kHeader)
+    {
+        g.setColour (accent); g.drawVerticalLine (px, 0, (float) H);
+        juce::Path tri; tri.addTriangle ((float) px - 5, 0, (float) px + 5, 0, (float) px, 8); g.fillPath (tri);
+    }
+}
+
+void Timeline::mouseMove (const juce::MouseEvent& e)
+{
+    int edge = 0; auto* c = clipAt (e.getPosition(), edge);
+    if (tool == Tool::Cut) setMouseCursor (juce::MouseCursor::IBeamCursor);
+    else if (tool == Tool::Select && c && edge != 0) setMouseCursor (juce::MouseCursor::LeftRightResizeCursor);
+    else if (tool == Tool::Paint) setMouseCursor (juce::MouseCursor::CrosshairCursor);
+    else setMouseCursor (juce::MouseCursor::NormalCursor);
+    if (c)
+    {
+        auto* m = st.project.findMedia (c->mediaId);
+        juce::String tip;
+        if (m) { tip << m->name; if (m->sync.status != SyncInfo::None) tip << "\nSync: " << m->sync.note << " (" << juce::String (m->sync.confidence * 100, 0) << "%)"; }
+        setTooltip (tip);
+    }
+    else setTooltip ("E select/move/trim, P paint, D delete, C cut. Drag in the ruler to select a range. Ctrl+wheel zooms.");
+}
+
+void Timeline::mouseDown (const juce::MouseEvent& e)
+{
+    auto& s = st.project.seq();
+    auto pos = e.getPosition();
+    Ticks t = secToTicks (std::max (0.0, xToSec (pos.x)));
+    drag = Drag::None;
+    beforeDrag = st.project;
+    dragStart = t;
+
+    if (pos.x < kHeader && pos.y >= kRuler)   // track header buttons
+    {
+        int tr = trackAt (pos.y); if (tr < 0) return;
+        int k = (pos.x - 6) / 22; int y = trackY (tr);
+        if (pos.y >= y + 22 && pos.y < y + 38 && k >= 0 && k < 2)
+        {
+            st.edit ("Track toggle");
+            auto& T = s.tracks[(size_t) tr];
+            if (k == 0) { if (T.kind == TrackKind::Audio) T.mute = ! T.mute; else T.hidden = ! T.hidden; }
+            else T.locked = ! T.locked;
+            if (onEdited) onEdited();
+        }
+        return;
+    }
+    if (pos.y < kRuler)
+    {
+        drag = Drag::Range;
+        st.rangeA = st.rangeB = st.snapT (t);
+        if (onSeek) onSeek (st.snapT (t));
+        repaint(); return;
+    }
+
+    int edge = 0; const Clip* c = clipAt (pos, edge);
+    if (e.mods.isPopupMenu()) { if (c) clipMenu (c->id); return; }
+    int tr = trackAt (pos.y);
+    bool trackLocked = tr >= 0 && tr < (int) s.tracks.size() && s.tracks[(size_t) tr].locked;
+
+    switch (tool)
+    {
+        case Tool::Select:
+            if (c)
+            {
+                if (e.mods.isShiftDown() || e.mods.isCommandDown()) { if (st.selected.contains (c->id)) st.selected.removeString (c->id); else st.selected.add (c->id); }
+                else if (! st.selected.contains (c->id)) { st.selected = { c->id }; }
+                if (c->group != 0)
+                    for (auto& o : s.clips) if (o.group == c->group) st.selected.addIfNotAlreadyThere (o.id);
+                dragClip = c->id; dragOrig = edge < 0 ? c->start : edge > 0 ? c->end() : c->start; dragTrack = c->track;
+                drag = c->locked || trackLocked ? Drag::None : edge < 0 ? Drag::TrimL : edge > 0 ? Drag::TrimR : Drag::Move;
+            }
+            else
+            {
+                st.selected.clear(); drag = Drag::Scrub;
+                if (onSeek) onSeek (t);
+            }
+            if (onEdited) onEdited();
+            break;
+        case Tool::Paint:
+            if (! c && tr >= 0 && ! trackLocked)
+            {
+                juce::String tid = st.selected.isEmpty() ? juce::String() : st.selected[0];
+                if (tid.isNotEmpty())
+                {
+                    st.edit ("Paint");
+                    auto id = paintClip (s, tid, st.snapT (t), tr);
+                    if (id.isEmpty()) st.history.undo (st.project);
+                    if (onEdited) onEdited();
+                }
+            }
+            else if (c) { st.selected = { c->id }; if (onEdited) onEdited(); }
+            break;
+        case Tool::Delete:
+            if (c && ! c->locked && ! trackLocked)
+            {
+                st.edit ("Delete");
+                deleteClips (s, { c->id }, st.ripple);
+                st.selected.removeString (c->id);
+                if (onEdited) onEdited();
+            }
+            break;
+        case Tool::Cut:
+            if (c && ! c->locked && ! trackLocked)
+            {
+                st.edit ("Cut");
+                splitAt (s, st.snapT (t), { c->id });
+                if (onEdited) onEdited();
+            }
+            break;
+    }
+}
+
+void Timeline::mouseDrag (const juce::MouseEvent& e)
+{
+    auto pos = e.getPosition();
+    Ticks t = secToTicks (std::max (0.0, xToSec (pos.x)));
+    if (pos.x > getWidth() - 20) { scrollSec += 4 / pxPerSec * 10; }
+    switch (drag)
+    {
+        case Drag::Range:
+        {
+            Ticks a = st.snapT (dragStart), b = st.snapT (t);
+            st.rangeA = std::min (a, b); st.rangeB = std::max (a, b);
+            repaint(); break;
+        }
+        case Drag::Scrub: if (onSeek) onSeek (t); break;
+        case Drag::Move:
+        {
+            st.project = beforeDrag;
+            Ticks delta = st.snapT (dragOrig + (t - dragStart)) - dragOrig;
+            if (dragOrig + delta < 0) delta = -dragOrig;
+            int td = trackAt (pos.y) - dragTrack;
+            if (! moveClips (st.project.seq(), st.selected, delta, td)) moveClips (st.project.seq(), st.selected, delta, 0);
+            if (onEdited) onEdited();
+            break;
+        }
+        case Drag::TrimL: case Drag::TrimR:
+        {
+            st.project = beforeDrag;
+            trimClip (st.project.seq(), st.project, dragClip, drag == Drag::TrimL, st.snapT (dragOrig + (t - dragStart)));
+            if (onEdited) onEdited();
+            break;
+        }
+        case Drag::None: break;
+    }
+    if (tool == Tool::Delete || tool == Tool::Paint) mouseDown (e);   // drag-paint / drag-delete
+}
+
+void Timeline::mouseUp (const juce::MouseEvent&)
+{
+    if (drag == Drag::Move || drag == Drag::TrimL || drag == Drag::TrimR)
+    {
+        if (toVar (beforeDrag).toString() != toVar (st.project).toString())
+        {
+            st.history.push (beforeDrag, drag == Drag::Move ? "Move" : "Trim");
+            st.dirty = true;
+        }
+    }
+    if (drag == Drag::Range && st.rangeB - st.rangeA < secToTicks (0.01)) st.rangeA = st.rangeB = 0;
+    drag = Drag::None;
+    repaint();
+}
+
+void Timeline::zoomBy (float f, int anchorX)
+{
+    double anchor = xToSec (anchorX);
+    pxPerSec = juce::jlimit (1.5, 6000.0, pxPerSec * f);   // 6000 px/s = ~100 px per frame at 60 fps
+    scrollSec = std::max (0.0, anchor - (anchorX - kHeader) / pxPerSec);
+    repaint();
+}
+
+void Timeline::mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& w)
+{
+    if (e.mods.isCommandDown() || e.mods.isCtrlDown()) { zoomBy (std::pow (1.15f, w.deltaY * 6), e.x); return; }
+    float d = std::abs (w.deltaX) > std::abs (w.deltaY) ? w.deltaX : w.deltaY;
+    scrollSec = std::max (0.0, scrollSec - d * 300 / pxPerSec);
+    repaint();
+}
+
+void Timeline::mouseMagnify (const juce::MouseEvent& e, float s) { zoomBy (s, e.x); }
+
+void Timeline::ensureVisible (Ticks t)
+{
+    double sec = ticksToSec (t), vis = (getWidth() - kHeader) / pxPerSec;
+    if (sec < scrollSec || sec > scrollSec + vis * 0.92) scrollSec = std::max (0.0, sec - vis * 0.1);
+}
+
+void Timeline::itemDropped (const SourceDetails& d)
+{
+    auto desc = d.description.toString();
+    if (! desc.startsWith ("media:")) return;
+    int tr = trackAt (d.localPosition.y);
+    st.edit ("Add clip");
+    auto id = addMediaClip (st.project, desc.fromFirstOccurrenceOf ("media:", false, false), tr, st.snapT (secToTicks (std::max (0.0, xToSec (d.localPosition.x)))));
+    if (id.isNotEmpty()) st.selected = { id };
+    if (onEdited) onEdited();
+}
+
+void Timeline::clipMenu (const juce::String& id)
+{
+    auto* c = st.project.seq().findClip (id);
+    if (c == nullptr) return;
+    st.selected = { id };
+    if (onEdited) onEdited();
+    bool video = st.project.seq().tracks[(size_t) c->track].kind == TrackKind::Video;
+    juce::PopupMenu cut;
+    auto names = autoCutNames();
+    for (int i = 0; i < names.size(); ++i) cut.addItem (100 + i, names[i]);
+    cut.addSeparator();
+    cut.addItem (99, "Switch camera angles on each cut", video, switchAngles && video);
+    juce::PopupMenu m;
+    m.addSubMenu ("Auto Cut", cut, ! c->locked);
+    m.addItem (2, "Split at playhead  (Ctrl+K)", st.playhead > c->start && st.playhead < c->end());
+    m.addItem (3, "Reverse speed to 100%", c->speed != 1.0);
+    m.addItem (4, c->locked ? "Unlock clip" : "Lock clip");
+    m.addItem (5, "Delete" + juce::String (st.ripple ? " (ripple)" : ""), ! c->locked);
+    m.showMenuAsync (juce::PopupMenu::Options(), [this, id] (int r)
+    {
+        auto* cl = st.project.seq().findClip (id);
+        if (cl == nullptr || r == 0) return;
+        if (r == 99) { switchAngles = ! switchAngles; juce::MessageManager::callAsync ([this, id] { clipMenu (id); }); return; }
+        if (r >= 100)
+        {
+            st.edit ("Auto Cut");
+            int n = autoCutClip (st.project, id, (AutoCut) (r - 100), switchAngles, (juce::uint32) juce::Time::currentTimeMillis());
+            if (n == 0) st.history.undo (st.project);
+            st.selected.clear();
+        }
+        if (r == 2) { st.edit ("Split"); splitAt (st.project.seq(), st.playhead, { id }); }
+        if (r == 3) { st.edit ("Speed"); cl->speed = 1.0; }
+        if (r == 4) { st.edit ("Lock"); cl->locked = ! cl->locked; }
+        if (r == 5) { st.edit ("Delete"); deleteClips (st.project.seq(), { id }, st.ripple); st.selected.clear(); }
+        if (onEdited) onEdited();
+    });
+}
+}

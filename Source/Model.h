@@ -146,6 +146,7 @@ struct Project
     std::vector<Sequence> sequences;
     int active = 0;
     juce::String songId;
+    juce::var plugins;           // master plug-in chain (descriptions + state), owned by the app's PluginRack
     SongAnalysis song;
     ExportSettings exportSettings;
     double fps = 30.0;          // timeline frame rate

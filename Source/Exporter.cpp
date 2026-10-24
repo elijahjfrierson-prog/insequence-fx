@@ -185,6 +185,7 @@ bool runExport (const Sequence& s, const AudioCache& audio, const ExportJob& job
             {
                 L.resize ((size_t) n); R.resize ((size_t) n);
                 mixSequence (s, audio, aStart + audioDone, n, L.data(), R.data());
+                if (job.audioFx) job.audioFx (L.data(), R.data(), n);
                 enc.writeAudio (L.data(), R.data(), n);
                 audioDone = audioTarget;
             }

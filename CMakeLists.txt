@@ -45,6 +45,7 @@ set(ISFX_CORE_SOURCES
     Source/Editing.cpp
     Source/Looks.cpp
     Source/AudioMix.cpp
+    Source/Presets.cpp
 )
 
 set(ISFX_DEFS
@@ -63,6 +64,7 @@ set(ISFX_LIBS
     juce::juce_audio_formats
     juce::juce_dsp
     juce::juce_gui_extra
+    juce::juce_audio_processors
 )
 
 option(ISFX_TESTS_ONLY "Build only the headless test target" OFF)
@@ -81,14 +83,16 @@ if(NOT ISFX_TESTS_ONLY)
         Source/Renderer.cpp
         Source/Exporter.cpp
         Source/Playback.cpp
+        Source/Plugins.cpp
         Source/Theme.cpp
         Source/Timeline.cpp
         Source/Panels.cpp
         Source/MainComponent.cpp
         Source/Main.cpp
     )
-    target_compile_definitions(InSequenceFX PRIVATE ${ISFX_DEFS})
-    target_link_libraries(InSequenceFX PRIVATE ${ISFX_LIBS} juce::juce_opengl
+    juce_add_binary_data(ISFXData SOURCES installer/LICENSE.txt assets/insequence-icon.png)
+    target_compile_definitions(InSequenceFX PRIVATE ${ISFX_DEFS} JUCE_PLUGINHOST_VST3=1 JUCE_PLUGINHOST_AU=1 JUCE_PLUGINHOST_LADSPA=0)
+    target_link_libraries(InSequenceFX PRIVATE ${ISFX_LIBS} ISFXData juce::juce_opengl
         PUBLIC juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
     if(APPLE)
         set_target_properties(InSequenceFX PROPERTIES BUILD_RPATH "@executable_path/../Frameworks" INSTALL_RPATH "@executable_path/../Frameworks")

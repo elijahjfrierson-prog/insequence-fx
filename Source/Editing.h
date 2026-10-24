@@ -38,4 +38,10 @@ int layoutSyncedTakes (Project& p);
 
 // GENERATE 3 EDITS: appends Cinematic / Underground / Performance sequences, returns their indices
 std::vector<int> generateEdits (Project& p, juce::uint32 seed, const juce::String& styleMode = {});
+// Right-click Auto Cut: slices one clip on the grid / detected hits, or a hi-hat-style roll
+// (1/8 -> 1/16 -> 1/32 into the next bar, every slice repeating the roll's first slice = stutter).
+// switchAngles: video slices cycle through the other synced takes covering each slice.
+enum class AutoCut { Quarter = 0, Eighth, Sixteenth, ThirtySecond, Triplet, HiHat, Kick, Snare, Roll };
+juce::StringArray autoCutNames();
+int autoCutClip (Project& p, const juce::String& clipId, AutoCut mode, bool switchAngles, juce::uint32 seed = 1);
 }

@@ -7,6 +7,7 @@
 #include "../Source/AudioMix.h"
 #include "../Source/Exporter.h"
 #include "../Source/Renderer.h"
+#include "../Source/Presets.h"
 #include <iostream>
 #include <chrono>
 #include <set>
@@ -406,6 +407,52 @@ static void testRender()
     gradF.deleteFile(); greenF.deleteFile();
 }
 
+static void testAutoCutAndPresets()
+{
+    Project p = Project::makeNew();
+    p.song.valid = true; p.song.bpm = 120; p.song.gridOffset = 0; p.song.beatsPerBar = 4; p.song.duration = secToTicks (16);
+    MediaItem m; m.id = "take"; m.kind = MediaKind::Video; m.duration = secToTicks (20); m.fps = 30; m.path = "/nonexistent.mov"; m.name = "take";
+    m.sync.status = SyncInfo::Synced; m.sync.offset = 0; p.media.push_back (m);
+    MediaItem m2 = m; m2.id = "take2"; m2.name = "take2"; p.media.push_back (m2);
+    auto& s = p.seq();
+    Clip c; c.id = "c"; c.mediaId = "take"; c.track = 0; c.start = 0; c.length = secToTicks (4); c.srcIn = 0; s.clips.push_back (c);   // 2 bars
+    int n = autoCutClip (p, "c", AutoCut::Sixteenth, false);
+    CHECK (n == 32 && p.seq().clips.size() == 32, "auto cut 1/16 on 2 bars = 32 slices (" << n << ")");
+    bool onGrid = true; for (auto& k : p.seq().clips) { double b = ticksToSec (k.start) / 0.125; onGrid &= std::abs (b - std::round (b)) * 0.125 <= 1.0 / 30 && k.srcIn == k.start; }   // video cuts land on frames
+    CHECK (onGrid, "1/16 slices on grid and keep sync");
+    p.seq().clips.clear(); c.length = secToTicks (2); p.seq().clips.push_back (c);   // 1 bar
+    n = autoCutClip (p, "c", AutoCut::Roll, false);
+    bool stut = true; for (auto& k : p.seq().clips) stut &= k.srcIn == 0;
+    CHECK (n == 16 && stut, "hi-hat roll: 4 x 1/8 + 4 x 1/16 + 8 x 1/32 stutter slices (" << n << ")");
+    p.seq().clips.clear(); c.length = secToTicks (2); p.seq().clips.push_back (c);
+    n = autoCutClip (p, "c", AutoCut::Eighth, true, 7);
+    int switches = 0; for (size_t i = 1; i < p.seq().clips.size(); ++i) switches += p.seq().clips[i].mediaId != p.seq().clips[i - 1].mediaId;
+    CHECK (n == 8 && switches >= 6, "auto cut with angle switching (" << switches << " switches)");
+    p.seq().clips.clear(); c.length = secToTicks (2); p.seq().clips.push_back (c);
+    for (double t : { 0.3, 0.8, 1.55 }) p.song.events.push_back ({ secToTicks (t), EventType::HiHat, 1, 1 });
+    CHECK (autoCutClip (p, "c", AutoCut::HiHat, false) == 4, "auto cut on detected hi-hats");
+
+    // presets
+    auto dir = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("isfx_presets"); dir.deleteRecursively(); dir.createDirectory();
+    UserPreset up; up.name = "My Night Look"; up.fx.set ("contrast", 1.3f); up.fx.set ("grain", .4f); juce::File wf; juce::String err;
+    CHECK (saveUserPreset (up, wf, err, dir), "save user preset " << err);
+    auto all = loadUserPresets (dir);
+    CHECK (all.size() == 1 && all[0].name == "My Night Look" && std::abs (all[0].fx.get ("grain", 0) - .4f) < 1e-6, "user preset round-trip");
+
+    // template: made at 120 BPM, applied to a 140 BPM song -> every cut on the new grid
+    Project src = Project::makeNew(); src.song = p.song; src.media = p.media;
+    for (int i = 0; i < 8; ++i) { Clip k; k.id = newId(); k.mediaId = i % 2 ? "take" : "take2"; k.track = 0; k.start = secToTicks (i * 0.25); k.length = secToTicks (0.25); k.srcIn = k.start; src.seq().clips.push_back (k); }
+    auto tf = dir.getChildFile ("t.isfxtemplate");
+    CHECK (saveEditTemplate (src, src.seq(), "Eighth Flip", tf, err), "save edit template " << err);
+    Project dst = Project::makeNew(); dst.media = p.media; dst.song.valid = true; dst.song.bpm = 140; dst.song.gridOffset = secToTicks (0.2); dst.song.duration = secToTicks (10);
+    CHECK (applyEditTemplate (dst, tf, err), "apply template " << err);
+    bool grid = true; int vids = 0;
+    for (auto& k : dst.seq().clips) { if (dst.seq().tracks[(size_t) k.track].kind != TrackKind::Video) continue; ++vids;
+        double b = dst.song.beatAt (k.start) * 2; grid &= std::abs (b - std::round (b)) * (30.0 / 140) <= 1.0 / 30 + 1e-6; }   // within one video frame of the 1/8 grid
+    CHECK (dst.seq().name == "Eighth Flip" && vids >= 40 && grid, "template re-locked to 140 BPM grid (" << vids << " clips)");
+    dir.deleteRecursively();
+}
+
 int main (int argc, char** argv)
 {
     juce::ignoreUnused (argc, argv);
@@ -418,6 +465,7 @@ int main (int argc, char** argv)
     testLut();
     testExport();
     testRender();
+    testAutoCutAndPresets();
     std::cout << (failures == 0 ? "ALL TESTS PASSED" : "FAILURES: ") << (failures ? juce::String (failures) : juce::String()) << "\n";
     return failures;
 }

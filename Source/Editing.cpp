@@ -428,3 +428,97 @@ std::vector<int> generateEdits (Project& p, juce::uint32 seed, const juce::Strin
     return idx;
 }
 }
+
+namespace isfx
+{
+juce::StringArray autoCutNames() { return { "1/4", "1/8", "1/16", "1/32", "Triplets", "Hi-hats", "Kicks", "Snares", "Roll (1/8 > 1/16 > 1/32)" }; }
+
+int autoCutClip (Project& p, const juce::String& clipId, AutoCut mode, bool switchAngles, juce::uint32 seed)
+{
+    auto& s = p.seq();
+    auto* cp = s.findClip (clipId);
+    if (cp == nullptr || cp->locked || cp->track < 0 || cp->track >= (int) s.tracks.size() || s.tracks[(size_t) cp->track].locked) return 0;
+    const Clip orig = *cp;
+    const bool video = s.tracks[(size_t) orig.track].kind == TrackKind::Video;
+    SongAnalysis g = p.song;
+    if (! g.valid) { g = SongAnalysis(); g.bpm = 120; g.gridOffset = 0; }
+    const Ticks a = orig.start, b = orig.end();
+    auto q = [&] (Ticks t) { return video ? quantizeToFrame (t, p.fps) : t; };
+    std::vector<Ticks> pts;
+    std::vector<bool> stutter;
+    Ticks rollStart = -1;
+    auto grid = [&] (int per, Ticks from, Ticks to)
+    {
+        auto n0 = (juce::int64) std::ceil (g.beatAt (from) * per - 1e-9), n1 = (juce::int64) std::floor (g.beatAt (to) * per + 1e-9);
+        for (auto n = n0; n <= n1; ++n) { Ticks t = q (g.subdivTime (n, per)); if (t > a && t < b) pts.push_back (t); }
+    };
+    switch (mode)
+    {
+        case AutoCut::Quarter: grid (1, a, b); break;
+        case AutoCut::Eighth: grid (2, a, b); break;
+        case AutoCut::Sixteenth: grid (4, a, b); break;
+        case AutoCut::ThirtySecond: grid (8, a, b); break;
+        case AutoCut::Triplet: grid (3, a, b); break;
+        case AutoCut::HiHat: case AutoCut::Kick: case AutoCut::Snare:
+        {
+            auto ty = mode == AutoCut::HiHat ? EventType::HiHat : mode == AutoCut::Kick ? EventType::Kick : EventType::Snare;
+            Ticks minGap = secToTicks (video ? 1.0 / p.fps : 0.01);
+            for (auto& e : p.song.events)
+                if (e.type == ty && e.time > a + minGap && e.time < b - minGap && (pts.empty() || e.time - pts.back() >= minGap)) pts.push_back (q (e.time));
+            break;
+        }
+        case AutoCut::Roll:
+        {
+            // the roll fills the clip's last bar (or the whole clip if shorter): 2 beats of 1/8, 1 of 1/16, 1 of 1/32
+            double barB = g.beatsPerBar;
+            double endBeat = g.beatAt (b), startBeat = std::max (g.beatAt (a), endBeat - barB);
+            double span = endBeat - startBeat;
+            rollStart = q (g.gridTime (startBeat));
+            if (rollStart > a) pts.push_back (rollStart);
+            struct Seg { double from, to; int per; } segs[3] = { { 0, .5, 2 }, { .5, .75, 4 }, { .75, 1, 8 } };
+            for (auto& sg : segs)
+            {
+                double f = startBeat + span * sg.from, t = startBeat + span * sg.to;
+                int per = std::max (1, (int) std::lround (sg.per * barB / std::max (0.25, span) * span / barB));
+                double step = (t - f) / std::max (1.0, std::round ((t - f) * per));
+                for (double x = f; x < t - 1e-6; x += step) { Ticks tt = q (g.gridTime (x)); if (tt > a && tt < b) pts.push_back (tt); }
+            }
+            break;
+        }
+    }
+    std::sort (pts.begin(), pts.end());
+    pts.erase (std::unique (pts.begin(), pts.end()), pts.end());
+    if (pts.empty()) return 0;
+
+    s.clips.erase (std::remove_if (s.clips.begin(), s.clips.end(), [&] (const Clip& c) { return c.id == clipId; }), s.clips.end());
+    std::vector<Ticks> edges { a }; edges.insert (edges.end(), pts.begin(), pts.end()); edges.push_back (b);
+    juce::Random rng ((juce::int64) seed);
+    const Ticks rollSrc = rollStart >= 0 ? orig.srcAt (std::max (a, rollStart)) : 0;
+    juce::String lastMedia = orig.mediaId;
+    int made = 0;
+    for (size_t i = 0; i + 1 < edges.size(); ++i)
+    {
+        Clip k = orig; k.id = newId();
+        k.start = edges[i]; k.length = edges[i + 1] - edges[i];
+        if (k.length <= 0) continue;
+        k.srcIn = orig.srcAt (k.start);
+        if (i > 0) { k.transIn = TransitionType::Cut; k.transLen = 0; }
+        if (mode == AutoCut::Roll && rollStart >= 0 && k.start >= rollStart) k.srcIn = rollSrc;   // stutter
+        if (switchAngles && video && i > 0 && mode != AutoCut::Roll)
+        {
+            auto takes = takesCovering (p, k.start, k.length);
+            std::vector<const MediaItem*> other;
+            for (auto* m : takes) if (m->id != lastMedia) other.push_back (m);
+            if (! other.empty())
+            {
+                auto* m = other[(size_t) rng.nextInt ((int) other.size())];
+                k.mediaId = m->id; k.srcIn = k.start - m->sync.offset; k.speed = 1.0;
+            }
+        }
+        lastMedia = k.mediaId;
+        s.clips.push_back (k); ++made;
+    }
+    s.sortClips();
+    return made;
+}
+}
