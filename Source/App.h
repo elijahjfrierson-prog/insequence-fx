@@ -149,6 +149,7 @@ public:
     std::function<void (const juce::Array<juce::File>&, int track, Ticks at)> onFilesDropped;   // from Finder/Explorer
     std::function<void (const juce::String& title, const juce::String& def, std::function<void (juce::String)>)> onAskText;
     std::function<void (const juce::StringArray& clipIds)> onSyncClips;
+    std::function<void (const juce::String&)> onStatus;
     std::function<void (int track)> onTrackPlugins;                       // right-click an audio track header   // right-click Sync clip(s) to audio
     bool isInterestedInFileDrag (const juce::StringArray&) override { return true; }
     void filesDropped (const juce::StringArray&, int x, int y) override;
@@ -185,6 +186,7 @@ private:
     juce::String dragClip;
     Ticks dragStart = 0, dragOrig = 0; int dragTrack = 0;
     Ticks snapGuide = -1;
+    bool dragOut = false;   // a Move dragged off the tracks: release pulls the clips out
     Ticks magnetSnap (Ticks t, Ticks len);
     Project beforeDrag;
 };

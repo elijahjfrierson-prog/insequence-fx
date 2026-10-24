@@ -60,6 +60,7 @@ void Preview::run()
         if (W <= 0 || H <= 0 || p == nullptr) continue;
         if (clearReq.exchange (false)) renderer.clearSources();
         auto t0 = juce::Time::getMillisecondCounterHiRes();
+        renderer.setLive (live.load());
         renderer.render (*p, p->seq(), t, W, H, px, decH);
         const double ms = juce::Time::getMillisecondCounterHiRes() - t0;
         lastMs = ms;

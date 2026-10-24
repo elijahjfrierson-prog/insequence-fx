@@ -68,6 +68,9 @@ private:
     bool exportSequence (const Project& p, int seqIndex, const ExportJob& job, ProgressCb, std::function<bool()> cancelled, juce::String& err);
     void fileMenu();
     void presetsMenu();
+    void savePage();
+    void saveTemplateDialog (std::function<void()> after = {});
+    void applyTemplateFile (const juce::File&);
     void pluginsMenu();
     void trackPluginsMenu (int track);
     void askText (const juce::String& title, const juce::String& def, std::function<void (juce::String)> cb);
@@ -91,7 +94,7 @@ private:
         redoBtn { "Redo", juce::Colour (0xffc9ced8), juce::Colours::white, juce::Colour (0xff2aa8ff) },
         startBtn { "Go to start", juce::Colour (0xffc9ced8), juce::Colours::white, juce::Colour (0xff2aa8ff) };
     juce::ComboBox qualityBox;
-    juce::TextButton fileBtn { "File" }, importBtn { "Import" }, presetsBtn { "Presets" },
+    juce::TextButton fileBtn { "File" }, saveBtn { "Save" }, importBtn { "Import" }, presetsBtn { "Presets" },
         pluginsBtn { "Plug-ins" }, playBtn { "Play" }, exportBtn { "EXPORT" },
         toolBtn[4] { juce::TextButton ("E Select"), juce::TextButton ("P Paint"), juce::TextButton ("D Delete"), juce::TextButton ("C Cut") },
         snapBtn { "S Snap" }, rippleBtn { "R Ripple" }, magnetBtn { "Magnet" }, gridBtn { "B Grid" }, chopBtn { "CHOP" }, genBtn { "GENERATE 3 EDITS" },

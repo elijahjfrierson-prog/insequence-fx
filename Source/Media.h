@@ -1,4 +1,6 @@
 #pragma once
+#include <deque>
+#include <memory>
 #include <functional>
 #include "Model.h"
 #include <juce_graphics/juce_graphics.h>
@@ -74,6 +76,32 @@ private:
     AVFrame* nextAv = nullptr;
     Ticks curPts = -1, nextPts = -1;
     bool eof = false, haveNext = false, curConverted = false, fastScale = false;
+};
+
+// Playback decoder: a background thread keeps the next few frames converted ahead of the requested time, and
+// pre-rolls clips before their cut, so the render thread never waits on a seek or a decode (late = show last frame).
+class PrefetchDecoder : private juce::Thread
+{
+public:
+    PrefetchDecoder();
+    ~PrefetchDecoder() override;
+    bool open (const juce::File& f, int maxHeight, juce::String& error);
+    int rotation() const { return rot; }
+    void prime (Ticks t);                                   // start decoding at t, don't wait
+    // newest decoded frame at or before t (or just after, after a pre-roll); waits up to waitMs if none is ready
+    std::shared_ptr<const Frame> get (Ticks t, int waitMs);
+private:
+    void run() override;
+    VideoDecoder dec;
+    int rot = 0;
+    Ticks frameDur = 1;
+    juce::CriticalSection lock;
+    juce::WaitableEvent wake, ready;
+    std::deque<std::shared_ptr<Frame>> q;
+    std::vector<std::shared_ptr<Frame>> pool;
+    Ticks target = -1;
+    bool atEnd = false;
+    size_t maxAhead = 6;     // shrinks for big frames so RAM stays bounded (~48 MB per source)
 };
 
 juce::Image frameToImage (const Frame& f, int rotation);

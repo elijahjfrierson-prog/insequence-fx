@@ -391,13 +391,14 @@ juce::StringArray layoutNames()
 
 void Renderer::clearSources() { sources.clear(); luts.clear(); trailT = -1; }
 
-const Frame* Renderer::frameFor (const Project& p, const juce::String& mediaId, Ticks srcT, int decodeH, int& rotation, bool* opaque)
+const Frame* Renderer::frameFor (const Project& p, const juce::String& mediaId, Ticks srcT, int decodeH, int& rotation, bool* opaque, bool primeOnly)
 {
     auto* m = p.findMedia (mediaId);
     if (m == nullptr || m->missing || m->kind == MediaKind::Audio) return nullptr;
     const bool useProxy = m->kind == MediaKind::Video && decodeH > 0 && decodeH <= kProxyHeight
                           && m->proxyPath.isNotEmpty() && juce::File (m->proxyPath).existsAsFile();
-    auto key = mediaId + "@" + juce::String (decodeH) + (useProxy ? "p" : "");
+    const bool async = live && m->kind == MediaKind::Video;
+    auto key = mediaId + "@" + juce::String (decodeH) + (useProxy ? "p" : "") + (async ? "L" : "");
     // Free decoders that haven't been on screen for a while (RAM), and keep the open count bounded. Never evict a
     // source used during this render: its frame may still be waiting to be composited.
     if ((useClock & 63) == 0)
@@ -436,6 +437,19 @@ const Frame* Renderer::frameFor (const Project& p, const juce::String& mediaId, 
             }
             else src->failed = true;
         }
+        else if (async)
+        {
+            src->pre = std::make_unique<PrefetchDecoder>();
+            src->fps = m->fps > 0 ? m->fps : 30.0;
+            juce::String err;
+            if (useProxy && src->pre->open (juce::File (m->proxyPath), decodeH, err)) src->rotation = m->rotation;
+            else
+            {
+                src->pre = std::make_unique<PrefetchDecoder>();
+                if (! src->pre->open (f, decodeH, err)) src->failed = true;
+                else src->rotation = src->pre->rotation();
+            }
+        }
         else
         {
             src->dec = std::make_unique<VideoDecoder>();
@@ -459,6 +473,15 @@ const Frame* Renderer::frameFor (const Project& p, const juce::String& mediaId, 
         return &src->still;
     }
     if (opaque) *opaque = true;
+    if (src->pre != nullptr)
+    {
+        if (primeOnly) { src->pre->prime (srcT); return nullptr; }
+        // only the very first frame of a source may wait (briefly); after that a late frame repeats the last one
+        if (auto f = src->pre->get (juce::jmax ((Ticks) 0, srcT), src->shown ? 0 : 80)) src->shown = std::move (f);
+        if (opaque == nullptr && src->shown != nullptr && srcT - src->shown->pts > secToTicks (2.5 / src->fps)) ++late;
+        return src->shown.get();
+    }
+    if (primeOnly) return nullptr;
     if (auto* fr = src->dec->frameRef (juce::jmax ((Ticks) 0, srcT))) return fr;
     return nullptr;
 }
@@ -523,6 +546,18 @@ bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int 
         if (t >= c.start && t < c.end()) active.push_back (&c);
     }
     std::stable_sort (active.begin(), active.end(), [] (const Clip* a, const Clip* b) { return a->track < b->track; });
+    if (live)
+    {
+        // pre-roll: open + seek the next clips ~1.5 s before their cut, so the cut itself costs nothing
+        std::vector<const Clip*> soon;
+        for (auto& c : s.clips)
+            if (c.enabled && c.start > t && c.start - t <= secToTicks (1.5) && c.track >= 0 && c.track < (int) s.tracks.size()
+                && s.tracks[(size_t) c.track].kind == TrackKind::Video && ! s.tracks[(size_t) c.track].hidden && c.mediaId.isNotEmpty())
+                soon.push_back (&c);
+        std::sort (soon.begin(), soon.end(), [] (const Clip* a, const Clip* b) { return a->start < b->start; });
+        int rr = 0;
+        for (size_t i = 0; i < soon.size() && i < 3; ++i) frameFor (p, soon[i]->mediaId, soon[i]->srcAt (soon[i]->start), decodeH, rr, nullptr, true);
+    }
     {
         // a full-frame opaque layer hides everything under it: skip decoding/drawing those (keeps deep stacks cheap)
         const auto& CPo = clipParams();

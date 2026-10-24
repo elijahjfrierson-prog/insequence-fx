@@ -37,10 +37,17 @@ public:
     // decodeH caps decoded source height (preview uses a small value, export the output height)
     bool render (const Project& p, const Sequence& s, Ticks t, int W, int H, std::vector<juce::uint8>& rgba, int decodeH);
     void clearSources();   // close decoders (project changed / media relinked)
+    // Live playback: decode on background threads ahead of the playhead and pre-roll upcoming cuts; render never
+    // waits on a decoder (a late frame repeats the last one). Paused/export rendering stays synchronous and exact.
+    void setLive (bool b) { live = b; }
+    int lateFrames() const { return late; }
 private:
     struct Source
     {
         std::unique_ptr<VideoDecoder> dec;
+        std::unique_ptr<PrefetchDecoder> pre;
+        std::shared_ptr<const Frame> shown;
+        double fps = 30;
         Frame still, last;
         bool failed = false;
         int rotation = 0;
@@ -49,8 +56,11 @@ private:
     };
     static constexpr size_t kMaxOpenSources = 8;   // each 4K decoder holds ~100+ MB of frame pools
     juce::uint32 renderStart = 0;
+    bool live = false;
+    int late = 0;
     juce::uint32 useClock = 0;
-    const Frame* frameFor (const Project& p, const juce::String& mediaId, Ticks srcT, int decodeH, int& rotation, bool* opaque = nullptr);
+    const Frame* frameFor (const Project& p, const juce::String& mediaId, Ticks srcT, int decodeH, int& rotation, bool* opaque = nullptr,
+                          bool primeOnly = false);
     std::shared_ptr<Lut3D> lutFor (const juce::String& path);
 
     std::map<juce::String, std::unique_ptr<Source>> sources;
