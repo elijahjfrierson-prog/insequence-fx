@@ -750,8 +750,81 @@ static void benchPlayback (const juce::String& files, int W, int H, int decodeH,
               << " ms, RSS " << rss0 << " -> " << rssMB() << " MB\n";
 }
 
+// ISFX_SOAK="a.mp4:b.mov:c.mov" ISFX_SOAK_Q=1|2|4|8 ISFX_SOAK_SEC=60: the app's playback loop for a long run.
+// The playhead follows the wall clock (looping the clips) and each render shows the newest frame, so a slow frame
+// is dropped rather than slowing playback. Quality tiers decode exactly like Preview (1080 / div, proxies at <= 540).
+static void soakPlayback (const juce::String& files, int q, double secs)
+{
+    const int tier = std::max (90, 1080 / std::max (1, q));
+    const bool proxy = tier <= 540;
+    Project p = Project::makeNew();
+    auto& s = p.seq();
+    int track = 0; Ticks loopLen = secToTicks (3600);
+    for (auto& f : juce::StringArray::fromTokens (files, ":", ""))
+    {
+        auto pr = probeMedia (juce::File (f));
+        if (! pr.ok) continue;
+        MediaItem m; m.id = newId(); m.path = f; m.name = juce::File (f).getFileName(); m.kind = MediaKind::Video;
+        m.duration = pr.duration; m.fps = pr.fps; m.width = pr.width; m.height = pr.height; m.rotation = pr.rotation;
+        if (proxy)
+        {
+            auto pf = proxyFileFor (juce::File (f), 540); juce::String err;
+            if (! pf.existsAsFile()) makeProxy (juce::File (f), pf, 540, ticksToSec (pr.duration), [] (double) { return true; }, err);
+            m.proxyPath = pf.getFullPathName();
+        }
+        p.media.push_back (m);
+        if (track > 0) track = insertVideoTrack (s);
+        Clip c; c.id = newId(); c.mediaId = m.id; c.track = track; c.start = 0; c.length = pr.duration;
+        loopLen = std::min (loopLen, pr.duration);
+        if (track > 0) { c.fx.set ("scale", 0.55f); c.fx.set ("posX", track == 1 ? -0.4f : 0.4f); }
+        s.clips.push_back (c); s.sortClips();
+        ++track;
+    }
+    if (! lookLibrary().empty()) applyLook (s.fx, lookLibrary()[0], 1.0f);
+    // output size: the app's preview panel (~960x540 on a 1600x960 window), capped by the tier like Preview does
+    const int H = std::min (540, tier), W = H * 16 / 9;
+    Renderer r; std::vector<juce::uint8> o;
+    const long rss0 = rssMB();
+    long rssPeak = rss0;
+    std::vector<double> times;
+    const double t0 = juce::Time::getMillisecondCounterHiRes();
+    double now = 0, nextRep = 10;
+    std::cout << "SOAK quality " << (q <= 1 ? juce::String ("Full") : "1/" + juce::String (q)) << " (decode " << tier << (proxy ? "p proxy" : " original")
+              << ", output " << W << "x" << H << ", " << track << " stacked layers + look), RSS start " << rss0 << " MB\n";
+    int lastN = 0; double lastT = 0;
+    while ((now = (juce::Time::getMillisecondCounterHiRes() - t0) / 1000.0) < secs)
+    {
+        const double a = juce::Time::getMillisecondCounterHiRes();
+        r.render (p, s, secToTicks (now) % loopLen, W, H, o, tier);
+        times.push_back (juce::Time::getMillisecondCounterHiRes() - a);
+        rssPeak = std::max (rssPeak, rssMB());
+        if (now >= nextRep)
+        {
+            const int n = (int) times.size() - lastN;
+            std::cout << "  t=" << juce::String (nextRep, 0) << "s  " << juce::String (n / (now - lastT), 1) << " fps  RSS " << rssMB() << " MB\n";
+            lastN = (int) times.size(); lastT = now; nextRep += 10;
+        }
+    }
+    auto sorted = times; std::sort (sorted.begin(), sorted.end());
+    auto pct = [&] (double f) { return sorted.empty() ? 0.0 : sorted[(size_t) std::min<double> ((double) sorted.size() - 1, f * (double) sorted.size())]; };
+    double sum = 0; for (auto x : times) sum += x;
+    const int shown = (int) times.size(), expected30 = (int) (secs * 30);
+    int over100 = 0; for (auto x : times) over100 += x > 100;
+    std::cout << "  RESULT " << shown << " frames in " << juce::String (secs, 0) << " s = " << juce::String (shown / secs, 1) << " fps"
+              << " | avg " << juce::String (sum / std::max (1, shown), 1) << " ms, median " << juce::String (pct (0.5), 1) << ", 99% " << juce::String (pct (0.99), 1)
+              << ", worst " << juce::String (sorted.empty() ? 0.0 : sorted.back(), 1) << " ms | frames >100 ms: " << over100
+              << " | dropped vs 30 fps: " << std::max (0, expected30 - shown)
+              << " | RSS start " << rss0 << " MB, end " << rssMB() << " MB, peak " << rssPeak << " MB\n";
+}
+
 int main (int argc, char** argv)
 {
+    if (auto b = juce::SystemStats::getEnvironmentVariable ("ISFX_SOAK", {}); b.isNotEmpty())
+    {
+        soakPlayback (b, juce::SystemStats::getEnvironmentVariable ("ISFX_SOAK_Q", "2").getIntValue(),
+                      juce::SystemStats::getEnvironmentVariable ("ISFX_SOAK_SEC", "60").getDoubleValue());
+        return 0;
+    }
     if (auto b = juce::SystemStats::getEnvironmentVariable ("ISFX_BENCH", {}); b.isNotEmpty())
     {
         benchPlayback (b, 960, 540, 540, true, false);
