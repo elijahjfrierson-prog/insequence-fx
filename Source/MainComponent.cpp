@@ -1050,7 +1050,9 @@ public:
         renameB.onClick = [this]
         {
             int r = tplList.getSelectedRow();
-            if (r >= 0 && r < tpls.files.size() && onRename) onRename (tpls.files[r], [sp = juce::Component::SafePointer<SavePage> (this)] { if (sp) sp->reload(); });
+            juce::Component::SafePointer<SavePage> sp (this);
+            std::function<void()> done = [sp] { if (sp != nullptr) sp->reload(); };
+            if (r >= 0 && r < tpls.files.size() && onRename) onRename (tpls.files[r], done);
         };
         deleteB.onClick = [this]
         {
