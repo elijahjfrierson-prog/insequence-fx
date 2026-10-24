@@ -173,6 +173,44 @@ juce::var MediaPanel::getDragSourceDescription (const juce::SparseSet<int>& rows
     return "media:" + st.project.media[(size_t) rows[0]].id;
 }
 
+FxLibrary::FxLibrary (AppState& s) : st (s)
+{
+    rows.push_back ({ "TRANSITIONS  (drag onto a cut)", {}, {}, true });
+    auto tn = transitionNames();
+    for (int i = 1; i < tn.size(); ++i)
+        rows.push_back ({ tn[i], "transition:" + juce::String (i), "Drag onto the cut between two clips. It locks to that cut and moves with it. Set length, amount and direction in the Inspector.", false });
+    rows.push_back ({ "EFFECTS & LOOKS  (drag onto clips)", {}, {}, true });
+    for (auto& l : lookLibrary())
+        rows.push_back ({ l.name, "look:" + l.name, l.help + "\nDrop on a clip for an effect layer over it, or on empty space for a 2-bar layer. Trim, move, fade (opacity) or disable it like any clip.", false });
+    list.setModel (this); list.setRowHeight (22);
+    list.setColour (juce::ListBox::backgroundColourId, theme::panel);
+    addAndMakeVisible (list);
+}
+
+void FxLibrary::paint (juce::Graphics& g)
+{
+    g.fillAll (theme::panel);
+    g.setColour (theme::dim); g.setFont (11.0f);
+    g.drawText ("EFFECTS  -  drag to the timeline", 10, 4, getWidth() - 20, 16, juce::Justification::centredLeft);
+}
+
+void FxLibrary::paintListBoxItem (int row, juce::Graphics& g, int w, int h, bool sel)
+{
+    if (row < 0 || row >= getNumRows()) return;
+    auto& r = rows[(size_t) row];
+    if (r.header) { g.fillAll (theme::panel2); g.setColour (theme::accent); g.setFont (juce::FontOptions (10.5f, juce::Font::bold)); }
+    else { g.fillAll (sel ? theme::accent.withAlpha (0.25f) : row % 2 ? theme::panel : theme::panel2.darker (0.2f)); g.setColour (juce::Colours::white.withAlpha (0.9f)); g.setFont (12.5f); }
+    g.drawText (r.label, 10, 0, w - 14, h, juce::Justification::centredLeft, true);
+}
+
+juce::var FxLibrary::getDragSourceDescription (const juce::SparseSet<int>& sel)
+{
+    if (sel.isEmpty() || sel[0] >= getNumRows() || rows[(size_t) sel[0]].header) return {};
+    return rows[(size_t) sel[0]].desc;
+}
+
+juce::String FxLibrary::getTooltipForRow (int row) { return row >= 0 && row < getNumRows() ? rows[(size_t) row].help : juce::String(); }
+
 void MediaPanel::listBoxItemDoubleClicked (int row, const juce::MouseEvent&)
 {
     if (row >= 0 && row < getNumRows() && onAddToTimeline) onAddToTimeline (st.project.media[(size_t) row].id);

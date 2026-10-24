@@ -516,6 +516,85 @@ static void testRender()
     gradF.deleteFile(); greenF.deleteFile();
 }
 
+static void testLayoutsStacksAndLayers()
+{
+    auto redF = writePng ("isfx_red.png", [] (int, int) { return juce::Colour (230, 20, 20); });
+    auto blueF = writePng ("isfx_blue.png", [] (int, int) { return juce::Colour (20, 20, 230); });
+    Project p = Project::makeNew(); p.aspectW = 9; p.aspectH = 16;
+    auto addImg = [&] (const juce::File& f) { MediaItem m; m.id = newId(); m.path = f.getFullPathName(); m.kind = MediaKind::Image; m.width = 320; m.height = 180; m.duration = secToTicks (10); p.media.push_back (m); return m.id; };
+    auto red = addImg (redF), blue = addImg (blueF);
+    auto& s = p.seq();
+    int v2 = insertVideoTrack (s);
+    Clip a; a.id = "a"; a.mediaId = red; a.track = 0; a.start = 0; a.length = secToTicks (2);
+    Clip b = a; b.id = "b"; b.mediaId = blue; b.track = v2;
+    applyLayout (p, a, 1); applyLayout (p, b, 2);
+    s.clips.push_back (a); s.clips.push_back (b); s.sortClips();
+    const int w = 108, h = 192;
+    auto px = [&] (const Sequence& sq, Ticks t) { Renderer r; std::vector<juce::uint8> o; r.render (p, sq, t, w, h, o, 0); return o; };
+    auto at = [&] (const std::vector<juce::uint8>& o, int x, int y, int ch) { return (int) o[((size_t) y * w + x) * 4 + (size_t) ch]; };
+    auto split = px (s, secToTicks (0.5));
+    CHECK (at (split, 54, 40, 0) > 120 && at (split, 54, 40, 2) < 100 && at (split, 54, 150, 2) > 120 && at (split, 54, 150, 0) < 100,
+           "9:16 split screen: one clip on top, another underneath");
+    {
+        Sequence sq = s; sq.clips.clear();
+        Clip c = a; c.fx = {}; c.fx.set ("scaleY", 0.5f); sq.clips.push_back (c);
+        auto o = px (sq, secToTicks (0.5));
+        CHECK (at (o, 54, 3, 0) < 30 && at (o, 54, 96, 0) > 120, "non-uniform Scale Y squashes the clip");
+        sq.clips[0].fx = {}; sq.clips[0].fx.set ("cropT", 0.5f);
+        o = px (sq, secToTicks (0.5));
+        CHECK (at (o, 54, 20, 0) < 30 && at (o, 54, 170, 0) > 120, "crop top removes the upper half");
+        // effect layer above darkens everything under it while the playhead is over it
+        FxStack dark; dark.set ("exposure", -2.0f);
+        auto plain = px (sq, secToTicks (0.5));
+        auto fxId = addEffectClip (sq, dark, "Dark", 0, secToTicks (1));
+        auto withFx = px (sq, secToTicks (0.5)), after = px (sq, secToTicks (1.5));
+        CHECK (fxId.isNotEmpty() && at (withFx, 54, 170, 0) < at (plain, 54, 170, 0) - 40 && at (after, 54, 170, 0) == at (plain, 54, 170, 0),
+               "effect layer applies only while it plays");
+    }
+    // 1000 stacked clips: a full-frame opaque top layer hides the rest, so the frame costs about one layer
+    {
+        Sequence one = s; one.clips.clear();
+        Clip c = a; c.fx = {}; one.clips.push_back (c);
+        Sequence big = one;
+        for (int i = 0; i < 999; ++i) { Clip k = c; k.id = newId(); k.mediaId = i % 2 ? red : blue; k.track = insertVideoTrack (big); big.clips.push_back (k); }
+        big.sortClips();
+        Renderer r; std::vector<juce::uint8> o;
+        auto time = [&] (const Sequence& sq) { r.render (p, sq, 0, 540, 960, o, 0);
+            auto t0 = std::chrono::steady_clock::now(); for (int i = 0; i < 3; ++i) r.render (p, sq, secToTicks (i / 30.0), 540, 960, o, 0);
+            return std::chrono::duration<double, std::milli> (std::chrono::steady_clock::now() - t0).count() / 3; };
+        double ms1 = time (one), ms1000 = time (big);
+        CHECK (big.tracks.size() > 1000 && ms1000 < ms1 * 3 + 20, "1000 stacked clips render in " << ms1000 << " ms (1 clip: " << ms1 << " ms)");
+    }
+    // drag the song: synced takes, grid and hits follow; free slow-mo stays
+    {
+        Project q = Project::makeNew();
+        MediaItem song; song.id = "song"; song.kind = MediaKind::Audio; song.duration = secToTicks (60); q.media.push_back (song); q.songId = "song";
+        MediaItem take; take.id = "take"; take.kind = MediaKind::Video; take.duration = secToTicks (60); take.sync.status = SyncInfo::Synced; q.media.push_back (take);
+        MediaItem broll; broll.id = "broll"; broll.kind = MediaKind::Video; broll.duration = secToTicks (60); q.media.push_back (broll);
+        q.song.valid = true; q.song.gridOffset = secToTicks (0.3); q.song.events.push_back ({ secToTicks (1), EventType::Kick, 1, 1 });
+        auto& sq = q.seq();
+        int at0 = -1; for (int i = 0; i < (int) sq.tracks.size(); ++i) if (sq.tracks[(size_t) i].kind == TrackKind::Audio) { at0 = i; break; }
+        if (at0 < 0) at0 = sq.addTrack (TrackKind::Audio, "SONG");
+        Clip sc; sc.id = "s"; sc.mediaId = "song"; sc.track = at0; sc.length = secToTicks (60); sc.locked = true; sq.clips.push_back (sc);
+        Clip tc; tc.id = "t"; tc.mediaId = "take"; tc.track = 0; tc.start = secToTicks (4); tc.length = secToTicks (2); tc.srcIn = secToTicks (4); sq.clips.push_back (tc);
+        Clip fc; fc.id = "f"; fc.mediaId = "broll"; fc.track = 0; fc.start = secToTicks (10); fc.length = secToTicks (2); fc.speed = 0.5; sq.clips.push_back (fc);
+        CHECK (shiftSong (q, secToTicks (8), true) && sq.findClip ("s")->start == secToTicks (8) && sq.findClip ("t")->start == secToTicks (12)
+               && sq.findClip ("f")->start == secToTicks (10) && q.song.gridOffset == secToTicks (8.3) && q.song.events[0].time == secToTicks (9),
+               "dragging the song moves synced clips, grid and hits; free slow-mo stays");
+        CHECK (shiftSong (q, -secToTicks (100), false) && sq.findClip ("s")->start == 0 && sq.findClip ("t")->start == secToTicks (12),
+               "Alt-drag moves only the song and stops at 0");
+    }
+    // transitions dropped near a cut lock onto the incoming clip
+    {
+        Sequence sq = s; sq.clips.clear();
+        Clip x = a; x.fx = {}; x.length = secToTicks (1); Clip y = x; y.id = "y"; y.start = secToTicks (1);
+        sq.clips.push_back (x); sq.clips.push_back (y);
+        CHECK (setTransitionAtCut (sq, 0, secToTicks (1.08), TransitionType::Flash, secToTicks (0.25), secToTicks (0.3))
+               && sq.findClip ("y")->transIn == TransitionType::Flash && sq.findClip ("y")->transLen == secToTicks (0.25), "drag-drop transition locks to the cut");
+    }
+    redF.deleteFile(); blueF.deleteFile();
+}
+
 static void testAutoCutAndPresets()
 {
     Project p = Project::makeNew();
@@ -577,6 +656,7 @@ int main (int argc, char** argv)
     testExport();
     testRender();
     testAutoCutAndPresets();
+    testLayoutsStacksAndLayers();
     std::cout << (failures == 0 ? "ALL TESTS PASSED" : "FAILURES: ") << (failures ? juce::String (failures) : juce::String()) << "\n";
     return failures;
 }

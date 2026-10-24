@@ -336,19 +336,57 @@ inline void adjustTones (float* c, float bright, float hi, float sh)
 }
 
 // ---------------------------------------------------------------- sources
+void applyLayout (const Project& p, Clip& c, int slot)
+{
+    static const float r[][4] { { 0, 0, 1, 1 }, { 0, 0, 1, .5f }, { 0, .5f, 1, .5f }, { 0, 0, .5f, 1 }, { .5f, 0, .5f, 1 },
+                                { 0, 0, 1, 1 / 3.f }, { 0, 1 / 3.f, 1, 1 / 3.f }, { 0, 2 / 3.f, 1, 1 / 3.f },
+                                { 0, 0, .5f, .5f }, { .5f, 0, .5f, .5f }, { 0, .5f, .5f, .5f }, { .5f, .5f, .5f, .5f } };
+    slot = juce::jlimit (0, 11, slot);
+    for (auto* id : { "scale", "scaleX", "scaleY", "posX", "posY", "rotation", "cropL", "cropR", "cropT", "cropB", "maskShape", "maskW", "maskH", "maskFeather", "maskInvert" })
+        c.fx.p.erase (id);
+    if (slot == 0) { c.fx.set ("reframe", 0); return; }
+    float x = r[slot][0], y = r[slot][1], w = r[slot][2], h = r[slot][3];
+    int W = 1920, H = 1080; outputSize (p, 1080, W, H);
+    float mw = 16, mh = 9;
+    if (auto* m = p.findMedia (c.mediaId); m != nullptr && m->width > 0 && m->height > 0)
+    {
+        bool sw = m->rotation == 90 || m->rotation == 270;
+        mw = (float) (sw ? m->height : m->width); mh = (float) (sw ? m->width : m->height);
+    }
+    // fill mode scales the source to cover the frame; shrink it so it just covers its slot, then mask to the slot
+    float base = std::max ((float) W / mw, (float) H / mh), need = std::max (w * W / mw, h * H / mh);
+    c.fx.set ("reframe", 0);
+    c.fx.set ("scale", juce::jlimit (0.1f, 4.0f, need / base));
+    c.fx.set ("posX", (x + w * 0.5f - 0.5f) * 2); c.fx.set ("posY", (y + h * 0.5f - 0.5f) * 2);
+    c.fx.set ("maskShape", 2); c.fx.set ("maskW", w); c.fx.set ("maskH", h); c.fx.set ("maskFeather", 0.0f);
+}
+
+juce::StringArray layoutNames()
+{
+    return { "Full frame", "Top half", "Bottom half", "Left half", "Right half", "Top third", "Middle third", "Bottom third",
+             "Grid top-left", "Grid top-right", "Grid bottom-left", "Grid bottom-right" };
+}
+
 void Renderer::clearSources() { sources.clear(); luts.clear(); trailT = -1; }
 
-const Frame* Renderer::frameFor (const Project& p, const juce::String& mediaId, Ticks srcT, int decodeH, int& rotation)
+const Frame* Renderer::frameFor (const Project& p, const juce::String& mediaId, Ticks srcT, int decodeH, int& rotation, bool* opaque)
 {
     auto* m = p.findMedia (mediaId);
     if (m == nullptr || m->missing || m->kind == MediaKind::Audio) return nullptr;
     const bool useProxy = m->kind == MediaKind::Video && decodeH > 0 && decodeH <= kProxyHeight
                           && m->proxyPath.isNotEmpty() && juce::File (m->proxyPath).existsAsFile();
     auto key = mediaId + "@" + juce::String (decodeH) + (useProxy ? "p" : "");
+    if (sources.size() >= kMaxOpenSources && sources.find (key) == sources.end())
+    {
+        auto oldest = sources.begin();
+        for (auto it = sources.begin(); it != sources.end(); ++it) if (it->second->used < oldest->second->used) oldest = it;
+        sources.erase (oldest);
+    }
     auto& src = sources[key];
     if (src == nullptr)
     {
         src = std::make_unique<Source>();
+        src->used = ++useClock;
         juce::File f (m->path);
         if (m->kind == MediaKind::Image)
         {
@@ -381,8 +419,19 @@ const Frame* Renderer::frameFor (const Project& p, const juce::String& mediaId, 
         }
     }
     if (src->failed) return nullptr;
+    src->used = ++useClock;
     rotation = src->rotation;
-    if (m->kind == MediaKind::Image) return &src->still;
+    if (m->kind == MediaKind::Image)
+    {
+        if (src->opaque < 0)
+        {
+            src->opaque = 1;
+            for (size_t i = 3; i < src->still.rgba.size(); i += 4) if (src->still.rgba[i] < 255) { src->opaque = 0; break; }
+        }
+        if (opaque) *opaque = src->opaque == 1;
+        return &src->still;
+    }
+    if (opaque) *opaque = true;
     if (auto* fr = src->dec->frameRef (juce::jmax ((Ticks) 0, srcT))) return fr;
     return nullptr;
 }
@@ -408,7 +457,21 @@ bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int 
     const double T = ticksToSec (t);
     const int frameIdx = (int) ticksToFrame (t, p.fps);
     const auto& SP = sequenceParams();
-    auto sv = [&] (const char* id) { return fxValue (s.fx, SP, id); };
+    // effect clips (no media) on visible layers blend their look into the sequence FX while the playhead is over them
+    FxStack postFx = s.fx;
+    for (auto& c : s.clips)
+        if (c.mediaId.isEmpty() && c.enabled && t >= c.start && t < c.end() && c.track >= 0 && c.track < (int) s.tracks.size()
+            && ! s.tracks[(size_t) c.track].hidden)
+        {
+            for (auto& [k, v] : c.fx.p)
+            {
+                auto* d = findParam (SP, k);
+                float base = postFx.get (k, d ? d->def : 0.0f);
+                postFx.set (k, base + (v - base) * c.opacity);
+            }
+            if (c.fx.lutPath.isNotEmpty()) postFx.lutPath = c.fx.lutPath;
+        }
+    auto sv = [&] (const char* id) { return fxValue (postFx, SP, id); };
     const BeatEnv be = beatEnvAt (p.song, t);
     const float minWH = (float) std::min (W, H);
 
@@ -432,6 +495,24 @@ bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int 
         if (t >= c.start && t < c.end()) active.push_back (&c);
     }
     std::stable_sort (active.begin(), active.end(), [] (const Clip* a, const Clip* b) { return a->track < b->track; });
+    {
+        // a full-frame opaque layer hides everything under it: skip decoding/drawing those (keeps deep stacks cheap)
+        const auto& CPo = clipParams();
+        auto covers = [&] (const Clip& c)
+        {
+            auto* m = p.findMedia (c.mediaId);
+            if (m == nullptr || m->missing || m->kind == MediaKind::Audio || c.opacity < 1.0f) return false;
+            if (c.transIn != TransitionType::Cut && c.transLen > 0 && t < c.start + c.transLen) return false;
+            auto v = [&] (const char* id) { return fxValue (c.fx, CPo, id); };
+            int rf = (int) std::lround (v ("reframe"));
+            return (rf == 0 || rf == 2) && v ("blend") < 0.5f && v ("chromaKey") <= 0 && v ("lumaKey") <= 0 && v ("maskShape") < 0.5f
+                && v ("scale") >= 1 && v ("scaleX") >= 1 && v ("scaleY") >= 1 && v ("posX") == 0 && v ("posY") == 0 && v ("rotation") == 0
+                && v ("cropL") <= 0 && v ("cropR") <= 0 && v ("cropT") <= 0 && v ("cropB") <= 0
+                && [&] { int rr = 0; bool op = false; return frameFor (p, c.mediaId, c.srcAt (t), decodeH, rr, &op) != nullptr && op; }();
+        };
+        for (int i = (int) active.size() - 1; i > 0; --i)
+            if (covers (*active[(size_t) i])) { active.erase (active.begin(), active.begin() + i); break; }
+    }
 
     auto drawLayer = [&] (const Clip& c, float alphaMul, float extraScale, float whip, int transKind, float prog)
     {
@@ -445,6 +526,9 @@ bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int 
         float sFill = std::max (W / rw, H / rh), sFit = std::min (W / rw, H / rh);
         float base = reframe == 0 ? sFill : sFit;
         float scale = base * cv ("scale") * camZoom * extraScale;
+        const float sclX = scale * cv ("scaleX"), sclY = scale * cv ("scaleY");
+        const float cL = cv ("cropL"), cR = cv ("cropR"), cT = cv ("cropT"), cB = cv ("cropB");
+        const bool cropped = cL > 0 || cR > 0 || cT > 0 || cB > 0;
         float rotRad = -cv ("rotation") * juce::MathConstants<float>::pi / 180.0f + trRot;
         float cr = std::cos (rotRad), sr = std::sin (rotRad);
         bool mirror = cv ("mirror") > 0.5f;
@@ -489,9 +573,14 @@ bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int 
                 {
                     float px = x + 0.5f - W * 0.5f - offX - (taps > 1 ? tapLen * ((float) k / (taps - 1) - 0.5f) : 0.0f);
                     float py = y + 0.5f - H * 0.5f - offY;
-                    float ux = (px * cr - py * sr) / scale / trStretch, uy = (px * sr + py * cr) / scale;
+                    float ux = (px * cr - py * sr) / sclX / trStretch, uy = (px * sr + py * cr) / sclY;
                     if (mirror) ux = -ux;
                     if (trMirror > 0) { float f = trDir < 2 ? std::abs (ux) : ux; ux = mixf (ux, f, trMirror); if (trDir >= 2) uy = mixf (uy, std::abs (uy), trMirror); }
+                    if (cropped)
+                    {
+                        float cx = ux + rw * 0.5f, cy = uy + rh * 0.5f;
+                        if (cx < cL * rw || cx > (1 - cR) * rw || cy < cT * rh || cy > (1 - cB) * rh) continue;
+                    }
                     float o[4];
                     if (sampleFrame (*fr, rot, ux + rw * 0.5f, uy + rh * 0.5f, o)) { for (int q = 0; q < 4; ++q) acc[q] += o[q]; ++got; }
                 }
@@ -717,7 +806,7 @@ bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int 
     }
 
     // ---- grade + LUT + acid color
-    auto lut = lutFor (s.fx.lutPath);
+    auto lut = lutFor (postFx.lutPath);
     const float gExp = std::pow (2.0f, sv ("exposure")) * (1 - sv ("hatStrobe") * 0.35f * be.hat);
     const float temp = sv ("temperature"), tint = sv ("tint"), con = sv ("contrast"), sat = sv ("saturation");
     const float fade = sv ("fade"), splitT = sv ("splitTone"), crush = sv ("crush"), lutMix = sv ("lutMix");
@@ -725,7 +814,7 @@ bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int 
     bool invert = sv ("invertHits") > 0 && be.snareIdx >= 0 && be.sinceSnare < 2.0 / p.fps && hash3 (be.snareIdx, 77, 1) < sv ("invertHits");
     float hueAng = hueC * ((float) T * 1.4f + be.kickIdx * 0.6f);
     const float gBri = sv ("brightness"), gHi = sv ("highlights"), gSh = sv ("shadows");
-    const ToneCurve gCurve = makeCurve (s.fx, SP);
+    const ToneCurve gCurve = makeCurve (postFx, SP);
     float ch = std::cos (hueAng), shh = std::sin (hueAng);
     parallelRows (H, [&] (int y) {
         for (int x = 0; x < W; ++x)

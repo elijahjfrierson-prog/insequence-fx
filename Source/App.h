@@ -141,6 +141,7 @@ public:
     bool switchAngles = true;
     double pxPerSec = 60;   // zoom
     double scrollSec = 0;
+    int vScroll = 0;        // track rows scrolled up (deep layer stacks)
 private:
     static constexpr int kRuler = 28, kHeader = 70;
     int trackY (int i) const;
@@ -149,7 +150,7 @@ private:
     int secToX (double s) const { return kHeader + (int) std::lround ((s - scrollSec) * pxPerSec); }
     const Clip* clipAt (juce::Point<int> p, int& edge) const;
     AppState& st;
-    enum class Drag { None, Move, TrimL, TrimR, Range, Scrub } drag = Drag::None;
+    enum class Drag { None, Move, TrimL, TrimR, Range, Scrub, Song } drag = Drag::None;
     juce::String dragClip;
     Ticks dragStart = 0, dragOrig = 0; int dragTrack = 0;
     Ticks snapGuide = -1;
@@ -177,6 +178,24 @@ private:
     AppState& st;
     juce::ListBox list;
     juce::TextButton importBtn { "Import" }, syncBtn { "Auto Sync" };
+};
+
+// drag source for transitions (drop on a cut) and effects/looks (drop on a clip or empty space = effect layer)
+class FxLibrary : public juce::Component, public juce::DragAndDropContainer, private juce::ListBoxModel
+{
+public:
+    explicit FxLibrary (AppState& s);
+    void resized() override { list.setBounds (getLocalBounds().reduced (6).withTrimmedTop (20)); }
+    void paint (juce::Graphics&) override;
+private:
+    struct Row { juce::String label, desc, help; bool header = false; };
+    std::vector<Row> rows;
+    int getNumRows() override { return (int) rows.size(); }
+    void paintListBoxItem (int, juce::Graphics&, int, int, bool) override;
+    juce::var getDragSourceDescription (const juce::SparseSet<int>&) override;
+    juce::String getTooltipForRow (int) override;
+    AppState& st;
+    juce::ListBox list;
 };
 
 class Inspector : public juce::Component

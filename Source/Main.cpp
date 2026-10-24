@@ -104,7 +104,7 @@ public:
             {
                 int rc = window->mc->runSelfTest (out);
                 setApplicationReturnValue (rc);
-                quit();
+                closeWindowThenQuit();
             });
             return;
         }
@@ -145,7 +145,18 @@ public:
     }
 
     void shutdown() override { window.reset(); juce::LookAndFeel::setDefaultLookAndFeel (nullptr); settings.reset(); }
-    void systemRequestedQuit() override { quit(); }
+    void systemRequestedQuit() override { closeWindowThenQuit(); }
+
+    // tear the window down while the message loop is still running (Windows crashes destroying the peer during shutdown)
+    void closeWindowThenQuit()
+    {
+        if (window != nullptr) window->setVisible (false);
+        juce::MessageManager::callAsync ([this]
+        {
+            window.reset();
+            juce::MessageManager::callAsync ([] { quit(); });
+        });
+    }
 private:
     std::unique_ptr<MainWindow> window;
     std::unique_ptr<juce::PropertiesFile> settings;

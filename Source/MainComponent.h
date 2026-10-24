@@ -80,6 +80,7 @@ private:
     Preview preview { st };
     Timeline timeline { st };
     MediaPanel media { st };
+    FxLibrary fxlib { st };
     Inspector inspector { st };
     juce::TooltipWindow tips { this, 450 };
     juce::ScrollBar hscroll { false };
@@ -95,6 +96,15 @@ private:
     std::unique_ptr<juce::FileChooser> chooser;
     std::unique_ptr<juce::AlertWindow> dialog;
     bool selfTest = false;
+    bool showMedia = true, showInspector = true, maxPreview = false, maxTimeline = false;
+    float timelineFrac = 0.38f;
+    int splitY = 0; bool draggingSplit = false;
+    void mouseMove (const juce::MouseEvent&) override;
+    void mouseDown (const juce::MouseEvent&) override;
+    void mouseDrag (const juce::MouseEvent&) override;
+    void mouseUp (const juce::MouseEvent&) override { draggingSplit = false; }
+    juce::TextButton mediaTgl { "Media" }, inspTgl { "Inspector" }, maxPrevBtn { "Max Preview" }, maxTlBtn { "Max Timeline" };
+    juce::VBlankAttachment vblank { this, [this] { if (player.isPlaying()) timerCallback(); } };
     juce::uint32 genSeed = 1;
 };
 }

@@ -131,7 +131,7 @@ MainComponent::MainComponent()
 {
     setLookAndFeel (&lnf);
     juce::LookAndFeel::setDefaultLookAndFeel (&lnf);
-    for (auto* c : std::initializer_list<juce::Component*> { &preview, &timeline, &media, &inspector, &hscroll, &fileBtn, &undoBtn, &redoBtn, &importBtn,
+    for (auto* c : std::initializer_list<juce::Component*> { &preview, &timeline, &media, &fxlib, &inspector, &mediaTgl, &inspTgl, &maxPrevBtn, &maxTlBtn, &hscroll, &fileBtn, &undoBtn, &redoBtn, &importBtn,
             &presetsBtn, &pluginsBtn, &playBtn, &exportBtn, &snapBtn, &rippleBtn, &magnetBtn, &gridBtn, &chopBtn, &genBtn, &keepBtn, &delRangeBtn, &zoomIn, &zoomOut,
             &seqBox, &aspectBox, &snapBox, &chopBox, &styleBox, &status })
         addAndMakeVisible (c);
@@ -232,6 +232,15 @@ MainComponent::MainComponent()
         });
     };
     inspector.onEdited = [this] { refresh (false); };
+    mediaTgl.setTooltip ("Show or collapse the Media + Effects column."); inspTgl.setTooltip ("Show or collapse the Inspector.");
+    maxPrevBtn.setTooltip ("Maximize the preview (hides the side panels and timeline). Click again to restore.");
+    maxTlBtn.setTooltip ("Maximize the timeline. Drag the bar above the timeline tools to resize it freely.");
+    for (auto* b : { &mediaTgl, &inspTgl, &maxPrevBtn, &maxTlBtn }) b->setClickingTogglesState (true);
+    mediaTgl.setToggleState (true, juce::dontSendNotification); inspTgl.setToggleState (true, juce::dontSendNotification);
+    mediaTgl.onClick = [this] { showMedia = mediaTgl.getToggleState(); resized(); };
+    inspTgl.onClick = [this] { showInspector = inspTgl.getToggleState(); resized(); };
+    maxPrevBtn.onClick = [this] { maxPreview = maxPrevBtn.getToggleState(); if (maxPreview) { maxTimeline = false; maxTlBtn.setToggleState (false, juce::dontSendNotification); } resized(); };
+    maxTlBtn.onClick = [this] { maxTimeline = maxTlBtn.getToggleState(); if (maxTimeline) { maxPreview = false; maxPrevBtn.setToggleState (false, juce::dontSendNotification); } resized(); };
     media.onImport = [this]
     {
         chooser = std::make_unique<juce::FileChooser> ("Import media", juce::File(), "*.mp3;*.wav;*.flac;*.aif;*.aiff;*.m4a;*.mp4;*.mov;*.m4v;*.mkv;*.avi;*.mxf;*.webm;*.png;*.jpg;*.jpeg;*.cube;*.isfxpreset;*.isfxtemplate");
@@ -282,13 +291,22 @@ void MainComponent::resized()
     top.removeFromLeft (200);
     auto place = [] (juce::Rectangle<int>& row, juce::Component& c, int w) { c.setBounds (row.removeFromLeft (w)); row.removeFromLeft (5); };
     place (top, fileBtn, 56); place (top, undoBtn, 56); place (top, redoBtn, 56); place (top, importBtn, 70); place (top, presetsBtn, 76); place (top, pluginsBtn, 80);
+    top.removeFromLeft (6); place (top, mediaTgl, 58); place (top, inspTgl, 72); place (top, maxPrevBtn, 92); place (top, maxTlBtn, 98);
     exportBtn.setBounds (top.removeFromRight (110)); top.removeFromRight (6);
     playBtn.setBounds (top.removeFromRight (70)); top.removeFromRight (10);
     aspectBox.setBounds (top.removeFromRight (230)); top.removeFromRight (6);
     seqBox.setBounds (top.removeFromRight (240)); top.removeFromRight (6);
     status.setBounds (top);
 
-    auto bottom = r.removeFromBottom (juce::jmax (300, (int) (getHeight() * 0.38)));
+    const bool showBottom = ! maxPreview;
+    int bh = maxTimeline ? r.getHeight() - 120 : juce::jlimit (200, std::max (200, r.getHeight() - 160), (int) (r.getHeight() * timelineFrac));
+    auto bottom = r.removeFromBottom (showBottom ? bh : 0);
+    if (showBottom) r.removeFromBottom (6);   // drag bar
+    splitY = bottom.getY() - 3;
+    for (auto* c : std::initializer_list<juce::Component*> { &timeline, &hscroll, &zoomIn, &zoomOut, &snapBox, &snapBtn, &rippleBtn, &magnetBtn, &gridBtn,
+                                                           &chopBox, &chopBtn, &styleBox, &genBtn, &keepBtn, &delRangeBtn })
+        c->setVisible (showBottom);
+    for (auto& b : toolBtn) b.setVisible (showBottom);
     auto bar = bottom.removeFromTop (36).reduced (6, 5);
     for (int i = 0; i < 4; ++i) place (bar, toolBtn[i], 76);
     bar.removeFromLeft (8);
@@ -302,8 +320,15 @@ void MainComponent::resized()
     zoomIn.setBounds (bar.removeFromRight (30)); bar.removeFromRight (4); zoomOut.setBounds (bar.removeFromRight (30));
     hscroll.setBounds (bottom.removeFromBottom (14));
     timeline.setBounds (bottom);
-    media.setBounds (r.removeFromLeft (290));
-    inspector.setBounds (r.removeFromRight (340));
+    const bool side = ! maxPreview;
+    media.setVisible (side && showMedia); fxlib.setVisible (side && showMedia); inspector.setVisible (side && showInspector);
+    if (side && showMedia)
+    {
+        auto left = r.removeFromLeft (290);
+        fxlib.setBounds (left.removeFromBottom ((int) (left.getHeight() * 0.42f)));
+        media.setBounds (left);
+    }
+    if (side && showInspector) inspector.setBounds (r.removeFromRight (340));
     preview.setBounds (r);
     preview.requestFrame (st.playhead);
 }
@@ -363,6 +388,22 @@ void MainComponent::timerCallback()
     timeline.ensureVisible (t);
     hscroll.setCurrentRange (timeline.scrollSec, (timeline.getWidth() - 70) / timeline.pxPerSec, juce::dontSendNotification);
     timeline.repaint(); preview.repaint();
+}
+
+void MainComponent::mouseMove (const juce::MouseEvent& e)
+{
+    setMouseCursor (! maxPreview && std::abs (e.y - splitY) <= 4 ? juce::MouseCursor::UpDownResizeCursor : juce::MouseCursor::NormalCursor);
+}
+
+void MainComponent::mouseDown (const juce::MouseEvent& e) { draggingSplit = ! maxPreview && std::abs (e.y - splitY) <= 4; }
+
+void MainComponent::mouseDrag (const juce::MouseEvent& e)
+{
+    if (! draggingSplit) return;
+    float avail = (float) std::max (1, getHeight() - 44);
+    timelineFrac = juce::jlimit (0.15f, 0.85f, (float) (getHeight() - e.y) / avail);
+    maxTimeline = false; maxTlBtn.setToggleState (false, juce::dontSendNotification);
+    resized();
 }
 
 void MainComponent::scrollBarMoved (juce::ScrollBar*, double start) { timeline.scrollSec = start; timeline.repaint(); }

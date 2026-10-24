@@ -6,7 +6,7 @@ Timeline::Timeline (AppState& s) : st (s) { setWantsKeyboardFocus (false); }
 
 int Timeline::trackY (int i) const
 {
-    int y = kRuler;
+    int y = kRuler - vScroll;
     const auto& tr = st.project.seq().tracks;
     for (int k = 0; k < i && k < (int) tr.size(); ++k) y += tr[(size_t) k].height;
     return y;
@@ -15,7 +15,8 @@ int Timeline::trackY (int i) const
 int Timeline::trackAt (int y) const
 {
     const auto& tr = st.project.seq().tracks;
-    int yy = kRuler;
+    if (y < kRuler) return -1;
+    int yy = kRuler - vScroll;
     for (int k = 0; k < (int) tr.size(); ++k) { if (y >= yy && y < yy + tr[(size_t) k].height) return k; yy += tr[(size_t) k].height; }
     return y < kRuler ? -1 : (int) tr.size() - 1;
 }
@@ -94,6 +95,7 @@ void Timeline::paint (juce::Graphics& g)
         int x0 = secToX (ticksToSec (c.start)), x1 = secToX (ticksToSec (c.end()));
         if (x1 < kHeader || x0 > W) continue;
         juce::Rectangle<int> r (x0, trackY (c.track) + 2, std::max (2, x1 - x0), tr.height - 5);
+        if (r.getBottom() < 0 || r.getY() > getHeight()) continue;
         const MediaItem* m = p.findMedia (c.mediaId);
         bool audio = tr.kind == TrackKind::Audio, sel = st.selected.contains (c.id);
         auto base = audio ? juce::Colour (0xff1f6f5c) : juce::Colour (0xff3a3f7a);
@@ -223,7 +225,10 @@ void Timeline::paint (juce::Graphics& g)
     if (px >= kHeader)
     {
         g.setColour (accent); g.drawVerticalLine (px, 0, (float) H);
-        juce::Path tri; tri.addTriangle ((float) px - 5, 0, (float) px + 5, 0, (float) px, 8); g.fillPath (tri);
+        juce::Path tri;   // grab handle: drag to scrub
+        tri.addRoundedRectangle ((float) px - 6, 1, 12, 12, 2.5f);
+        tri.addTriangle ((float) px - 6, 12, (float) px + 6, 12, (float) px, 19);
+        g.fillPath (tri);
     }
 }
 
@@ -287,6 +292,14 @@ void Timeline::mouseDown (const juce::MouseEvent& e)
         }
         return;
     }
+    if (pos.x >= kHeader && std::abs (pos.x - secToX (ticksToSec (st.playhead))) <= 6 && ! e.mods.isPopupMenu())
+    {
+        int ed = 0;
+        if (pos.y < kRuler || clipAt (pos, ed) == nullptr || ed == 0)
+        {
+            drag = Drag::Scrub; repaint(); return;   // grabbed the playhead
+        }
+    }
     if (pos.y < kRuler)
     {
         drag = Drag::Range;
@@ -303,6 +316,13 @@ void Timeline::mouseDown (const juce::MouseEvent& e)
     switch (tool)
     {
         case Tool::Select:
+            if (c && st.project.songId.isNotEmpty() && c->mediaId == st.project.songId && edge == 0 && ! trackLocked)
+            {
+                // drag the song: synced footage, grid and drum hits follow it (Alt = move the song alone)
+                st.selected = { c->id }; dragClip = c->id; dragOrig = c->start; dragTrack = c->track; drag = Drag::Song;
+                if (onEdited) onEdited();
+                break;
+            }
             if (c)
             {
                 if (e.mods.isShiftDown() || e.mods.isCommandDown()) { if (st.selected.contains (c->id)) st.selected.removeString (c->id); else st.selected.add (c->id); }
@@ -366,7 +386,15 @@ void Timeline::mouseDrag (const juce::MouseEvent& e)
             st.rangeA = std::min (a, b); st.rangeB = std::max (a, b);
             repaint(); break;
         }
-        case Drag::Scrub: if (onSeek) onSeek (t); break;
+        case Drag::Scrub: if (onSeek) onSeek (e.mods.isAltDown() ? t : st.snapT (t)); break;
+        case Drag::Song:
+        {
+            st.project = beforeDrag;
+            Ticks delta = magnetSnap (dragOrig + (t - dragStart), 0) - dragOrig;
+            shiftSong (st.project, delta, ! e.mods.isAltDown());
+            if (onEdited) onEdited();
+            break;
+        }
         case Drag::Move:
         {
             st.project = beforeDrag;
@@ -411,11 +439,11 @@ void Timeline::mouseUp (const juce::MouseEvent&)
         if (st.magnetic) fillGaps (st.project.seq(), st.project, 0);
         if (onEdited) onEdited();
     }
-    if (drag == Drag::Move || drag == Drag::TrimL || drag == Drag::TrimR)
+    if (drag == Drag::Move || drag == Drag::TrimL || drag == Drag::TrimR || drag == Drag::Song)
     {
         if (toVar (beforeDrag).toString() != toVar (st.project).toString())
         {
-            st.history.push (beforeDrag, drag == Drag::Move ? "Move" : "Trim");
+            st.history.push (beforeDrag, drag == Drag::Move ? "Move" : drag == Drag::Song ? "Move song" : "Trim");
             st.dirty = true;
         }
     }
@@ -434,7 +462,13 @@ void Timeline::zoomBy (float f, int anchorX)
 
 void Timeline::mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& w)
 {
-    if (e.mods.isCommandDown() || e.mods.isCtrlDown()) { zoomBy (std::pow (1.15f, w.deltaY * 6), e.x); return; }
+    if (e.mods.isCommandDown() || e.mods.isCtrlDown() || e.mods.isAltDown()) { zoomBy (std::pow (1.15f, w.deltaY * 6), e.x); return; }
+    if (e.mods.isShiftDown() || e.x < kHeader)
+    {
+        int total = 0; for (auto& tk : st.project.seq().tracks) total += tk.height;
+        vScroll = juce::jlimit (0, std::max (0, total - (getHeight() - kRuler) + 20), vScroll - (int) std::lround (w.deltaY * 240));
+        repaint(); return;
+    }
     float d = std::abs (w.deltaX) > std::abs (w.deltaY) ? w.deltaX : w.deltaY;
     scrollSec = std::max (0.0, scrollSec - d * 300 / pxPerSec);
     repaint();
@@ -451,6 +485,40 @@ void Timeline::ensureVisible (Ticks t)
 void Timeline::itemDropped (const SourceDetails& d)
 {
     auto desc = d.description.toString();
+    const Ticks beat = st.project.song.valid ? secToTicks (st.project.song.beatSec()) : secToTicks (0.5);
+    if (desc.startsWith ("transition:"))
+    {
+        auto ty = (TransitionType) desc.fromFirstOccurrenceOf (":", false, false).getIntValue();
+        int tr = trackAt (d.localPosition.y);
+        Ticks at = secToTicks (std::max (0.0, xToSec (d.localPosition.x)));
+        Ticks reach = secToTicks (40.0 / pxPerSec) + beat;
+        Sequence probe = st.project.seq();
+        if (setTransitionAtCut (probe, tr, at, ty, beat / 2, reach))
+        {
+            st.edit ("Add transition");
+            setTransitionAtCut (st.project.seq(), tr, at, ty, beat / 2, reach);
+            if (onEdited) onEdited();
+        }
+        return;
+    }
+    if (desc.startsWith ("look:"))
+    {
+        auto name = desc.fromFirstOccurrenceOf (":", false, false);
+        for (auto& l : lookLibrary())
+            if (l.name == name)
+            {
+                FxStack fx; applyLook (fx, l, 1.0f);
+                int edge = 0; const Clip* under = clipAt (d.localPosition, edge);
+                Ticks at = under ? under->start : magnetSnap (secToTicks (std::max (0.0, xToSec (d.localPosition.x))), 0);
+                Ticks len = under ? under->length : beat * st.project.song.beatsPerBar * 2;
+                st.edit ("Add effect");
+                auto id = addEffectClip (st.project.seq(), fx, l.name, at, len);
+                if (id.isNotEmpty()) st.selected = { id };
+                if (onEdited) onEdited();
+                break;
+            }
+        return;
+    }
     if (! desc.startsWith ("media:")) return;
     int tr = trackAt (d.localPosition.y);
     st.edit ("Add clip");
@@ -527,6 +595,10 @@ void Timeline::clipMenu (const juce::String& id)
     m.addItem (31, "Add Frame Hold Segment (1 beat)", ! lk && video && st.playhead > c->start && st.playhead < c->end());
     m.addSubMenu ("Transition in", trans, ! lk);
     m.addSubMenu ("Scale / Reframe", scale, video && ! lk);
+    juce::PopupMenu lay; auto lns = layoutNames();
+    for (int i = 0; i < lns.size(); ++i) lay.addItem (400 + i, lns[i], video && ! lk);
+    lay.addSeparator(); lay.addItem (420, "Stack selected clips (top to bottom)", video && ! lk && many);
+    m.addSubMenu ("Layout / Split screen", lay, video && ! lk);
     m.addItem (32, "Remove Effects", ! lk && (! c->fx.p.empty() || c->opacity != 1.0f || c->transIn != TransitionType::Cut));
     m.addSeparator();
     m.addItem (33, "Rename...");
@@ -556,6 +628,16 @@ void Timeline::clipMenu (const juce::String& id)
                 k->transIn = (TransitionType) (r - 300);
                 if (k->transLen == 0 && r > 300) k->transLen = beat / 2;
             }
+        }
+        if (r >= 400 && r < 412) { st.edit ("Layout"); for (auto& i : sel) if (auto* k = sq.findClip (i)) applyLayout (st.project, *k, r - 400); }
+        if (r == 420)
+        {
+            st.edit ("Stack layout");
+            std::vector<Clip*> v; for (auto& i : sel) if (auto* k = sq.findClip (i)) v.push_back (k);
+            std::sort (v.begin(), v.end(), [] (const Clip* a, const Clip* b) { return a->track > b->track; });
+            static const int two[] { 1, 2 }, three[] { 5, 6, 7 }, four[] { 8, 9, 10, 11 };
+            const int* slots = v.size() == 2 ? two : v.size() == 3 ? three : four;
+            for (size_t k = 0; k < v.size() && k < 4; ++k) applyLayout (st.project, *v[k], slots[k]);
         }
         if (r >= 40 && r <= 42) { st.edit ("Scale to frame"); for (auto& i : sel) if (auto* k = sq.findClip (i)) k->fx.set ("reframe", (float) (r - 40)); }
         if (r == 10) { st.clipboard = copyClips (sq, sel); st.edit ("Cut"); deleteClips (sq, sel, false); st.selected.clear(); }

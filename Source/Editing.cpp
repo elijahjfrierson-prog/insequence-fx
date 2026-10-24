@@ -162,6 +162,60 @@ int insertVideoTrack (Sequence& s)
     return at;
 }
 
+juce::String addEffectClip (Sequence& s, const FxStack& fx, const juce::String& name, Ticks at, Ticks len)
+{
+    if (len <= 0) return {};
+    int tr = insertVideoTrack (s);
+    Clip c; c.id = newId(); c.track = tr; c.start = std::max<Ticks> (0, at); c.length = len; c.fx = fx; c.name = name;
+    s.clips.push_back (c); s.sortClips();
+    return c.id;
+}
+
+bool setTransitionAtCut (Sequence& s, int track, Ticks at, TransitionType ty, Ticks len, Ticks maxDist)
+{
+    if (track < 0 || track >= (int) s.tracks.size() || s.tracks[(size_t) track].locked) return false;
+    Clip* best = nullptr; Ticks bestD = maxDist + 1;
+    for (auto& c : s.clips)
+        if (c.track == track && ! c.locked)
+        {
+            Ticks d = std::abs (c.start - at);
+            if (d < bestD) { bestD = d; best = &c; }
+        }
+    if (best == nullptr) return false;
+    best->transIn = ty;
+    if (ty == TransitionType::Cut) best->transLen = 0;
+    else best->transLen = juce::jlimit<Ticks> (1, std::max<Ticks> (1, best->length), len);
+    return true;
+}
+
+bool shiftSong (Project& p, Ticks delta, bool withSynced)
+{
+    if (p.songId.isEmpty() || delta == 0) return false;
+    Ticks minStart = std::numeric_limits<Ticks>::max();
+    for (auto& sq : p.sequences) for (auto& c : sq.clips) if (c.mediaId == p.songId) minStart = std::min (minStart, c.start);
+    if (minStart == std::numeric_limits<Ticks>::max()) return false;
+    delta = std::max (delta, -minStart);
+    if (delta == 0) return false;
+    auto synced = [&] (const Clip& c)
+    {
+        auto* m = p.findMedia (c.mediaId);
+        return m != nullptr && c.speed == 1.0 && (m->sync.status == SyncInfo::Synced || m->sync.status == SyncInfo::Manual);
+    };
+    for (auto& sq : p.sequences)
+    {
+        for (auto& c : sq.clips)
+            if (c.mediaId == p.songId || (withSynced && synced (c))) c.start = std::max<Ticks> (0, c.start + delta);
+        sq.sortClips();
+    }
+    if (withSynced)
+    {
+        for (auto& m : p.media) if (m.sync.status == SyncInfo::Synced || m.sync.status == SyncInfo::Manual) m.sync.offset += delta;
+        p.song.gridOffset += delta;
+        for (auto& e : p.song.events) e.time += delta;
+    }
+    return true;
+}
+
 void settleClips (Sequence& s, const juce::StringArray& ids)
 {
     std::vector<Clip> moved;

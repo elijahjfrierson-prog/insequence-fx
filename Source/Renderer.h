@@ -12,6 +12,9 @@ const std::vector<AspectPreset>& aspectPresets();
 void outputSize (const Project& p, int shortSide, int& W, int& H);
 
 juce::StringArray blendModeNames();
+// split-screen slots (e.g. 9:16 with one clip on top and another underneath): sets scale/position and a slot mask
+juce::StringArray layoutNames();
+void applyLayout (const Project& p, Clip& c, int slot);
 
 // Composites a sequence frame: tracks + transforms + keys/masks + blend modes, then grade, LUT, film,
 // beat-reactive, acid and generated overlay FX. Preview and export use this same code path.
@@ -30,8 +33,12 @@ private:
         Frame still, last;
         bool failed = false;
         int rotation = 0;
+        juce::uint32 used = 0;
+        int opaque = -1;    // stills: -1 unknown, 0 has transparency, 1 opaque
     };
-    const Frame* frameFor (const Project& p, const juce::String& mediaId, Ticks srcT, int decodeH, int& rotation);
+    static constexpr size_t kMaxOpenSources = 24;
+    juce::uint32 useClock = 0;
+    const Frame* frameFor (const Project& p, const juce::String& mediaId, Ticks srcT, int decodeH, int& rotation, bool* opaque = nullptr);
     std::shared_ptr<Lut3D> lutFor (const juce::String& path);
 
     std::map<juce::String, std::unique_ptr<Source>> sources;

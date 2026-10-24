@@ -28,7 +28,13 @@ bool moveClips (Sequence& s, const juce::StringArray& ids, Ticks delta, int trac
 bool trimClip (Sequence& s, const Project& p, const juce::String& id, bool leftEdge, Ticks newEdge);
 juce::String paintClip (Sequence& s, const juce::String& templateId, Ticks at, int track);
 juce::String addMediaClip (Project& p, const juce::String& mediaId, int track, Ticks at, Ticks maxLen = 0);
-int insertVideoTrack (Sequence&);                                    // new top video layer, returns its index
+int insertVideoTrack (Sequence&);
+// effect layer: a clip with no media whose FX apply to everything under it while it plays (trim/move like any clip)
+juce::String addEffectClip (Sequence&, const FxStack& fx, const juce::String& name, Ticks at, Ticks len);
+// drops a transition on the cut nearest `at` on a track (it belongs to the incoming clip, so it stays locked to that cut)
+bool setTransitionAtCut (Sequence&, int track, Ticks at, TransitionType, Ticks len, Ticks maxDist);
+// moves the song; with `withSynced` every synced clip, the beat grid and drum events move with it (sync stays intact)
+bool shiftSong (Project&, Ticks delta, bool withSynced);                                    // new top video layer, returns its index
 void settleClips (Sequence&, const juce::StringArray& ids);          // dropped clips cover what is under them
 void fillGaps (Sequence&, const Project&, int track);                // sync-safe magnet: extend neighbours, never slide
 void clearTrackRange (Sequence& s, int track, Ticks a, Ticks b);

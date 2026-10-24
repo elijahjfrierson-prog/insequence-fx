@@ -9,6 +9,10 @@ on:
 permissions:
   contents: write
 
+env:
+  # every CI build gets a higher version so each installer upgrades the previous install in place
+  VERSION: 1.0.${{ github.run_number }}
+
 jobs:
   build:
     name: ${{ matrix.name }}
@@ -116,7 +120,7 @@ jobs:
           APP="/Applications/InSequence FX.app"
           test -x "$APP/Contents/MacOS/InSequence FX" || { echo "app not in /Applications"; exit 1; }
           v=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP/Contents/Info.plist")
-          echo "installed version: $v"; test "$v" = "1.0.0"
+          echo "installed version: $v"; test "$v" = "$VERSION"
           "$APP/Contents/MacOS/InSequence FX" --selftest
 
       - name: Package Setup.exe (Windows)
