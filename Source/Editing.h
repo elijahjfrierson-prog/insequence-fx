@@ -45,6 +45,11 @@ juce::StringArray pasteClips (Sequence&, const std::vector<Clip>&, Ticks at);   
 juce::StringArray duplicateClips (Sequence&, const juce::StringArray& ids);         // copies placed right after the selection
 void pasteAttributes (Sequence&, const Clip& from, const juce::StringArray& ids);   // effects, opacity, volume, transition
 juce::String freezeFrame (Sequence&, const juce::String& id, Ticks at, Ticks len);  // frame hold segment, returns its id
+// rearrange: two clips trade timeline slots (track, start, length), each keeps its own shot; cut points stay put
+bool swapClipSlots (Sequence&, const Project&, const juce::String& a, const juce::String& b);
+juce::StringArray speedRampNames();
+// speed ramp preset as eased "speed" keyframes (index -1 removes the ramp); shortens the clip if the ramp runs out of source
+bool applySpeedRamp (Sequence&, const Project&, const juce::String& id, int preset);
 bool setClipSpeed (Sequence&, const Project&, const juce::String& id, double speed); // Speed/Duration: keeps the start, stops at the next clip   // overwrite helper
 
 // sync-preserving angle switch: replaces V1 content in [a,b) with cuts between synced takes
@@ -63,6 +68,8 @@ int liftClips (const Project& p, Sequence& s, const juce::StringArray& ids, bool
 // Every synced take as one full clip on its own hidden, muted video track (raw material under the edit).
 int addTakeLayers (const Project& p, Sequence& s);
 std::vector<int> generateEdits (Project& p, juce::uint32 seed, const juce::String& styleMode = {});
+// stack a fresh generated pass on new video tracks of the current sequence (keeps everything already there); returns clips added
+int stackGenerated (Project& p, juce::uint32 seed, const juce::String& styleMode = {});
 // Right-click Auto Cut: slices one clip on the grid / detected hits, or a hi-hat-style roll
 // (1/8 -> 1/16 -> 1/32 into the next bar, every slice repeating the roll's first slice = stutter).
 // switchAngles: video slices cycle through the other synced takes covering each slice.

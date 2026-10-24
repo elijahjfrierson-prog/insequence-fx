@@ -224,6 +224,7 @@ class FxLibrary : public juce::Component, public juce::DragAndDropContainer, pri
 {
 public:
     explicit FxLibrary (AppState& s);
+    void reload();   // re-scan library folders (after Import Preset)
     void resized() override { list.setBounds (getLocalBounds().reduced (6).withTrimmedTop (20)); }
     void paint (juce::Graphics&) override;
 private:

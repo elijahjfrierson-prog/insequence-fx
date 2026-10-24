@@ -405,6 +405,15 @@ juce::var MediaPanel::getDragSourceDescription (const juce::SparseSet<int>& rows
 
 FxLibrary::FxLibrary (AppState& s) : st (s)
 {
+    reload();
+    list.setModel (this); list.setRowHeight (22);
+    list.setColour (juce::ListBox::backgroundColourId, theme::panel);
+    addAndMakeVisible (list);
+}
+
+void FxLibrary::reload()
+{
+    rows.clear();
     rows.push_back ({ "TRANSITIONS  (drag onto a cut)", {}, {}, true });
     auto tn = transitionNames();
     for (int i = 1; i < tn.size(); ++i)
@@ -426,9 +435,18 @@ FxLibrary::FxLibrary (AppState& s) : st (s)
         for (auto& f : sfx)
             rows.push_back ({ f.getFileNameWithoutExtension(), "sfx:" + f.getFullPathName(), "Drop on the timeline to add this sound at that spot.", false });
     }
-    list.setModel (this); list.setRowHeight (22);
-    list.setColour (juce::ListBox::backgroundColourId, theme::panel);
-    addAndMakeVisible (list);
+    bool head = false;
+    for (auto& u : loadUserPresets())
+        if (u.clip)
+        {
+            if (! head) { rows.push_back ({ "MY PRESETS  (drag onto clips)", {}, {}, true }); head = true; }
+            rows.push_back ({ u.name, "preset:" + u.file.getFullPathName(), "Drop on a clip: applies these effects with their keyframes. Everything stays editable in the Inspector.", false });
+        }
+    auto mine = userDataDir().getChildFile ("LUTs").findChildFiles (juce::File::findFiles, true, "*.cube");
+    mine.sort();
+    if (! mine.isEmpty()) rows.push_back ({ "MY LUTS  (drag onto clips)", {}, {}, true });
+    for (auto& f : mine) rows.push_back ({ f.getFileNameWithoutExtension(), "lut:" + f.getFullPathName(), "Imported LUT. Drop on a clip for a LUT layer over it.", false });
+    list.updateContent(); list.repaint();
 }
 
 void FxLibrary::paint (juce::Graphics& g)

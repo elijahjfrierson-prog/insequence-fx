@@ -344,6 +344,25 @@ const Frame* VideoDecoder::frameRef (Ticks t)
     return &cur;
 }
 
+const Frame* VideoDecoder::peekNext()
+{
+    if (! isOpen() || curPts < 0) return nullptr;
+    if (! haveNext)
+    {
+        if (eof || ! receive (nextAv, nextPts)) return nullptr;
+        haveNext = true;
+    }
+    if (next.pts != nextPts) { convert (nextAv, next); next.pts = nextPts; }
+    return &next;
+}
+
+std::shared_ptr<const Frame> PrefetchDecoder::after (Ticks pts)
+{
+    const juce::ScopedLock sl (lock);
+    for (auto& f : q) if (f->pts > pts) return f;
+    return nullptr;
+}
+
 PrefetchDecoder::PrefetchDecoder() : juce::Thread ("ISFX prefetch") {}
 PrefetchDecoder::~PrefetchDecoder() { signalThreadShouldExit(); wake.signal(); stopThread (3000); }
 

@@ -192,6 +192,7 @@ juce::var toVar (const Project& p)
             if (c.reverse) co->setProperty ("reverse", true);
             if (c.label != 0) co->setProperty ("label", c.label);
             if (c.keep) co->setProperty ("keep", true);
+            if (c.frameInterp != 1) co->setProperty ("frameInterp", c.frameInterp);
             cl.add (juce::var (co));
         }
         o->setProperty ("clips", cl);
@@ -270,6 +271,7 @@ bool fromVar (const juce::var& v, Project& p, juce::String& error)
                                 for (auto& k : *a)
                                     if (k.size() >= 2) setKey (c, pr.name.toString(), s2t (k[0]), (float) (double) k[1], k.size() > 2 ? (int) k[2] : 0);
                     c.name = cv["name"].toString(); c.enabled = cv.hasProperty ("enabled") ? (bool) cv["enabled"] : true; c.reverse = (bool) cv["reverse"]; c.label = (int) cv["label"]; c.keep = (bool) cv["keep"];
+                    c.frameInterp = cv.hasProperty ("frameInterp") ? (int) cv["frameInterp"] : 1;
                     if (c.track >= 0 && c.track < (int) s.tracks.size()) s.clips.push_back (c);
                 }
             r.sequences.push_back (s);
@@ -351,6 +353,30 @@ float keyValue (const std::vector<Clip::Key>& k, Ticks rel)
 void applyKeyframes (Clip& c, Ticks t)
 {
     for (auto& [id, ks] : c.keys) if (! ks.empty()) c.fx.set (id, keyValue (ks, t - c.start));
+}
+
+static double rampSeg (const Clip::Key& a, const Clip::Key& b, double x)
+{
+    const double d = (double) (b.t - a.t);
+    if (d <= 0 || a.interp == 1) return std::max (0.0f, a.v) * x;
+    const double v0 = std::max (0.0f, a.v), dv = std::max (0.0f, b.v) - v0, u = x / d;
+    if (a.interp == 2) return v0 * x + dv * d * (u * u * u - u * u * u * u / 2);
+    return v0 * x + dv * x * u / 2;
+}
+
+double rampedOffset (const Clip& c, Ticks rel)
+{
+    auto it = c.keys.find ("speed");
+    if (it == c.keys.end() || it->second.empty()) return (double) rel * c.speed;
+    const auto& k = it->second;
+    if (rel <= k.front().t) return (double) rel * std::max (0.0f, k.front().v);
+    double acc = (double) k.front().t * std::max (0.0f, k.front().v);
+    for (size_t i = 0; i + 1 < k.size(); ++i)
+    {
+        if (rel <= k[i + 1].t) return acc + rampSeg (k[i], k[i + 1], (double) (rel - k[i].t));
+        acc += rampSeg (k[i], k[i + 1], (double) (k[i + 1].t - k[i].t));
+    }
+    return acc + (double) (rel - k.back().t) * std::max (0.0f, k.back().v);
 }
 
 void shiftKeys (Clip& c, Ticks delta)

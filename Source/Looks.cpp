@@ -126,6 +126,11 @@ const std::vector<ParamDef>& clipParams()
         { "maskH",      "Mask Height", 0, 1.5f, .6f, "Mask", "Mask height relative to the frame." },
         { "maskFeather","Mask Feather",0, 1, .3f, "Mask", "Soft edge of the mask." },
         { "maskInvert", "Invert Mask", 0, 1, 0, "Mask", "Show outside the mask instead of inside." },
+        { "opacity",    "Opacity",     0, 1, 1, "Composite", "Keyframeable opacity of this clip." },
+        { "blur",       "Blur",        0, 1, 0, "Stylize", "Gaussian-style blur of this clip (Premiere Gaussian Blur)." },
+        { "lensCurve",  "Lens Distortion", -1, 1, 0, "Stylize", "Barrel (negative) or pincushion (positive) lens curvature." },
+        { "posterizeTime", "Posterize Time", 0, 60, 0, "Stylize", "Plays this clip at a lower frame rate (0 = off)." },
+        { "invert",     "Invert",      0, 1, 0, "Stylize", "Inverts the colors of this clip." },
     };
     return d;
 }
@@ -148,6 +153,20 @@ const std::vector<Look>& lookLibrary()
 {
     static const std::vector<Look> L {
         { "Clean Rec709", "Color", "Neutral, no grade.", {} },
+        { "35mm Fine", "Film Grain", "Fine 35mm print grain, barely-there halation.",
+          { { "grain", .35f }, { "grainSize", .6f }, { "halation", .1f }, { "fade", .05f } } },
+        { "35mm Vision 500T", "Film Grain", "Tungsten 500T stock: visible grain, cool shadows, red halation on lights.",
+          { { "grain", .5f }, { "grainSize", .8f }, { "halation", .4f }, { "temperature", -.12f }, { "contrast", 1.06f }, { "fade", .08f } } },
+        { "16mm Heavy", "Film Grain", "Chunky 16mm grain with soft vignette.",
+          { { "grain", .75f }, { "grainSize", 1.3f }, { "halation", .25f }, { "vignette", .35f }, { "fade", .12f } } },
+        { "Super 8 Coarse", "Film Grain", "Big Super 8 grain, warm, lifted blacks.",
+          { { "grain", .95f }, { "grainSize", 2.2f }, { "temperature", .25f }, { "fade", .22f }, { "vignette", .5f }, { "saturation", .85f } } },
+        { "B&W Silver Halide", "Film Grain", "Black-and-white Tri-X look: deep blacks, crisp silver grain.",
+          { { "saturation", 0.0f }, { "grain", .65f }, { "grainSize", .9f }, { "contrast", 1.3f }, { "crush", .25f }, { "vignette", .3f } } },
+        { "Push-Processed Grit", "Film Grain", "Pushed two stops: harsh grain, crushed shadows, punchy contrast.",
+          { { "grain", .9f }, { "grainSize", 1.1f }, { "contrast", 1.25f }, { "crush", .35f }, { "saturation", .8f }, { "halation", .2f } } },
+        { "Grain Only", "Film Grain", "Just grain, no color change. Stack it on any look.",
+          { { "grain", .5f }, { "grainSize", 1.0f } } },
         { "Teal Night", "Cinematic", "Teal shadows, warm skin, soft bloom.",
           { { "splitTone", .7f }, { "contrast", 1.15f }, { "saturation", .9f }, { "bloom", .25f }, { "vignette", .35f }, { "letterbox", .5f } } },
         { "Warm Golden Hour", "Cinematic", "Warm highlights and gentle halation.",

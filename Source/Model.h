@@ -88,6 +88,10 @@ struct MediaItem
 };
 
 // ---- timeline -----------------------------------------------------------------------
+struct Clip;
+// source ticks consumed from clip start to clip-relative time rel: rel * speed, or the integral of the "speed" keyframes (speed ramp)
+double rampedOffset (const Clip& c, Ticks rel);
+
 struct Clip
 {
     juce::String id, mediaId;
@@ -110,11 +114,16 @@ struct Clip
     Ticks end() const { return start + length; }
     bool reverse = false;    // plays the same source range backwards
     bool keep = false;       // pinned: Randomize shot leaves it alone
-    Ticks srcAt (Ticks t) const
+    int frameInterp = 1;     // slow motion between source frames: 0 = nearest frame, 1 = frame blending, 2 = optical flow
+    bool ramped() const { auto it = keys.find ("speed"); return it != keys.end() && ! it->second.empty(); }
+    double srcPos (Ticks t) const
     {
-        if (reverse) return srcIn + (Ticks) std::llround ((double) (end() - t) * speed) - 1;
-        return srcIn + (Ticks) std::llround ((double) (t - start) * speed);
+        if (! ramped())
+            return reverse ? (double) srcIn + (double) (end() - t) * speed - 1 : (double) srcIn + (double) (t - start) * speed;
+        if (reverse) return (double) srcIn + rampedOffset (*this, length) - rampedOffset (*this, t - start) - 1;
+        return (double) srcIn + rampedOffset (*this, t - start);
     }
+    Ticks srcAt (Ticks t) const { return (Ticks) std::llround (srcPos (t)); }
 };
 
 // value of a keyframed param at clip-relative time rel (clamped to first/last key)

@@ -140,7 +140,8 @@ void Timeline::paint (juce::Graphics& g)
         juce::String label = c.name.isNotEmpty() ? c.name : (m ? m->name : juce::String ("(missing)"));
         if (! c.enabled) label = "[off] " + label;
         if (c.keep) label = "[keep] " + label;
-        if (c.speed == 0.0) label << "  hold";
+        if (c.ramped()) label << "  ramp";
+        else if (c.speed == 0.0) label << "  hold";
         else if (c.speed != 1.0) label << "  " << juce::String (c.speed * 100, 0) << "%";
         g.drawText (label, r.reduced (4, 2), juce::Justification::topLeft, true);
         {   // CapCut-style badges: how many effects / keyframes / transition on this clip
@@ -597,9 +598,23 @@ void Timeline::mouseUp (const juce::MouseEvent& e)
     }
     else if (drag == Drag::Move)
     {
-        // dropped clips cover only the spot they land on; neighbours keep their song position (sync safe)
-        settleClips (st.project.seq(), st.selected);
-        if (st.magnetic) fillGaps (st.project.seq(), st.project, 0);
+        // one shot dropped onto another: they trade slots (rearrange). Otherwise the clip stays exactly where it was dropped
+        juce::String target;
+        if (st.selected.size() == 1)
+            if (auto* mv = st.project.seq().findClip (st.selected[0]))
+            {
+                const Ticks mid = mv->start + mv->length / 2;
+                for (auto& o : beforeDrag.seq().clips)
+                    if (o.id != mv->id && o.track == mv->track && o.mediaId.isNotEmpty() && ! o.locked && o.start <= mid && mid < o.end()) { target = o.id; break; }
+            }
+        if (target.isNotEmpty())
+        {
+            const auto id = st.selected[0];
+            st.project = beforeDrag;
+            swapClipSlots (st.project.seq(), st.project, id, target);
+            if (onStatus) onStatus ("Swapped shots");
+        }
+        else settleClips (st.project.seq(), st.selected);
         if (onEdited) onEdited();
     }
     if (drag == Drag::Move || drag == Drag::TrimL || drag == Drag::TrimR || drag == Drag::Song)
@@ -687,6 +702,26 @@ void Timeline::itemDropped (const SourceDetails& d)
                 if (onEdited) onEdited();
                 break;
             }
+        return;
+    }
+    if (desc.startsWith ("preset:"))
+    {
+        UserPreset up; juce::String err;
+        if (! readPresetFile (juce::File (desc.fromFirstOccurrenceOf ("preset:", false, false)), up, err)) { if (onStatus) onStatus (err); return; }
+        int edge = 0; const Clip* under = clipAt (d.localPosition, edge);
+        st.edit ("Apply preset");
+        if (under != nullptr && under->mediaId.isNotEmpty())
+        {
+            if (auto* c = st.project.seq().findClip (under->id)) { applyUserPreset (*c, up); st.selected = { c->id }; }
+        }
+        else
+        {
+            Ticks at = under ? under->start : magnetSnap (secToTicks (std::max (0.0, xToSec (d.localPosition.x))), 0);
+            Ticks len = under ? under->length : (up.length > 0 ? up.length : beat * st.project.song.beatsPerBar * 2);
+            auto id = addEffectClip (st.project.seq(), up.fx, up.name.fromLastOccurrenceOf (" / ", false, false), at, len);
+            if (auto* c = st.project.seq().findClip (id)) { auto fx = c->fx; applyUserPreset (*c, up); c->fx = fx; for (auto& [k, v] : up.fx.p) c->fx.set (k, v); st.selected = { id }; }
+        }
+        if (onEdited) onEdited();
         return;
     }
     if (desc.startsWith ("lut:"))
@@ -795,6 +830,15 @@ void Timeline::clipMenu (const juce::String& id)
         slow.addItem (39, "75%", ! lk); slow.addItem (36, "50%", ! lk); slow.addItem (38, "33%", ! lk); slow.addItem (37, "25%", ! lk);
         slow.addSeparator(); slow.addItem (30, "Custom speed...", ! lk);
         m.addSubMenu ("Slow motion", slow, ! lk && hasMedia);
+        juce::PopupMenu ramp; auto rn = speedRampNames();
+        for (int i = 0; i < rn.size(); ++i) ramp.addItem (470 + i, rn[i], ! lk);
+        ramp.addSeparator(); ramp.addItem (469, "Remove speed ramp", ! lk && c->ramped());
+        m.addSubMenu ("Speed ramp", ramp, ! lk && hasMedia && video);
+        juce::PopupMenu fi;
+        fi.addItem (480, "Off (nearest frame)", ! lk, c->frameInterp == 0);
+        fi.addItem (481, "Frame Blending", ! lk, c->frameInterp == 1);
+        fi.addItem (482, "Optical Flow (paused + export; blends while playing)", ! lk, c->frameInterp == 2);
+        m.addSubMenu ("Frame interpolation", fi, ! lk && hasMedia && video);
         const int nSel = st.selected.contains (c->id) ? st.selected.size() : 1;
         m.addItem (43, nSel > 1 ? "Sync " + juce::String (nSel) + " clips to audio" : juce::String ("Sync clip to audio"),
                    hasMedia && md != nullptr && md->kind != MediaKind::Image);
@@ -870,6 +914,8 @@ void Timeline::clipMenu (const juce::String& id)
         if (r == 14) { st.edit ("Duplicate"); st.selected = duplicateClips (sq, sel); }
         if (r == 2) { st.edit ("Split"); splitAt (sq, st.playhead, { id }); }
         if (r == 3) { st.edit ("Speed"); setClipSpeed (sq, st.project, id, 1.0); }
+        if (r >= 469 && r < 480) { st.edit ("Speed ramp"); for (auto& i : sel) applySpeedRamp (sq, st.project, i, r - 470); }
+        if (r >= 480 && r <= 482) { st.edit ("Frame interpolation"); for (auto& i : sel) if (auto* k = sq.findClip (i); k && ! k->locked) k->frameInterp = r - 480; }
         if (r == 44 || r == 46)
         {
             juce::StringArray ids = sel;

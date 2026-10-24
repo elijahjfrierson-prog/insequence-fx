@@ -391,8 +391,114 @@ juce::StringArray layoutNames()
 
 void Renderer::clearSources() { sources.clear(); luts.clear(); trailT = -1; }
 
-const Frame* Renderer::frameFor (const Project& p, const juce::String& mediaId, Ticks srcT, int decodeH, int& rotation, bool* opaque, bool primeOnly)
+// separable box blur (3 passes ~ gaussian) on RGBA, in place
+static void blurFrame (Frame& f, int r)
 {
+    const int W = f.w, H = f.h; if (r < 1 || W < 2 || H < 2) return;
+    std::vector<juce::uint8> tmp (f.rgba.size());
+    for (int pass = 0; pass < 3; ++pass)
+    {
+        parallelRows (H, [&] (int y) {
+            const auto* s = &f.rgba[(size_t) y * W * 4]; auto* d = &tmp[(size_t) y * W * 4];
+            int acc[4] { 0, 0, 0, 0 };
+            for (int x = -r; x <= r; ++x) for (int k = 0; k < 4; ++k) acc[k] += s[juce::jlimit (0, W - 1, x) * 4 + k];
+            for (int x = 0; x < W; ++x)
+            {
+                for (int k = 0; k < 4; ++k) d[x * 4 + k] = (juce::uint8) (acc[k] / (2 * r + 1));
+                const int a = juce::jlimit (0, W - 1, x - r), b = juce::jlimit (0, W - 1, x + r + 1);
+                for (int k = 0; k < 4; ++k) acc[k] += s[b * 4 + k] - s[a * 4 + k];
+            }
+        });
+        parallelRows (W, [&] (int x) {
+            int acc[4] { 0, 0, 0, 0 };
+            auto at = [&] (int y) { return &tmp[((size_t) juce::jlimit (0, H - 1, y) * W + x) * 4]; };
+            for (int y = -r; y <= r; ++y) for (int k = 0; k < 4; ++k) acc[k] += at (y)[k];
+            for (int y = 0; y < H; ++y)
+            {
+                auto* d = &f.rgba[((size_t) y * W + x) * 4];
+                for (int k = 0; k < 4; ++k) d[k] = (juce::uint8) (acc[k] / (2 * r + 1));
+                const auto* a = at (y - r); const auto* b = at (y + r + 1);
+                for (int k = 0; k < 4; ++k) acc[k] += b[k] - a[k];
+            }
+        });
+    }
+}
+
+void interpolateFrames (const Frame& a, const Frame& b, float f, bool flow, Frame& out)
+{
+    const int W = a.w, H = a.h;
+    out.w = W; out.h = H; out.pts = a.pts;
+    out.rgba.resize ((size_t) W * H * 4);
+    if (! flow || W < 32 || H < 32)
+    {
+        const int wb = juce::jlimit (0, 256, (int) std::lround (f * 256)), wa = 256 - wb;
+        const size_t n = out.rgba.size();
+        for (size_t i = 0; i < n; ++i) out.rgba[i] = (juce::uint8) ((a.rgba[i] * wa + b.rgba[i] * wb + 128) >> 8);
+        return;
+    }
+    // motion: 8x8 blocks on a quarter-res luma, +-6 px search (= +-24 full-res px), then warp both frames halfway
+    const int qw = W / 4, qh = H / 4;
+    std::vector<float> la ((size_t) qw * qh), lb ((size_t) qw * qh);
+    auto lum = [&] (const Frame& fr, std::vector<float>& d)
+    {
+        for (int y = 0; y < qh; ++y)
+            for (int x = 0; x < qw; ++x)
+            {
+                const auto* px = &fr.rgba[((size_t) (y * 4) * W + x * 4) * 4];
+                d[(size_t) y * qw + x] = 0.3f * px[0] + 0.59f * px[1] + 0.11f * px[2];
+            }
+    };
+    lum (a, la); lum (b, lb);
+    const int B = 8, R = 6, bw = (qw + B - 1) / B, bh = (qh + B - 1) / B;
+    std::vector<float> vx ((size_t) bw * bh, 0.0f), vy ((size_t) bw * bh, 0.0f);
+    parallelRows (bh, [&] (int by)
+    {
+        for (int bx = 0; bx < bw; ++bx)
+        {
+            float best = 1e30f; int bdx = 0, bdy = 0;
+            for (int dy = -R; dy <= R; ++dy)
+                for (int dx = -R; dx <= R; ++dx)
+                {
+                    float sad = 0; int cnt = 0;
+                    for (int y = by * B; y < std::min (qh, by * B + B); ++y)
+                        for (int x = bx * B; x < std::min (qw, bx * B + B); ++x)
+                        {
+                            const int x2 = juce::jlimit (0, qw - 1, x + dx), y2 = juce::jlimit (0, qh - 1, y + dy);
+                            sad += std::abs (la[(size_t) y * qw + x] - lb[(size_t) y2 * qw + x2]); ++cnt;
+                        }
+                    sad = sad / std::max (1, cnt) + 0.02f * (float) (dx * dx + dy * dy);
+                    if (sad < best) { best = sad; bdx = dx; bdy = dy; }
+                }
+            vx[(size_t) by * bw + bx] = bdx * 4.0f; vy[(size_t) by * bw + bx] = bdy * 4.0f;
+        }
+    });
+    const float bs = (float) B * 4;
+    parallelRows (H, [&] (int y)
+    {
+        for (int x = 0; x < W; ++x)
+        {
+            const float gx = juce::jlimit (0.0f, (float) bw - 1.001f, x / bs - 0.5f), gy = juce::jlimit (0.0f, (float) bh - 1.001f, y / bs - 0.5f);
+            const int x0 = (int) gx, y0 = (int) gy, x1 = std::min (bw - 1, x0 + 1), y1 = std::min (bh - 1, y0 + 1);
+            const float fx = gx - x0, fy = gy - y0;
+            auto bil = [&] (const std::vector<float>& v)
+            {
+                return mixf (mixf (v[(size_t) y0 * bw + x0], v[(size_t) y0 * bw + x1], fx), mixf (v[(size_t) y1 * bw + x0], v[(size_t) y1 * bw + x1], fx), fy);
+            };
+            const float mx = bil (vx), my = bil (vy);
+            const int ax = juce::jlimit (0, W - 1, (int) std::lround (x - f * mx)), ay = juce::jlimit (0, H - 1, (int) std::lround (y - f * my));
+            const int cx = juce::jlimit (0, W - 1, (int) std::lround (x + (1 - f) * mx)), cy = juce::jlimit (0, H - 1, (int) std::lround (y + (1 - f) * my));
+            const auto* pa = &a.rgba[((size_t) ay * W + ax) * 4];
+            const auto* pb = &b.rgba[((size_t) cy * W + cx) * 4];
+            auto* o = &out.rgba[((size_t) y * W + x) * 4];
+            for (int q = 0; q < 4; ++q) o[q] = (juce::uint8) std::lround (pa[q] * (1 - f) + pb[q] * f);
+        }
+    });
+}
+
+const Frame* Renderer::frameFor (const Project& p, const juce::String& mediaId, Ticks srcT, int decodeH, int& rotation, bool* opaque, bool primeOnly,
+                                 const Frame** after)
+{
+    if (after) *after = nullptr;
     auto* m = p.findMedia (mediaId);
     if (m == nullptr || m->missing || m->kind == MediaKind::Audio) return nullptr;
     const bool useProxy = m->kind == MediaKind::Video && decodeH > 0 && decodeH <= kProxyHeight
@@ -478,11 +584,16 @@ const Frame* Renderer::frameFor (const Project& p, const juce::String& mediaId, 
         if (primeOnly) { src->pre->prime (srcT); return nullptr; }
         // only the very first frame of a source may wait (briefly); after that a late frame repeats the last one
         if (auto f = src->pre->get (juce::jmax ((Ticks) 0, srcT), src->shown ? 0 : 80)) src->shown = std::move (f);
+        if (after && src->shown) { src->shownNext = src->pre->after (src->shown->pts); *after = src->shownNext.get(); }
         if (opaque == nullptr && src->shown != nullptr && srcT - src->shown->pts > secToTicks (2.5 / src->fps)) ++late;
         return src->shown.get();
     }
     if (primeOnly) return nullptr;
-    if (auto* fr = src->dec->frameRef (juce::jmax ((Ticks) 0, srcT))) return fr;
+    if (auto* fr = src->dec->frameRef (juce::jmax ((Ticks) 0, srcT)))
+    {
+        if (after) *after = src->dec->peekNext();
+        return fr;
+    }
     return nullptr;
 }
 
@@ -534,7 +645,7 @@ bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int 
                 float base = postFx.get (k, d ? d->def : 0.0f);
                 postFx.set (k, base + (v - base) * c.opacity);
             }
-            if (c.fx.lutPath.isNotEmpty())
+            if (c.fx.lutPath.isNotEmpty() && c.opacity > 0.001f)
             {
                 postFx.lutPath = c.fx.lutPath;
                 postFx.set ("lutMix", c.fx.get ("lutMix", 1.0f) * c.opacity);
@@ -583,6 +694,7 @@ bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int 
         {
             auto* m = p.findMedia (c.mediaId);
             if (m == nullptr || m->missing || m->kind == MediaKind::Audio || c.opacity < 1.0f) return false;
+            if (fxValue (c.fx, CPo, "opacity") < 1.0f || fxValue (c.fx, CPo, "lensCurve") != 0 || ! c.keys.empty()) return false;
             if (c.transIn != TransitionType::Cut && c.transLen > 0 && t < c.start + c.transLen) return false;
             auto v = [&] (const char* id) { return fxValue (c.fx, CPo, id); };
             int rf = (int) std::lround (v ("reframe"));
@@ -598,10 +710,42 @@ bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int 
     auto drawLayer = [&] (const Clip& c, float alphaMul, float extraScale, float whip, int transKind, float prog)
     {
         int rot = 0;
-        const Frame* fr = frameFor (p, c.mediaId, c.srcAt (t), decodeH, rot);
+        const auto* md = p.findMedia (c.mediaId);
+        const bool slowMo = c.frameInterp > 0 && ! c.reverse && md != nullptr && md->kind == MediaKind::Video
+                            && (c.ramped() || (c.speed > 0.01 && c.speed < 0.99))
+                            && [&] {   // high-frame-rate sources (120/240fps) already have a real frame for every output frame
+                                   const double fr = juce::jmax (1.0, p.fps), dt = (double) kFlicks / fr;
+                                   const double sp = std::abs (c.srcPos ((Ticks) ((double) t + dt)) - c.srcPos (t)) / dt;
+                                   return md->fps * sp < fr * 0.98;
+                               }();
+        const Frame* fB = nullptr;
+        const float postT = fxValue (c.fx, clipParams(), "posterizeTime");
+        const Ticks tq = postT >= 1 ? c.start + (t - c.start) / (Ticks) (kFlicks / postT) * (Ticks) (kFlicks / postT) : t;
+        const double srcPosT = c.srcPos (tq);
+        const Frame* fr = frameFor (p, c.mediaId, (Ticks) std::llround (srcPosT), decodeH, rot, nullptr, false, slowMo ? &fB : nullptr);
         if (fr == nullptr) return;
+        Frame tween;
+        if (fB != nullptr && fr->pts >= 0 && fB->pts > fr->pts && fB->w == fr->w && fB->h == fr->h)
+        {
+            const float f = (float) ((srcPosT - (double) fr->pts) / (double) (fB->pts - fr->pts));
+            if (f > 0.02f && f < 0.98f) { interpolateFrames (*fr, *fB, f, c.frameInterp == 2 && ! live, tween); fr = &tween; }
+        }
         const auto& CP = clipParams();
         auto cv = [&] (const char* id) { return fxValue (c.fx, CP, id); };
+        Frame styl;
+        if (const float bl = cv ("blur"), inv = cv ("invert"); bl > 0.001f || inv > 0.001f)
+        {
+            styl = *fr;
+            if (bl > 0.001f) blurFrame (styl, std::max (1, (int) std::lround (bl * 0.02f * styl.h)));
+            if (inv > 0.001f)
+            {
+                const int wi = (int) std::lround (juce::jlimit (0.0f, 1.0f, inv) * 256);
+                for (size_t i = 0; i < styl.rgba.size(); i += 4)
+                    for (int k = 0; k < 3; ++k) { auto& v = styl.rgba[i + (size_t) k]; v = (juce::uint8) ((v * (256 - wi) + (255 - v) * wi) >> 8); }
+            }
+            fr = &styl;
+        }
+        const float lens = cv ("lensCurve");
         float rw = (float) (rot == 90 || rot == 270 ? fr->h : fr->w), rh = (float) (rot == 90 || rot == 270 ? fr->w : fr->h);
         int reframe = (int) std::lround (cv ("reframe"));
         float sFill = std::max (W / rw, H / rh), sFit = std::min (W / rw, H / rh);
@@ -624,7 +768,7 @@ bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int 
         int maskShape = (int) std::lround (cv ("maskShape"));
         float mW = std::max (0.01f, cv ("maskW")), mH = std::max (0.01f, cv ("maskH")), mF = cv ("maskFeather");
         bool mInv = cv ("maskInvert") > 0.5f;
-        float alpha0 = c.opacity * alphaMul;
+        float alpha0 = c.opacity * alphaMul * juce::jlimit (0.0f, 1.0f, cv ("opacity"));
         int taps = whip != 0 ? 6 : 1;
         float tapLen = (1 - prog) * W * 0.06f;
 
@@ -656,6 +800,11 @@ bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int 
                     float py = y + 0.5f - H * 0.5f - offY;
                     float ux = (px * cr - py * sr) / sclX / trStretch, uy = (px * sr + py * cr) / sclY;
                     if (mirror) ux = -ux;
+                    if (lens != 0)
+                    {
+                        const float nx = ux / (rw * 0.5f), ny = uy / (rh * 0.5f), k = 1.0f - lens * 0.5f * (nx * nx + ny * ny);
+                        ux *= k; uy *= k;
+                    }
                     if (trMirror > 0) { float f = trDir < 2 ? std::abs (ux) : ux; ux = mixf (ux, f, trMirror); if (trDir >= 2) uy = mixf (uy, std::abs (uy), trMirror); }
                     if (cropped)
                     {

@@ -48,6 +48,7 @@ public:
     // returns the frame showing at source time t (the last frame with pts <= t)
     bool frameAt (Ticks t, Frame& out);
     const Frame* frameRef (Ticks t);  // valid until the next call
+    const Frame* peekNext();          // the frame after the last frameRef (no seek), for slow-motion interpolation
     bool readNext (Frame& out) { return isOpen() && ! eof && decodeNext (out); }
     int width() const { return outW; }
     int height() const { return outH; }
@@ -90,6 +91,7 @@ public:
     void prime (Ticks t);                                   // start decoding at t, don't wait
     // newest decoded frame at or before t (or just after, after a pre-roll); waits up to waitMs if none is ready
     std::shared_ptr<const Frame> get (Ticks t, int waitMs);
+    std::shared_ptr<const Frame> after (Ticks pts);          // first queued frame later than pts, never waits
 private:
     void run() override;
     VideoDecoder dec;

@@ -179,7 +179,24 @@ MainComponent::MainComponent()
         addAndMakeVisible (startBtn); addAndMakeVisible (qualityBox);
     }
     exportBtn.onClick = [this] { exportDialog(); };
-    genBtn.onClick = [this] { generate(); };
+    genBtn.onClick = [this]
+    {
+        juce::PopupMenu m;
+        m.addItem (1, "Generate 3 new edits (new sequences)");
+        m.addItem (2, "Generate on top: stack a new pass onto this sequence", st.project.song.valid && ! st.project.seq().clips.empty());
+        m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&genBtn), [this] (int r)
+        {
+            if (r == 1) generate();
+            if (r == 2)
+            {
+                st.edit ("Generate on top");
+                auto style = styleBox.getSelectedItemIndex() > 0 ? styleModes()[styleBox.getSelectedItemIndex() - 1] : juce::String();
+                const int n = stackGenerated (st.project, genSeed++, style);
+                status.setText ("Stacked " + juce::String (n) + " generated clips on new tracks. Move, cut, swap or delete them like any clip; press again to keep stacking.", juce::dontSendNotification);
+                refresh (true);
+            }
+        });
+    };
     movieBtn.setTooltip ("Movie Border: one-click cinema bars on the whole video (preview and export).");
     movieBtn.onClick = [this]
     {
@@ -288,10 +305,13 @@ MainComponent::MainComponent()
             if (mid.isEmpty()) return;
             st.edit ("Add sound");
             auto& s = st.project.seq();
+            const auto* md = st.project.findMedia (mid);
+            const Ticks end = at + std::max<Ticks> (1, md != nullptr ? md->duration : 1);
             auto usable = [&] (int i)
             {
                 if (i < 0 || i >= (int) s.tracks.size() || s.tracks[(size_t) i].kind != TrackKind::Audio || s.tracks[(size_t) i].locked) return false;
-                for (auto& c : s.clips) if (c.track == i && c.mediaId == st.project.songId) return false;
+                for (auto& c : s.clips)
+                    if (c.track == i && (c.mediaId == st.project.songId || (c.start < end && c.end() > at))) return false;
                 return true;
             };
             int track = tr;
@@ -1189,7 +1209,7 @@ void MainComponent::presetsMenu()
     m.addItem (3, "Save this edit as a template...");
     m.addSubMenu ("New sequence from template", apply, ! templates.empty());
     m.addSeparator();
-    m.addItem (4, "Import presets / templates / LUTs...");
+    m.addItem (4, "Import Preset... (.prfpset, .cube, .isfxpreset, .isfxtemplate)");
     m.addItem (5, "Show presets folder");
     m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&presetsBtn), [this, templates] (int r)
     {
@@ -1205,7 +1225,24 @@ void MainComponent::presetsMenu()
             });
         if (r == 3) saveTemplateDialog();
         if (r >= 100 && r - 100 < (int) templates.size()) applyTemplateFile (templates[(size_t) (r - 100)]);
-        if (r == 4) media.onImport();
+        if (r == 4)
+        {
+            auto dl = juce::File::getSpecialLocation (juce::File::userHomeDirectory).getChildFile ("Downloads");
+            chooser = std::make_unique<juce::FileChooser> ("Import presets", dl.isDirectory() ? dl : juce::File(), "*.prfpset;*.ffx;*.cube;*.isfxpreset;*.isfxtemplate");
+            chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles | juce::FileBrowserComponent::canSelectMultipleItems,
+                                  [this] (const juce::FileChooser& fc)
+            {
+                auto files = fc.getResults(); if (files.isEmpty()) return;
+                auto res = std::make_shared<juce::String>(); auto n = std::make_shared<int> (0);
+                runTask ("Importing presets", [files, res, n] (ProgressCb, std::function<bool()>) { *res = importPresetFiles (files, *n); },
+                         [this, res, n]
+                {
+                    fxlib.reload();
+                    status.setText ("Imported " + juce::String (*n) + " presets. They're in Effects > My Presets: drag one onto a clip.", juce::dontSendNotification);
+                    showMsg ("Import Preset", *res);
+                });
+            });
+        }
         if (r == 5) userDataDir().getChildFile ("Presets").revealToUser();
     });
 }
@@ -1318,8 +1355,14 @@ void MainComponent::exportDialog()
 {
     if (st.project.seq().clips.empty()) { showMsg ("Export", "The sequence is empty."); return; }
     player.stop(); playBtn.setButtonText ("Play");
-    dialog = std::make_unique<juce::AlertWindow> ("Export video", "H.264 MP4 with AAC audio. Uses the hardware encoder when available.", juce::MessageBoxIconType::NoIcon);
-    dialog->addComboBox ("res", { "720p", "1080p", "1440p", "4K (2160p)" }, "Resolution (short side)");
+    dialog = std::make_unique<juce::AlertWindow> ("Export video", "Every frame is rendered at full quality (no proxies, no dropped frames). MOV formats keep the audio uncompressed (24-bit PCM).", juce::MessageBoxIconType::NoIcon);
+    static const char* allCodecs[] = { "h264", "h265", "h265_lossless", "h264_lossless", "prores_hq", "prores_4444" };
+    static const char* allNames[] = { "H.264 MP4 (AAC, for posting)", "H.265 / HEVC 10-bit, near lossless (MOV, PCM)", "H.265 / HEVC lossless (MOV, PCM)",
+                                      "H.264 lossless (MOV, PCM)", "ProRes 422 HQ (MOV, PCM)", "ProRes 4444 (MOV, PCM)" };
+    auto codecs = std::make_shared<juce::StringArray>(); juce::StringArray fmtNames;
+    for (int i = 0; i < 6; ++i) if (exportCodecAvailable (allCodecs[i])) { codecs->add (allCodecs[i]); fmtNames.add (allNames[i]); }
+    dialog->addComboBox ("fmt", fmtNames, "Format");
+    dialog->addComboBox ("res", { "720p", "1080p", "1440p", "4K (2160p)", "Source (largest clip, no resize)" }, "Resolution (short side)");
     dialog->addComboBox ("fps", { "23.976", "24", "25", "29.97", "30", "50", "59.94", "60" }, "Frame rate");
     dialog->addComboBox ("q", { "Standard (12 Mbps per 1080p)", "High (20 Mbps per 1080p)", "Master (40 Mbps per 1080p)" }, "Quality");
     dialog->addComboBox ("range", { "Whole sequence", "Selected range" }, "Range");
@@ -1330,12 +1373,16 @@ void MainComponent::exportDialog()
     dialog->getComboBoxComponent ("range")->setSelectedItemIndex (st.rangeB > st.rangeA ? 1 : 0);
     dialog->addButton ("Export...", 1, juce::KeyPress (juce::KeyPress::returnKey));
     dialog->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
-    dialog->enterModalState (true, juce::ModalCallbackFunction::create ([this] (int r)
+    dialog->enterModalState (true, juce::ModalCallbackFunction::create ([this, codecs] (int r)
     {
         const int res[] = { 720, 1080, 1440, 2160 };
         const double fpsv[] = { 24000.0 / 1001, 24, 25, 30000.0 / 1001, 30, 50, 60000.0 / 1001, 60 };
         const int mb[] = { 12, 20, 40 };
-        int shortSide = res[dialog->getComboBoxComponent ("res")->getSelectedItemIndex()];
+        const int ri = dialog->getComboBoxComponent ("res")->getSelectedItemIndex();
+        int shortSide = ri < 4 ? res[ri] : 0;
+        if (ri >= 4) for (auto& m : st.project.media) if (m.kind != MediaKind::Audio && ! m.missing) shortSide = std::max (shortSide, std::min (m.width, m.height));
+        if (shortSide <= 0) shortSide = 1080;
+        const juce::String codec = (*codecs)[juce::jmax (0, dialog->getComboBoxComponent ("fmt")->getSelectedItemIndex())];
         double fps = fpsv[dialog->getComboBoxComponent ("fps")->getSelectedItemIndex()];
         int q = dialog->getComboBoxComponent ("q")->getSelectedItemIndex();
         bool range = dialog->getComboBoxComponent ("range")->getSelectedItemIndex() == 1 && st.rangeB > st.rangeA;
@@ -1347,12 +1394,14 @@ void MainComponent::exportDialog()
         job.width &= ~1; job.height &= ~1; job.fps = fps;
         job.mbps = (int) std::lround (mb[q] * (double) job.width * job.height / (1920.0 * 1080.0) * fps / 30.0);
         if (range) { job.rangeStart = st.rangeA; job.rangeEnd = st.rangeB; }
+        job.codec = codec;
+        const juce::String ext = codec == "h264" ? "mp4" : "mov";
         chooser = std::make_unique<juce::FileChooser> ("Export to", juce::File::getSpecialLocation (juce::File::userMoviesDirectory)
-                                                           .getChildFile (juce::File::createLegalFileName (st.project.name + " - " + st.project.seq().name) + ".mp4"), "*.mp4");
-        chooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::warnAboutOverwriting, [this, job, all] (const juce::FileChooser& fc)
+                                                           .getChildFile (juce::File::createLegalFileName (st.project.name + " - " + st.project.seq().name) + "." + ext), "*." + ext);
+        chooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::warnAboutOverwriting, [this, job, all, ext] (const juce::FileChooser& fc)
         {
             auto out = fc.getResult(); if (out == juce::File()) return;
-            out = out.withFileExtension ("mp4");
+            out = out.withFileExtension (ext);
             auto p = std::make_shared<Project> (st.project);
             auto err = std::make_shared<juce::String>(); auto done = std::make_shared<juce::StringArray>();
             runTask ("Exporting", [this, p, job, all, out, err, done] (ProgressCb prog, std::function<bool()> cancel)
@@ -1361,7 +1410,7 @@ void MainComponent::exportDialog()
                 {
                     if (! all && i != p->active) continue;
                     ExportJob j = job;
-                    j.output = all ? out.getSiblingFile (out.getFileNameWithoutExtension() + " - " + juce::File::createLegalFileName (p->sequences[(size_t) i].name) + ".mp4") : out;
+                    j.output = all ? out.getSiblingFile (out.getFileNameWithoutExtension() + " - " + juce::File::createLegalFileName (p->sequences[(size_t) i].name) + out.getFileExtension()) : out;
                     if (! exportSequence (*p, i, j, prog, cancel, *err)) return;
                     done->add (j.output.getFullPathName());
                     if (cancel()) return;

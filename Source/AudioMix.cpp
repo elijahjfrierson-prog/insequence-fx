@@ -28,9 +28,15 @@ static void mixClip (const Clip& c, const AudioCache& cache, juce::int64 start, 
     const double srcBase = (double) c.srcIn * toSamp;
     // 5 ms fades at clip edges avoid clicks on cuts
     const int fade = kMixRate / 200;
+    // speed ramp: exact source position at the block ends, linear in between (blocks are a few ms)
+    const bool ramp = c.ramped();
+    const double tps = (double) kFlicks / (double) kMixRate;
+    const double rA = ramp ? c.srcPos ((Ticks) std::llround ((double) a * tps)) * toSamp : 0.0;
+    const double rB = ramp ? c.srcPos ((Ticks) std::llround ((double) b * tps)) * toSamp : 0.0;
     for (juce::int64 i = a; i < b; ++i)
     {
-        double sp = srcBase + (double) (c.reverse ? c1 - 1 - i : i - c0) * c.speed;
+        double sp = ramp ? rA + (rB - rA) * (double) (i - a) / (double) (b - a)
+                         : srcBase + (double) (c.reverse ? c1 - 1 - i : i - c0) * c.speed;
         juce::int64 si = (juce::int64) sp;
         if (si < 0 || si + 1 >= frames) continue;
         float fr = (float) (sp - (double) si);

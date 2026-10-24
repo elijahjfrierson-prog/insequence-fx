@@ -217,6 +217,38 @@ static void testEditing()
         CHECK (rolls.size() >= 6, "hi-hat roll found and cut on every roll hat (" + juce::String ((int) rolls.size()) + ")");
         CHECK (hatRolls (p.song, 0, secToTicks (10)).empty(), "steady 8th hats are not a roll");
         {
+            Project q = Project::makeNew(); MediaItem m; m.id = "m"; m.kind = MediaKind::Video; m.duration = secToTicks (30); q.media.push_back (m);
+            auto& s = q.seq(); s.clips.clear();
+            Clip a; a.id = "a"; a.mediaId = "m"; a.start = 0; a.length = secToTicks (1); a.srcIn = secToTicks (5);
+            Clip b = a; b.id = "b"; b.start = secToTicks (1); b.length = secToTicks (2); b.srcIn = secToTicks (29);
+            s.clips = { a, b };
+            CHECK (swapClipSlots (s, q, "a", "b"), "swap shots");
+            auto* A = s.findClip ("a"); auto* Bc = s.findClip ("b");
+            CHECK (A->start == secToTicks (1) && A->length == secToTicks (2) && Bc->start == 0 && Bc->length == secToTicks (1)
+                   && A->srcIn == secToTicks (5) && Bc->srcIn == secToTicks (29), "swapped shots trade slots, cut points stay");
+        }
+        {
+            Clip c; c.start = secToTicks (10); c.length = secToTicks (4); c.srcIn = secToTicks (1);
+            CHECK (c.srcAt (c.start + secToTicks (2)) == secToTicks (3), "no ramp: 1:1 source time");
+            setKey (c, "speed", 0, 1.0f, 0); setKey (c, "speed", secToTicks (4), 0.0f, 0);
+            auto near = [] (Ticks a, double sec) { return std::abs (ticksToSec (a) - sec) < 1e-4; };
+            CHECK (near (c.srcAt (c.end()), 1 + 2.0) && near (c.srcAt (c.start + secToTicks (2)), 1 + 1.5), "linear ramp 100%>0% integrates (2 s of source over 4 s)");
+            c.keys["speed"][0].interp = 2;
+            CHECK (near (c.srcAt (c.end()), 3.0) && c.srcAt (c.start + secToTicks (1)) < c.srcAt (c.start + secToTicks (2)), "eased ramp is monotonic and integrates");
+            c.reverse = true;
+            CHECK (near (c.srcAt (c.start), 3.0 - ticksToSec (1)) && near (c.srcAt (c.end()), 1.0 - ticksToSec (1)), "reverse ramp plays the same source range backwards");
+        }
+        {
+            Frame a, b, o; a.w = b.w = 128; a.h = b.h = 64; a.rgba.assign (128 * 64 * 4, 0); b.rgba = a.rgba; a.pts = 0; b.pts = 1;
+            auto box = [] (Frame& f, int x0) { for (int y = 20; y < 44; ++y) for (int x = x0; x < x0 + 24; ++x) for (int q = 0; q < 3; ++q) f.rgba[((size_t) y * 128 + x) * 4 + q] = 255; };
+            box (a, 40); box (b, 56);
+            interpolateFrames (a, b, 0.5f, false, o);
+            CHECK (o.rgba[((size_t) 32 * 128 + 44) * 4] > 100 && o.rgba[((size_t) 32 * 128 + 44) * 4] < 160, "frame blending mixes both frames");
+            interpolateFrames (a, b, 0.5f, true, o);
+            const int edge = o.rgba[((size_t) 32 * 128 + 50) * 4], left = o.rgba[((size_t) 32 * 128 + 44) * 4];
+            CHECK (edge > 200 && left < 90, "optical flow moves the box halfway instead of ghosting (" + juce::String (edge) + ", " + juce::String (left) + ")");
+        }
+        {
             auto mid = rolls.size() >= 4 ? rolls[2] : r0;
             auto left = hatRolls (rs, r0 - secToTicks (1.0), mid), right = hatRolls (rs, mid, r0 + secToTicks (2.0));
             CHECK (! left.empty() && ! right.empty() && left.size() + right.size() == rolls.size(), "a roll split across two clips still cuts on both sides");
@@ -790,6 +822,52 @@ static void benchPlayback (const juce::String& files, int W, int H, int decodeH,
 // ISFX_SOAK="a.mp4:b.mov:c.mov" ISFX_SOAK_Q=1|2|4|8 ISFX_SOAK_SEC=60: the app's playback loop for a long run.
 // The playhead follows the wall clock (looping the clips) and each render shows the newest frame, so a slow frame
 // is dropped rather than slowing playback. Quality tiers decode exactly like Preview (1080 / div, proxies at <= 540).
+static void testPrfpset()
+{
+    auto dir = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("isfx_prf"); dir.deleteRecursively(); dir.createDirectory();
+    auto f = dir.getChildFile ("My_Pack.prfpset");
+    f.replaceWithText (R"(<?xml version="1.0"?><PremiereData Version="3">
+<BinTreeItem ObjectID="2"><Items><Item Index="0" ObjectRef="3"/></Items><TreeItemBase><Name>Root</Name></TreeItemBase></BinTreeItem>
+<BinTreeItem ObjectID="3"><Items><Item Index="0" ObjectRef="7"/></Items><TreeItemBase><Name>Zooms &amp; Hits</Name></TreeItemBase></BinTreeItem>
+<TreeItem ObjectID="7"><TreeItemBase><Name>Zoom OUT</Name><Data ObjectRef="8"/></TreeItemBase></TreeItem>
+<FilterPresetItem ObjectID="8"><FilterPresets><FilterPreset Index="0" ObjectRef="9"/><FilterPreset Index="1" ObjectRef="20"/></FilterPresets></FilterPresetItem>
+<FilterPreset ObjectID="9"><FilterMatchName>AE.ADBE Geometry2</FilterMatchName><Component ObjectRef="10"/><AnchorInPoint>254016000000</AnchorInPoint><AnchorOutPoint>508032000000</AnchorOutPoint></FilterPreset>
+<VideoFilterComponent ObjectID="10"><Component><DisplayName>Transform</DisplayName><Params><Param Index="0" ObjectRef="11"/><Param Index="1" ObjectRef="12"/></Params></Component><MatchName>AE.ADBE Geometry2</MatchName></VideoFilterComponent>
+<VideoComponentParam ObjectID="11"><Name>Scale</Name><Keyframes>254016000000,100.,0,0,0,0,0,0;381024000000,200.,0,0,0,0,0,0;</Keyframes><IsTimeVarying>true</IsTimeVarying><StartKeyframe>-91445760000000000,100.,0,0,0,0,0,0</StartKeyframe></VideoComponentParam>
+<VideoComponentParam ObjectID="12"><Name>Skew</Name><Keyframes>254016000000,0.,0;381024000000,10.,0;</Keyframes><IsTimeVarying>true</IsTimeVarying></VideoComponentParam>
+<FilterPreset ObjectID="20"><FilterMatchName>AE.ADBE Gaussian Blur 2</FilterMatchName><Component ObjectRef="21"/><AnchorInPoint>254016000000</AnchorInPoint><AnchorOutPoint>508032000000</AnchorOutPoint></FilterPreset>
+<VideoFilterComponent ObjectID="21"><Component><DisplayName>Gaussian Blur</DisplayName><Params><Param Index="0" ObjectRef="22"/></Params></Component><MatchName>AE.ADBE Gaussian Blur 2</MatchName></VideoFilterComponent>
+<VideoComponentParam ObjectID="22"><Name>Blurriness</Name><Keyframes></Keyframes><IsTimeVarying>false</IsTimeVarying><StartKeyframe>-91445760000000000,50.,0,0,0,0,0,0</StartKeyframe><CurrentValue>50.</CurrentValue></VideoComponentParam>
+</PremiereData>)");
+    int n = 0;
+    auto summary = importPresetFiles ({ f }, n, dir);
+    CHECK (n == 1, "prfpset: one preset imported");
+    auto ups = loadUserPresets (dir.getChildFile ("Presets"));
+    CHECK (ups.size() == 1 && ups[0].name == "My Pack / Zooms & Hits / Zoom OUT", "prfpset: pack / folder / name kept");
+    if (ups.size() == 1)
+    {
+        auto& u = ups[0];
+        CHECK (u.clip && u.atEnd && u.length == secToTicks (1.0), "prfpset: OUT preset anchored to the clip end, 1 s long");
+        CHECK (u.keys.count ("scale") && u.keys["scale"].size() == 2 && std::abs (u.keys["scale"][1].v - 2.0f) < 1e-4f
+               && u.keys["scale"][1].t == secToTicks (0.5), "prfpset: Transform scale keyframes rebuilt with timing");
+        CHECK (std::abs (u.fx.get ("blur", 0) - 0.25f) < 1e-4f, "prfpset: Gaussian Blur mapped");
+        Clip c; c.start = 0; c.length = secToTicks (3);
+        applyUserPreset (c, u);
+        CHECK (c.keys["scale"][0].t == secToTicks (2.0), "prfpset: OUT keys land at the clip end");
+    }
+    CHECK (summary.contains ("Transform: Skew"), "prfpset: unmapped params are reported, not dropped silently");
+    if (auto real = juce::SystemStats::getEnvironmentVariable ("ISFX_PRF", {}); real.isNotEmpty())
+        for (auto& path : juce::StringArray::fromTokens (real, ":", ""))
+        {
+            juce::StringArray miss; juce::String err;
+            const double t0 = juce::Time::getMillisecondCounterHiRes();
+            int k = importPrfpset (juce::File (path), dir.getChildFile ("Real"), miss, err);
+            std::cout << "  PRF " << juce::File (path).getFileName() << ": " << k << " presets in " << juce::String ((juce::Time::getMillisecondCounterHiRes() - t0) / 1000.0, 1)
+                      << " s, not rebuilt: " << miss.size() << " " << err << "\n";
+        }
+    dir.deleteRecursively();
+}
+
 static void soakPlayback (const juce::String& files, int q, double secs)
 {
     const int tier = std::max (90, 1080 / std::max (1, q));
@@ -824,7 +902,8 @@ static void soakPlayback (const juce::String& files, int q, double secs)
     {
         s.clips.clear();
         const Ticks L = secToTicks (cutSec);
-        loopLen = secToTicks (30);
+        const int nClips = juce::SystemStats::getEnvironmentVariable ("ISFX_SOAK_CLIPS", "0").getIntValue();
+        loopLen = nClips > 0 ? (Ticks) nClips * L : secToTicks (30);
         for (int i = 0; (Ticks) i * L < loopLen; ++i)
         {
             auto& m = p.media[(size_t) i % p.media.size()];
@@ -835,6 +914,26 @@ static void soakPlayback (const juce::String& files, int q, double secs)
         }
         s.sortClips();
         track = (int) s.clips.size();
+    }
+    // ISFX_SOAK_FX=1000: spread that many effects (blur, lens, posterize, invert, keyframed scale/opacity/exposure, speed ramps) over the clips
+    if (const int nfx = juce::SystemStats::getEnvironmentVariable ("ISFX_SOAK_FX", "0").getIntValue(); nfx > 0 && ! s.clips.empty())
+    {
+        for (int i = 0; i < nfx; ++i)
+        {
+            auto& c = s.clips[(size_t) i % s.clips.size()];
+            switch (i % 8)
+            {
+                case 0: c.fx.set ("blur", 0.15f); break;
+                case 1: setKey (c, "lensCurve", 0, 0.0f, 2); setKey (c, "lensCurve", c.length, -0.6f, 2); break;
+                case 2: c.fx.set ("posterizeTime", 12); break;
+                case 3: setKey (c, "scale", 0, 1.0f, 2); setKey (c, "scale", c.length, 1.3f, 2); break;
+                case 4: setKey (c, "opacity", 0, 0.6f, 0); setKey (c, "opacity", c.length, 1.0f, 0); break;
+                case 5: setKey (c, "exposure", 0, 0.8f, 2); setKey (c, "exposure", c.length, 0.0f, 2); break;
+                case 6: setKey (c, "speed", 0, 1.0f, 2); setKey (c, "speed", c.length, 0.4f, 2); c.frameInterp = 1; break;
+                default: c.fx.set ("invert", 0.3f); c.fx.set ("rotation", 4); break;
+            }
+        }
+        std::cout << "SOAK " << s.clips.size() << " clips carrying " << nfx << " effects\n";
     }
     const bool liveMode = juce::SystemStats::getEnvironmentVariable ("ISFX_SOAK_LIVE", "0") == "1";
     if (! lookLibrary().empty()) applyLook (s.fx, lookLibrary()[0], 1.0f);
@@ -901,6 +1000,7 @@ int main (int argc, char** argv)
     testAnalysis();
     testSync();
     testEditing();
+    testPrfpset();
     testDropInBetween();
     testPremiereCommands();
     testChopAndGenerate();

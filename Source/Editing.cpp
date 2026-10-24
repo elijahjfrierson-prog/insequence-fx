@@ -651,6 +651,31 @@ std::vector<int> generateEdits (Project& p, juce::uint32 seed, const juce::Strin
     }
     return idx;
 }
+
+int stackGenerated (Project& p, juce::uint32 seed, const juce::String& styleMode)
+{
+    if (! p.song.valid) return 0;
+    const Sequence g = generateOne (p, kStyles[seed % 3], seed * 7919u + 31337u, styleMode);
+    auto& s = p.seq();
+    int layer = 1;
+    for (auto& t : s.tracks) if (t.name.startsWith ("VX")) ++layer;
+    std::map<int, int> tmap;
+    int n = 0;
+    for (auto& c : g.clips)
+    {
+        if (c.track < 0 || c.track >= (int) g.tracks.size() || c.mediaId == p.songId || g.tracks[(size_t) c.track].kind != TrackKind::Video) continue;
+        if (! tmap.count (c.track))
+            tmap[c.track] = s.addTrack (TrackKind::Video, "VX" + juce::String (layer++));
+        Clip k = c;
+        k.track = tmap[c.track];
+        k.id = juce::Uuid().toString();
+        k.group = 0;
+        s.clips.push_back (k);
+        ++n;
+    }
+    s.sortClips();
+    return n;
+}
 }
 
 namespace isfx
@@ -809,6 +834,52 @@ juce::String freezeFrame (Sequence& s, const juce::String& id, Ticks at, Ticks l
     mid = s.findClip (mid_id);
     mid->speed = 0.0;   // srcIn already points at the frame under the playhead; the rest of the clip keeps its song position
     return mid_id;
+}
+
+bool swapClipSlots (Sequence& s, const Project& p, const juce::String& ida, const juce::String& idb)
+{
+    auto* a = s.findClip (ida); auto* b = s.findClip (idb);
+    if (a == nullptr || b == nullptr || a == b || a->locked || b->locked) return false;
+    std::swap (a->track, b->track); std::swap (a->start, b->start); std::swap (a->length, b->length);
+    for (auto* c : { a, b })
+        if (auto* m = p.findMedia (c->mediaId); m != nullptr && m->kind != MediaKind::Image && m->duration > 0 && ! c->ramped() && c->speed > 0)
+        {
+            const Ticks need = (Ticks) ((double) c->length * c->speed);
+            if (c->srcIn + need > m->duration) c->srcIn = std::max<Ticks> (0, m->duration - need);
+            if (c->srcIn + need > m->duration) c->length = (Ticks) ((double) (m->duration - c->srcIn) / c->speed);
+        }
+    s.sortClips();
+    return true;
+}
+
+juce::StringArray speedRampNames()
+{
+    return { "Ramp into slow-mo (100% > 25%)", "Slow-mo into fast (25% > 200%)", "Speed dip (100% > 20% > 100%)",
+             "Fast in, slow out (300% > 50%)", "Bullet time (150% > 10% > 150%)" };
+}
+
+bool applySpeedRamp (Sequence& s, const Project& p, const juce::String& id, int preset)
+{
+    auto* c = s.findClip (id);
+    if (c == nullptr || c->locked || c->mediaId.isEmpty()) return false;
+    c->keys.erase ("speed");
+    if (preset < 0) return true;
+    static const std::vector<std::vector<std::pair<float, float>>> R {
+        { { .35f, 1 }, { .6f, .25f } }, { { .4f, .25f }, { .7f, 2 } }, { { .25f, 1 }, { .45f, .2f }, { .55f, .2f }, { .75f, 1 } },
+        { { .2f, 3 }, { .5f, .5f } }, { { .2f, 1.5f }, { .4f, .1f }, { .6f, .1f }, { .8f, 1.5f } } };
+    if (preset >= (int) R.size()) return false;
+    for (auto& [u, v] : R[(size_t) preset]) setKey (*c, "speed", (Ticks) ((double) c->length * u), v, 2);
+    if (auto* m = p.findMedia (c->mediaId); m != nullptr && m->kind != MediaKind::Image && m->duration > 0)
+    {
+        const double avail = (double) (m->duration - c->srcIn);
+        if (rampedOffset (*c, c->length) > avail)
+        {
+            Ticks lo = 1, hi = c->length;
+            while (hi - lo > 1) { Ticks mid = (lo + hi) / 2; (rampedOffset (*c, mid) <= avail ? lo : hi) = mid; }
+            c->length = lo;
+        }
+    }
+    return true;
 }
 
 bool setClipSpeed (Sequence& s, const Project& p, const juce::String& id, double speed)

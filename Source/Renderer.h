@@ -6,6 +6,12 @@
 
 namespace isfx
 {
+// in-between frame at f (0 = a, 1 = b): cross-blend, or block-matched optical flow warp of both frames
+void interpolateFrames (const Frame& a, const Frame& b, float f, bool flow, Frame& out);
+}
+
+namespace isfx
+{
 struct AspectPreset { const char* name; int w, h; const char* use; };
 const std::vector<AspectPreset>& aspectPresets();
 // output size for the project aspect with the given short side (1080 = HD, 2160 = 4K), even dimensions
@@ -46,7 +52,7 @@ private:
     {
         std::unique_ptr<VideoDecoder> dec;
         std::unique_ptr<PrefetchDecoder> pre;
-        std::shared_ptr<const Frame> shown;
+        std::shared_ptr<const Frame> shown, shownNext;
         double fps = 30;
         Frame still, last;
         bool failed = false;
@@ -60,7 +66,7 @@ private:
     int late = 0;
     juce::uint32 useClock = 0;
     const Frame* frameFor (const Project& p, const juce::String& mediaId, Ticks srcT, int decodeH, int& rotation, bool* opaque = nullptr,
-                          bool primeOnly = false);
+                          bool primeOnly = false, const Frame** after = nullptr);
     std::shared_ptr<Lut3D> lutFor (const juce::String& path);
 
     std::map<juce::String, std::unique_ptr<Source>> sources;
