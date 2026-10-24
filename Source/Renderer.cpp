@@ -882,6 +882,39 @@ bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int 
         });
     }
 
+    // ---- CRT: RGB phosphor triads (staggered columns), gaps between cells, convergence offset, curved glass, glow
+    if (const float crt = sv ("crt"); crt > 0)
+    {
+        auto src = img;
+        const float cell = std::max (2.0f, minWH / 270.0f), conv = crt * W * 0.0015f, curve = crt * 0.08f;
+        parallelRows (H, [&] (int y) {
+            for (int x = 0; x < W; ++x)
+            {
+                float* o = &img[((size_t) y * W + x) * 3];
+                const float u = (x + 0.5f) / W * 2 - 1, v = (y + 0.5f) / H * 2 - 1, k = 1 + curve * (u * u + v * v);
+                const float sx = (u * k * 0.5f + 0.5f) * W - 0.5f, sy = (v * k * 0.5f + 0.5f) * H - 0.5f;
+                if (sx < 0 || sy < 0 || sx > W - 1 || sy > H - 1) { o[0] = o[1] = o[2] = 0; continue; }
+                const float* row = &src[(size_t) (int) sy * W * 3];
+                auto at = [&] (float xx, int c) {
+                    xx = juce::jlimit (0.0f, (float) W - 1.001f, xx); int x0 = (int) xx; float f = xx - x0;
+                    return mixf (row[x0 * 3 + c], row[std::min (W - 1, x0 + 1) * 3 + c], f);
+                };
+                const float cx = x / cell; const int col = (int) cx;
+                const float fy = (y + (col & 1) * cell * 1.5f) / (cell * 3.0f);
+                const float fxr = cx - col, fyr = fy - std::floor (fy);
+                const float gap = (std::abs (fxr - 0.5f) <= 0.4f && std::abs (fyr - 0.5f) <= 0.4f) ? 1.0f : 0.35f;
+                const float vig = 1.0f - crt * 0.35f * std::pow (std::max (std::abs (u), std::abs (v)), 6.0f);
+                const float c[3] { at (sx + conv, 0), at (sx, 1), at (sx - conv, 2) };
+                for (int q = 0; q < 3; ++q)
+                {
+                    const float glow = (at (sx - cell * 1.5f, q) + at (sx + cell * 1.5f, q)) * 0.5f;
+                    const float m = (col % 3 == q ? 1.0f : 0.25f) * gap * 2.6f;
+                    o[q] = (c[q] * mixf (1.0f, m, crt * 0.85f) + glow * 0.25f * crt) * vig;
+                }
+            }
+        });
+    }
+
     // ---- grade + LUT + acid color
     auto lut = lutFor (postFx.lutPath);
     float shutter = 1.0f;

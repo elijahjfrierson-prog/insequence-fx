@@ -50,6 +50,7 @@ Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription
 Source: "..\..\build\InSequenceFX_artefacts\Release\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\ffmpeg\bin\*.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\..\content\*"; DestDir: "{app}\Content"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Registry]
 Root: HKA; Subkey: "Software\Classes\.isfx"; ValueType: string; ValueName: ""; ValueData: "InSequenceFX.Project"; Flags: uninsdeletevalue

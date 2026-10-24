@@ -45,6 +45,7 @@ const std::vector<ParamDef>& sequenceParams()
         { "vignette",   "Vignette",     0, 1, 0, "Film",  "Darkens the frame edges." },
         { "letterbox",  "Letterbox",    0, 1, 0, "Film",  "Cinema bars (0.5 = 2.39:1)." },
         { "letterboxRatio", "Bars ratio", 1.33f, 2.76f, 2.39f, "Film", "Movie border aspect: 2.39 scope, 2.00, 1.85 flat." },
+        { "crt",        "CRT Screen",   0, 1, 0, "Distort","Real tube TV: RGB phosphor mask, scanlines, convergence offset, curved glass and glow." },
         { "vhs",        "VHS",          0, 1, 0, "Distort","Tape chroma bleed, tracking wobble, noise lines." },
         { "rgbSplit",   "RGB Split",    0, 1, 0, "Distort","Separates red and blue channels horizontally." },
         { "glitch",     "Glitch",       0, 1, 0, "Distort","Block displacement bursts, driven by the beat." },
@@ -135,6 +136,14 @@ const ParamDef* findParam (const std::vector<ParamDef>& defs, const juce::String
     return nullptr;
 }
 
+juce::File contentDir()
+{
+    const auto dir = juce::File::getSpecialLocation (juce::File::currentExecutableFile).getParentDirectory();
+    for (auto d : { dir.getSiblingFile ("Resources").getChildFile ("Content"), dir.getChildFile ("Content") })
+        if (d.isDirectory()) return d;
+    return {};
+}
+
 const std::vector<Look>& lookLibrary()
 {
     static const std::vector<Look> L {
@@ -161,6 +170,12 @@ const std::vector<Look>& lookLibrary()
           { { "contrast", 1.22f }, { "saturation", .72f }, { "crush", .3f }, { "grain", .35f }, { "grainSize", 1.15f }, { "vignette", .4f }, { "blackFlash2", .45f } } },
         { "Acid Abstract", "Abstract", "Oversaturated, split channels, strobing.",
           { { "saturation", 1.8f }, { "rgbSplit", .5f }, { "hatStrobe", .35f }, { "glitch", .25f }, { "bloom", .4f } } },
+        { "CRT TV", "VHS", "Curved tube TV: phosphor mask, scanlines and a soft glow.",
+          { { "crt", .8f }, { "bloom", .2f }, { "contrast", 1.08f }, { "saturation", 1.1f }, { "vignette", .3f } } },
+        { "VHS Camcorder", "VHS", "Home-video tape: chroma bleed, tracking wobble, warm faded blacks.",
+          { { "vhs", .6f }, { "fade", .12f }, { "temperature", .08f }, { "saturation", .9f }, { "grain", .15f } } },
+        { "VHS on CRT", "VHS", "Tape played back on a tube TV: bleed, wobble, phosphor mask and glow.",
+          { { "vhs", .55f }, { "crt", .7f }, { "fade", .1f }, { "bloom", .15f }, { "vignette", .25f } } },
         { "Performance Punch", "Beat", "Kick zoom, snare flash and kick shake.",
           { { "kickZoom", .6f }, { "snareFlash", .45f }, { "shake", .35f }, { "contrast", 1.1f } } },
         { "Mono Contrast", "Color", "High contrast black and white.",

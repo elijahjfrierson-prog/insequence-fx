@@ -45,7 +45,8 @@ juce::StringArray chopModeNames() { return { "CHOP 1/8", "CHOP 1/16", "CHOP 1/32
 std::vector<Ticks> hatRolls (const SongAnalysis& s, Ticks a, Ticks b)
 {
     std::vector<Ticks> hats, out;
-    for (auto& e : s.events) if (e.type == EventType::HiHat && e.time >= a && e.time < b) hats.push_back (e.time);
+    // detect rolls over the whole song so a roll straddling a clip boundary still counts, then keep the hits inside [a, b)
+    for (auto& e : s.events) if (e.type == EventType::HiHat) hats.push_back (e.time);
     std::sort (hats.begin(), hats.end());
     const Ticks gap = secToTicks (s.beatSec() / 3.0 + 0.01), minLen = secToTicks (1.0 / 15.0);
     for (size_t i = 0; i < hats.size();)
@@ -55,7 +56,8 @@ std::vector<Ticks> hatRolls (const SongAnalysis& s, Ticks a, Ticks b)
         if (j - i + 1 >= 4)
         {
             Ticks last = hats[i] - minLen * 2;
-            for (size_t k = i; k <= j; ++k) if (hats[k] - last >= minLen) { out.push_back (hats[k]); last = hats[k]; }
+            for (size_t k = i; k <= j; ++k)
+                if (hats[k] - last >= minLen) { if (hats[k] >= a && hats[k] < b) out.push_back (hats[k]); last = hats[k]; }
         }
         i = j + 1;
     }
@@ -481,6 +483,7 @@ static Sequence generateOne (const Project& p, const StyleRules& st, juce::uint3
 
     const double beat = a.beatSec();
     int prevSection = -1;
+    std::vector<std::pair<Ticks, Ticks>> flashHits;   // Black Flash 2 is a sequence-level beat effect, so it rides on an effect layer
     juce::String prev;
     // walk the song in musical segments from 0 (pickup before first downbeat is its own segment)
     Ticks t = 0;
@@ -559,10 +562,20 @@ static Sequence generateOne (const Project& p, const StyleRules& st, juce::uint3
                 setKey (placed, "scale", secToTicks (std::min (0.3, len * 0.6)), 1.0f);
             }
             if (juce::String (st.name) == "Underground" && sec == 2 && len >= beat && rng.nextDouble() < 0.2)
-                placed.fx.set ("blackFlash2", 0.6f);
+                flashHits.push_back ({ placed.start, placed.length });
         }
         prevSection = sec;
         t = t1;
+    }
+    if (! flashHits.empty())
+    {
+        const int ftr = insertVideoTrack (s);
+        for (auto& [fa, fl] : flashHits)
+        {
+            Clip fc; fc.id = newId(); fc.track = ftr; fc.start = fa; fc.length = fl; fc.name = "Black Flash 2";
+            fc.fx.set ("blackFlash2", 0.6f);
+            s.clips.push_back (fc);
+        }
     }
     for (auto& l : lookLibrary()) if (l.name == st.look) applyLook (s.fx, l, 1.0f);
     if (styleMode.isNotEmpty()) applyStyleMode (s.fx, styleMode);

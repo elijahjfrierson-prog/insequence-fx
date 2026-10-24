@@ -177,6 +177,27 @@ void Timeline::paint (juce::Graphics& g)
         if (c.locked) { g.setColour (dim); g.drawText ("L", r.reduced (3), juce::Justification::bottomRight); }
     }
 
+    // effect ribbons: each effect / adjustment layer draws a thin band in its colour across every clip it covers (and on itself)
+    {
+        int lane = 0;
+        for (auto& e : s.clips)
+        {
+            if (e.mediaId.isNotEmpty() || ! e.enabled || e.track < 0 || e.track >= (int) s.tracks.size() || s.tracks[(size_t) e.track].hidden) continue;
+            const auto col = juce::Colour::fromHSV ((float) (e.name.hashCode() & 0xff) / 255.0f, 0.65f, 0.95f, 0.95f);
+            const int off = 2 + (lane++ % 3) * 4;
+            for (auto& c : s.clips)
+            {
+                if (c.track < 0 || c.track >= (int) s.tracks.size() || s.tracks[(size_t) c.track].kind != TrackKind::Video) continue;
+                if (c.mediaId.isEmpty() && &c != &e) continue;
+                const Ticks a0 = std::max (c.start, e.start), b0 = std::min (c.end(), e.end());
+                if (b0 <= a0) continue;
+                const int xa = std::max (kHeader, secToX (ticksToSec (a0))), xb = std::min (W, secToX (ticksToSec (b0)));
+                if (xb <= xa) continue;
+                g.setColour (col); g.fillRect (xa, trackY (c.track) + off, xb - xa, 3);
+            }
+        }
+    }
+
     // transition dots on every cut: white = empty, black = has a transition. Click one to pick a transition.
     for (auto& d : cutDots())
     {
@@ -344,7 +365,7 @@ void Timeline::addAdjustmentLayer (Ticks at)
     const auto& song = st.project.song;
     const Ticks len = song.valid ? secToTicks (song.beatSec() * song.beatsPerBar * 4) : secToTicks (8.0);
     st.edit ("New Adjustment Layer");
-    FxStack fx; fx.set ("exposure", 0.0f);
+    FxStack fx;   // empty: a neutral layer must not override sequence settings until effects are added
     auto id = addEffectClip (st.project.seq(), fx, "Adjustment Layer", magnetSnap (at, 0), len);
     if (id.isNotEmpty()) st.selected = { id };
     if (onEdited) onEdited();
@@ -611,6 +632,13 @@ void Timeline::mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheel
         vScroll = juce::jlimit (0, std::max (0, total - (getHeight() - kRuler) + 20), vScroll - (int) std::lround (w.deltaY * 240));
         repaint(); return;
     }
+    // trackpad: two-finger up/down scrolls the tracks, left/right scrolls time (a plain mouse wheel still scrolls time)
+    if (w.isSmooth && std::abs (w.deltaY) > std::abs (w.deltaX))
+    {
+        int total = 0; for (auto& tk : st.project.seq().tracks) total += tk.height;
+        vScroll = juce::jlimit (0, std::max (0, total - (getHeight() - kRuler) + 20), vScroll - (int) std::lround (w.deltaY * 240));
+        repaint(); return;
+    }
     float d = std::abs (w.deltaX) > std::abs (w.deltaY) ? w.deltaX : w.deltaY;
     scrollSec = std::max (0.0, scrollSec - d * 300 / pxPerSec);
     repaint();
@@ -659,6 +687,26 @@ void Timeline::itemDropped (const SourceDetails& d)
                 if (onEdited) onEdited();
                 break;
             }
+        return;
+    }
+    if (desc.startsWith ("lut:"))
+    {
+        const juce::File f (desc.fromFirstOccurrenceOf ("lut:", false, false));
+        FxStack fx; fx.lutPath = f.getFullPathName();
+        int edge = 0; const Clip* under = clipAt (d.localPosition, edge);
+        Ticks at = under ? under->start : magnetSnap (secToTicks (std::max (0.0, xToSec (d.localPosition.x))), 0);
+        Ticks len = under ? under->length : beat * st.project.song.beatsPerBar * 2;
+        st.edit ("Add LUT");
+        auto id = addEffectClip (st.project.seq(), fx, "LUT " + f.getFileNameWithoutExtension(), at, len);
+        if (id.isNotEmpty()) st.selected = { id };
+        if (onEdited) onEdited();
+        return;
+    }
+    if (desc.startsWith ("sfx:"))
+    {
+        const juce::File f (desc.fromFirstOccurrenceOf ("sfx:", false, false));
+        Ticks at = magnetSnap (secToTicks (std::max (0.0, xToSec (d.localPosition.x))), 0);
+        if (onFilesDropped) onFilesDropped ({ f }, trackAt (d.localPosition.y), at);
         return;
     }
     if (! desc.startsWith ("media:")) return;

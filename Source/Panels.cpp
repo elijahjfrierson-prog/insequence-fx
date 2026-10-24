@@ -412,6 +412,20 @@ FxLibrary::FxLibrary (AppState& s) : st (s)
     rows.push_back ({ "EFFECTS & LOOKS  (drag onto clips)", {}, {}, true });
     for (auto& l : lookLibrary())
         rows.push_back ({ l.name, "look:" + l.name, l.help + "\nDrop on a clip for an effect layer over it, or on empty space for a 2-bar layer. Trim, move, fade (opacity) or disable it like any clip.", false });
+    if (auto cd = contentDir(); cd.isDirectory())
+    {
+        auto luts = cd.getChildFile ("LUTs").findChildFiles (juce::File::findFiles, true, "*.cube");
+        luts.sort();
+        if (! luts.isEmpty()) rows.push_back ({ "LUTS  (drag onto clips)", {}, {}, true });
+        for (auto& f : luts)
+            rows.push_back ({ f.getFileNameWithoutExtension(), "lut:" + f.getFullPathName(),
+                              f.getParentDirectory().getFileName() + "\nDrop on a clip for a LUT layer over it, or on empty space for a 2-bar LUT layer. Fade it with opacity.", false });
+        auto sfx = cd.getChildFile ("SFX").findChildFiles (juce::File::findFiles, true, "*.mp3;*.wav;*.aif;*.aiff");
+        sfx.sort();
+        if (! sfx.isEmpty()) rows.push_back ({ "SOUND FX  (drag onto a track)", {}, {}, true });
+        for (auto& f : sfx)
+            rows.push_back ({ f.getFileNameWithoutExtension(), "sfx:" + f.getFullPathName(), "Drop on the timeline to add this sound at that spot.", false });
+    }
     list.setModel (this); list.setRowHeight (22);
     list.setColour (juce::ListBox::backgroundColourId, theme::panel);
     addAndMakeVisible (list);

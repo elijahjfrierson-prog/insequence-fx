@@ -216,6 +216,17 @@ static void testEditing()
         auto rolls = hatRolls (rs, r0, r0 + secToTicks (2.0));
         CHECK (rolls.size() >= 6, "hi-hat roll found and cut on every roll hat (" + juce::String ((int) rolls.size()) + ")");
         CHECK (hatRolls (p.song, 0, secToTicks (10)).empty(), "steady 8th hats are not a roll");
+        {
+            auto mid = rolls.size() >= 4 ? rolls[2] : r0;
+            auto left = hatRolls (rs, r0 - secToTicks (1.0), mid), right = hatRolls (rs, mid, r0 + secToTicks (2.0));
+            CHECK (! left.empty() && ! right.empty() && left.size() + right.size() == rolls.size(), "a roll split across two clips still cuts on both sides");
+        }
+        {
+            auto dir = juce::File (__FILE__).getParentDirectory().getSiblingFile ("content").getChildFile ("LUTs");
+            int ok = 0, n = 0; juce::String why;
+            for (auto& f : dir.findChildFiles (juce::File::findFiles, true, "*.cube")) { ++n; Lut3D l; if (l.load (f, why)) ++ok; else std::cout << "  LUT fail " << f.getFileName() << ": " << why << "\n"; }
+            CHECK (n > 0 && ok == n, "every bundled LUT loads (" + juce::String (ok) + "/" + juce::String (n) + ")");
+        }
     }
     History h;
     auto id = addMediaClip (p, "take1", 0, 0);
