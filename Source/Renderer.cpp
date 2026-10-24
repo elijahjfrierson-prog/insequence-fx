@@ -361,6 +361,28 @@ void applyLayout (const Project& p, Clip& c, int slot)
     c.fx.set ("maskShape", 2); c.fx.set ("maskW", w); c.fx.set ("maskH", h); c.fx.set ("maskFeather", 0.0f);
 }
 
+bool clipGeometry (const Project& p, const Clip& c, float W, float H, ClipGeom& g)
+{
+    auto* m = p.findMedia (c.mediaId);
+    if (m == nullptr || m->kind == MediaKind::Audio || m->width <= 0 || m->height <= 0 || W <= 0 || H <= 0) return false;
+    const auto& CP = clipParams();
+    auto cv = [&] (const char* id) { return fxValue (c.fx, CP, id); };
+    const bool sw = m->rotation == 90 || m->rotation == 270;
+    const float rw = (float) (sw ? m->height : m->width), rh = (float) (sw ? m->width : m->height);
+    const int reframe = (int) std::lround (cv ("reframe"));
+    const float base = reframe == 0 ? std::max (W / rw, H / rh) : std::min (W / rw, H / rh);
+    const float s = base * cv ("scale");
+    const float rot = -cv ("rotation") * juce::MathConstants<float>::pi / 180.0f;
+    g.cr = std::cos (rot); g.sr = std::sin (rot);
+    g.cx = W * 0.5f + cv ("posX") * W * 0.5f; g.cy = H * 0.5f + cv ("posY") * H * 0.5f;
+    g.hx = rw * 0.5f * s * cv ("scaleX"); g.hy = rh * 0.5f * s * cv ("scaleY");
+    float cL = cv ("cropL"), cR = cv ("cropR");
+    if (cv ("mirror") > 0.5f) std::swap (cL, cR);
+    g.x0 = -g.hx + 2 * g.hx * cL; g.x1 = g.hx - 2 * g.hx * cR;
+    g.y0 = -g.hy + 2 * g.hy * cv ("cropT"); g.y1 = g.hy - 2 * g.hy * cv ("cropB");
+    return true;
+}
+
 juce::StringArray layoutNames()
 {
     return { "Full frame", "Top half", "Bottom half", "Left half", "Right half", "Top third", "Middle third", "Bottom third",

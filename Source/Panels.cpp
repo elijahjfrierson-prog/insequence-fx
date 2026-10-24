@@ -5,6 +5,7 @@ namespace isfx
 // ============================================================ Preview
 Preview::Preview (AppState& s) : juce::Thread ("ISFX preview"), st (s)
 {
+    setWantsKeyboardFocus (true);
     snap = std::make_shared<Project> (st.project);
     startThread();
 }
@@ -75,6 +76,183 @@ void Preview::run()
     }
 }
 
+static bool showsVideo (const Project& p, const Sequence& s, const Clip& c, Ticks t)
+{
+    if (! c.enabled || c.mediaId.isEmpty() || t < c.start || t >= c.end()) return false;
+    if (c.track < 0 || c.track >= (int) s.tracks.size()) return false;
+    auto& tr = s.tracks[(size_t) c.track];
+    if (tr.kind != TrackKind::Video || tr.hidden) return false;
+    auto* m = p.findMedia (c.mediaId);
+    return m != nullptr && m->kind != MediaKind::Audio;
+}
+
+const Clip* Preview::shownClip (const juce::String& id) const
+{
+    auto& s = st.project.seq();
+    for (auto& c : s.clips) if (c.id == id) return showsVideo (st.project, s, c, st.playhead) ? &c : nullptr;
+    return nullptr;
+}
+
+bool Preview::geomFor (const Clip& c, ClipGeom& g) const
+{
+    auto fa = frameArea().toFloat();
+    if (! clipGeometry (st.project, c, fa.getWidth(), fa.getHeight(), g)) return false;
+    g.cx += fa.getX(); g.cy += fa.getY();
+    return true;
+}
+
+Preview::Handle Preview::hitHandle (const ClipGeom& g, juce::Point<float> p, int& idx) const
+{
+    const float mx = (g.x0 + g.x1) * 0.5f, my = (g.y0 + g.y1) * 0.5f;
+    auto top = g.toScreen (mx, g.y0);
+    juce::Point<float> knob { top.x - g.sr * 26, top.y - g.cr * 26 };
+    if (p.getDistanceFrom (knob) <= 9) return Handle::Rotate;
+    const juce::Point<float> corners[] = { g.toScreen (g.x0, g.y0), g.toScreen (g.x1, g.y0), g.toScreen (g.x1, g.y1), g.toScreen (g.x0, g.y1) };
+    for (idx = 0; idx < 4; ++idx) if (p.getDistanceFrom (corners[idx]) <= 8) return Handle::Corner;
+    const juce::Point<float> edges[] = { g.toScreen (g.x0, my), g.toScreen (g.x1, my), g.toScreen (mx, g.y0), g.toScreen (mx, g.y1) };
+    for (idx = 0; idx < 4; ++idx) if (p.getDistanceFrom (edges[idx]) <= 8) return Handle::Edge;
+    idx = 0;
+    return g.contains (p) ? Handle::Move : Handle::None;
+}
+
+void Preview::mouseMove (const juce::MouseEvent& e)
+{
+    juce::MouseCursor cur = juce::MouseCursor::NormalCursor;
+    if (! live && st.selected.size() == 1)
+        if (auto* c = shownClip (st.selected[0]))
+        {
+            ClipGeom g; int idx = 0;
+            if (geomFor (*c, g))
+                switch (hitHandle (g, e.position, idx))
+                {
+                    case Handle::Move: cur = juce::MouseCursor::DraggingHandCursor; break;
+                    case Handle::Corner: cur = juce::MouseCursor::BottomRightCornerResizeCursor; break;
+                    case Handle::Edge: cur = idx < 2 ? juce::MouseCursor::LeftRightResizeCursor : juce::MouseCursor::UpDownResizeCursor; break;
+                    case Handle::Rotate: cur = juce::MouseCursor::CrosshairCursor; break;
+                    case Handle::None: break;
+                }
+        }
+    setMouseCursor (cur);
+}
+
+void Preview::mouseDown (const juce::MouseEvent& e)
+{
+    handle = Handle::None; movedHandle = false;
+    if (live || e.mods.isPopupMenu()) return;
+    const Clip* c = st.selected.size() == 1 ? shownClip (st.selected[0]) : nullptr;
+    ClipGeom g;
+    if (c != nullptr && geomFor (*c, g)) handle = hitHandle (g, e.position, handleIdx);
+    if (handle == Handle::None)
+    {
+        // pick the top-most visible clip under the mouse (higher track = on top)
+        c = nullptr;
+        auto& s = st.project.seq();
+        for (auto& o : s.clips)
+            if (showsVideo (st.project, s, o, st.playhead) && (c == nullptr || o.track > c->track) && geomFor (o, g) && g.contains (e.position))
+                c = &o;
+        if (c == nullptr) { if (! st.selected.isEmpty()) { st.selected.clear(); if (onSelect) onSelect(); } repaint(); return; }
+        st.selected = { c->id };
+        if (onSelect) onSelect();
+        c = shownClip (st.selected[0]);
+        if (c == nullptr) return;
+        handle = c->locked ? Handle::None : Handle::Move;
+    }
+    if (c->locked) handle = Handle::None;
+    if (handle == Handle::None) return;
+    editId = c->id; before = st.project; fx0 = c->fx; geomFor (*c, g0); down = e.position;
+}
+
+void Preview::mouseDrag (const juce::MouseEvent& e)
+{
+    if (handle == Handle::None) return;
+    Clip* c = st.project.seq().findClip (editId);
+    if (c == nullptr) return;
+    const auto& CP = clipParams();
+    auto v0 = [&] (const char* id) { return fxValue (fx0, CP, id); };
+    auto fa = frameArea().toFloat();
+    auto p = e.position;
+    c->fx = fx0;
+    switch (handle)
+    {
+        case Handle::Move:
+        {
+            float dx = p.x - down.x, dy = p.y - down.y;
+            if (e.mods.isShiftDown()) { if (std::abs (dx) > std::abs (dy)) dy = 0; else dx = 0; }
+            c->fx.set ("posX", juce::jlimit (-1.0f, 1.0f, v0 ("posX") + dx / (fa.getWidth() * 0.5f)));
+            c->fx.set ("posY", juce::jlimit (-1.0f, 1.0f, v0 ("posY") + dy / (fa.getHeight() * 0.5f)));
+            break;
+        }
+        case Handle::Corner:
+        {
+            auto l0 = g0.toLocal (down), l = g0.toLocal (p);
+            if (e.mods.isShiftDown())
+            {
+                c->fx.set ("scaleX", juce::jlimit (0.1f, 4.0f, v0 ("scaleX") * std::abs (l.x) / std::max (1.0f, std::abs (l0.x))));
+                c->fx.set ("scaleY", juce::jlimit (0.1f, 4.0f, v0 ("scaleY") * std::abs (l.y) / std::max (1.0f, std::abs (l0.y))));
+            }
+            else
+            {
+                float f = l.getDistanceFromOrigin() / std::max (1.0f, l0.getDistanceFromOrigin());
+                c->fx.set ("scale", juce::jlimit (0.1f, 4.0f, v0 ("scale") * f));
+            }
+            break;
+        }
+        case Handle::Edge:
+        {
+            auto l = g0.toLocal (p);
+            const bool mir = v0 ("mirror") > 0.5f;
+            const char* left = mir ? "cropR" : "cropL";
+            const char* right = mir ? "cropL" : "cropR";
+            const float hx = std::max (1.0f, g0.hx), hy = std::max (1.0f, g0.hy);
+            if (handleIdx == 0) c->fx.set (left, juce::jlimit (0.0f, 0.98f - v0 (right), (l.x + hx) / (2 * hx)));
+            if (handleIdx == 1) c->fx.set (right, juce::jlimit (0.0f, 0.98f - v0 (left), (hx - l.x) / (2 * hx)));
+            if (handleIdx == 2) c->fx.set ("cropT", juce::jlimit (0.0f, 0.98f - v0 ("cropB"), (l.y + hy) / (2 * hy)));
+            if (handleIdx == 3) c->fx.set ("cropB", juce::jlimit (0.0f, 0.98f - v0 ("cropT"), (hy - l.y) / (2 * hy)));
+            break;
+        }
+        case Handle::Rotate:
+        {
+            float a0 = std::atan2 (down.y - g0.cy, down.x - g0.cx), a = std::atan2 (p.y - g0.cy, p.x - g0.cx);
+            float deg = v0 ("rotation") + (a - a0) * 180.0f / juce::MathConstants<float>::pi;
+            while (deg > 180) deg -= 360;
+            while (deg < -180) deg += 360;
+            if (e.mods.isShiftDown()) deg = std::round (deg / 15.0f) * 15.0f;
+            c->fx.set ("rotation", deg);
+            break;
+        }
+        case Handle::None: break;
+    }
+    movedHandle = true;
+    if (onEdited) onEdited();
+}
+
+void Preview::mouseUp (const juce::MouseEvent&)
+{
+    if (handle != Handle::None && movedHandle) { st.history.push (before, "Transform"); st.dirty = true; }
+    handle = Handle::None; movedHandle = false;
+}
+
+bool Preview::keyPressed (const juce::KeyPress& k)
+{
+    const int kc = k.getKeyCode();
+    if (kc != juce::KeyPress::leftKey && kc != juce::KeyPress::rightKey && kc != juce::KeyPress::upKey && kc != juce::KeyPress::downKey) return false;
+    if (live || st.selected.size() != 1) return false;
+    auto* shown = shownClip (st.selected[0]);
+    if (shown == nullptr || shown->locked) return false;
+    auto fa = frameArea().toFloat();
+    float step = k.getModifiers().isShiftDown() ? 10.0f : 1.0f;
+    auto prev = st.project;
+    Clip* c = st.project.seq().findClip (shown->id);
+    const auto& CP = clipParams();
+    if (kc == juce::KeyPress::leftKey || kc == juce::KeyPress::rightKey)
+        c->fx.set ("posX", juce::jlimit (-1.0f, 1.0f, fxValue (c->fx, CP, "posX") + (kc == juce::KeyPress::leftKey ? -step : step) / (fa.getWidth() * 0.5f)));
+    else
+        c->fx.set ("posY", juce::jlimit (-1.0f, 1.0f, fxValue (c->fx, CP, "posY") + (kc == juce::KeyPress::upKey ? -step : step) / (fa.getHeight() * 0.5f)));
+    st.history.push (prev, "Nudge"); st.dirty = true;
+    if (onEdited) onEdited();
+    return true;
+}
+
 void Preview::paint (juce::Graphics& g)
 {
     g.fillAll (juce::Colour (0xff07080a));
@@ -87,6 +265,38 @@ void Preview::paint (juce::Graphics& g)
         g.drawImage (im, fa.toFloat(), juce::RectanglePlacement::stretchToFit);
     }
     g.setColour (theme::line); g.drawRect (fa.expanded (1));
+    if (! live && st.selected.size() == 1)
+        if (auto* c = shownClip (st.selected[0]))
+        {
+            ClipGeom cg;
+            if (geomFor (*c, cg))
+            {
+                juce::Graphics::ScopedSaveState ss (g);
+                g.reduceClipRegion (getLocalBounds());
+                const float mx = (cg.x0 + cg.x1) * 0.5f, my = (cg.y0 + cg.y1) * 0.5f;
+                juce::Path box;
+                box.startNewSubPath (cg.toScreen (cg.x0, cg.y0)); box.lineTo (cg.toScreen (cg.x1, cg.y0));
+                box.lineTo (cg.toScreen (cg.x1, cg.y1)); box.lineTo (cg.toScreen (cg.x0, cg.y1)); box.closeSubPath();
+                g.setColour (juce::Colours::black.withAlpha (0.5f)); g.strokePath (box, juce::PathStrokeType (3.0f));
+                g.setColour (theme::accent); g.strokePath (box, juce::PathStrokeType (1.5f));
+                auto top = cg.toScreen (mx, cg.y0);
+                juce::Point<float> knob { top.x - cg.sr * 26, top.y - cg.cr * 26 };
+                g.drawLine ({ top, knob }, 1.5f);
+                g.setColour (juce::Colours::white); g.fillEllipse (juce::Rectangle<float> (11, 11).withCentre (knob));
+                g.setColour (theme::accent); g.drawEllipse (juce::Rectangle<float> (11, 11).withCentre (knob), 1.5f);
+                auto sq = [&] (juce::Point<float> q, bool round)
+                {
+                    auto r = juce::Rectangle<float> (9, 9).withCentre (q);
+                    g.setColour (juce::Colours::white); round ? g.fillEllipse (r) : g.fillRect (r);
+                    g.setColour (theme::accent); round ? g.drawEllipse (r, 1.2f) : g.drawRect (r, 1.2f);
+                };
+                for (auto q : { cg.toScreen (cg.x0, cg.y0), cg.toScreen (cg.x1, cg.y0), cg.toScreen (cg.x1, cg.y1), cg.toScreen (cg.x0, cg.y1) }) sq (q, false);
+                for (auto q : { cg.toScreen (cg.x0, my), cg.toScreen (cg.x1, my), cg.toScreen (mx, cg.y0), cg.toScreen (mx, cg.y1) }) sq (q, true);
+                auto ctr = cg.toScreen (mx, my);
+                g.setColour (theme::accent2.withAlpha (0.8f));
+                g.drawLine (ctr.x - 6, ctr.y, ctr.x + 6, ctr.y, 1.0f); g.drawLine (ctr.x, ctr.y - 6, ctr.x, ctr.y + 6, 1.0f);
+            }
+        }
     g.setColour (theme::dim); g.setFont (11.0f);
     double sec = ticksToSec (st.playhead);
     auto fr = ticksToFrame (st.playhead, st.project.fps) % std::max (1, (int) std::lround (st.project.fps));

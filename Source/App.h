@@ -97,7 +97,26 @@ public:
     void setProject (const Project& p);
     double renderMs() const { return lastMs; }
     void setLive (bool b) { if (live.exchange (b) && ! b) requestFrame (lastReq); }
+    // on-video transform: drag inside = move, corners = scale (Shift = free X/Y), edges = crop, knob = rotate (Shift = 15 deg)
+    std::function<void()> onEdited, onSelect;
+    void mouseDown (const juce::MouseEvent&) override;
+    void mouseDrag (const juce::MouseEvent&) override;
+    void mouseUp (const juce::MouseEvent&) override;
+    void mouseMove (const juce::MouseEvent&) override;
+    bool keyPressed (const juce::KeyPress&) override;
 private:
+    enum class Handle { None, Move, Corner, Edge, Rotate };
+    Handle hitHandle (const ClipGeom&, juce::Point<float>, int& idx) const;
+    bool geomFor (const Clip&, ClipGeom&) const;
+    const Clip* shownClip (const juce::String& id) const;
+    Handle handle = Handle::None;
+    int handleIdx = 0;
+    bool movedHandle = false;
+    juce::String editId;
+    Project before;
+    FxStack fx0;
+    ClipGeom g0;
+    juce::Point<float> down;
     void run() override;
     void handleAsyncUpdate() override { repaint(); }
     AppState& st;

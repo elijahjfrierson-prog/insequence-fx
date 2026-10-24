@@ -551,6 +551,23 @@ static void testLayoutsStacksAndLayers()
         CHECK (fxId.isNotEmpty() && at (withFx, 54, 170, 0) < at (plain, 54, 170, 0) - 40 && at (after, 54, 170, 0) == at (plain, 54, 170, 0),
                "effect layer applies only while it plays");
     }
+    // on-video transform handles use the renderer's exact geometry (position, scale, rotation)
+    {
+        Sequence sq = s; sq.clips.clear();
+        Project q = p; q.aspectW = 16; q.aspectH = 9;
+        if (auto im = juce::ImageFileFormat::loadFrom (redF); im.isValid())
+            for (auto& m : q.media) { m.width = im.getWidth(); m.height = im.getHeight(); }
+        Clip c = a; c.fx = {}; c.fx.set ("posX", 0.4f); c.fx.set ("scale", 0.5f); c.fx.set ("rotation", 30.0f); c.fx.set ("cropR", 0.25f);
+        sq.clips.push_back (c);
+        Renderer r; std::vector<juce::uint8> o; const int W = 320, H = 180;
+        r.render (q, sq, secToTicks (0.5), W, H, o, 0);
+        ClipGeom g; bool ok = clipGeometry (q, c, (float) W, (float) H, g);
+        auto red = [&] (juce::Point<float> pt) { int x = (int) pt.x, y = (int) pt.y;
+            return x >= 0 && y >= 0 && x < W && y < H && o[((size_t) y * W + x) * 4] > 120 && o[((size_t) y * W + x) * 4 + 2] < 100; };
+        CHECK (ok && red (g.toScreen (0, 0)) && red (g.toScreen (g.x0 * 0.85f, g.y0 * 0.85f)) && red (g.toScreen (g.x1 - 4, g.y1 * 0.85f))
+               && ! red (g.toScreen (g.x0 * 1.2f, g.y0 * 1.2f)) && ! red (g.toScreen (g.x1 + 6, 0)),
+               "transform handle box matches the rendered clip (move/scale/rotate/crop)");
+    }
     // 1000 stacked clips: a full-frame opaque top layer hides the rest, so the frame costs about one layer
     {
         Sequence one = s; one.clips.clear();

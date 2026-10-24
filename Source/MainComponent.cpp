@@ -232,6 +232,8 @@ MainComponent::MainComponent()
         });
     };
     inspector.onEdited = [this] { refresh (false); };
+    preview.onEdited = [this] { refresh (false); timeline.repaint(); };
+    preview.onSelect = [this] { refresh (true); };
     mediaTgl.setTooltip ("Show or collapse the Media + Effects column."); inspTgl.setTooltip ("Show or collapse the Inspector.");
     maxPrevBtn.setTooltip ("Maximize the preview (hides the side panels and timeline). Click again to restore.");
     maxTlBtn.setTooltip ("Maximize the timeline. Drag the bar above the timeline tools to resize it freely.");
