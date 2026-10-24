@@ -212,6 +212,7 @@ MainComponent::MainComponent()
     hscroll.addListener (this); hscroll.setAutoHide (false);
     timeline.onEdited = [this] { refresh (true); };
     timeline.onSeek = [this] (Ticks t) { seek (t); };
+    timeline.onAskText = [this] (const juce::String& t, const juce::String& d, std::function<void (juce::String)> cb) { askText (t, d, cb); };
     timeline.onFilesDropped = [this] (const juce::Array<juce::File>& files, int tr, Ticks at)
     {
         importFiles (files, [this, files, tr, at]
@@ -388,9 +389,29 @@ bool MainComponent::keyPressed (const juce::KeyPress& k)
         if (c == 'E') { exportDialog(); return true; }
         if (c == 'N') { newProject(); return true; }
         if (c == 'K') { st.edit ("Split"); splitAt (s, st.playhead, st.selected); refresh (true); return true; }
+        if (c == 'C') { st.clipboard = copyClips (s, st.selected); return true; }
+        if (c == 'X' && ! st.selected.isEmpty()) { st.clipboard = copyClips (s, st.selected); st.edit ("Cut"); deleteClips (s, st.selected, false); st.selected.clear(); refresh (true); return true; }
+        if (c == 'V' && k.getModifiers().isAltDown())
+        {
+            if (st.clipboard.size() == 1 && ! st.selected.isEmpty()) { st.edit ("Paste Attributes"); pasteAttributes (s, st.clipboard.front(), st.selected); refresh (true); }
+            return true;
+        }
+        if (c == 'V' && ! st.clipboard.empty()) { st.edit ("Paste"); st.selected = pasteClips (s, st.clipboard, st.playhead); refresh (true); return true; }
+        if (c == 'R' && st.selected.size() == 1) { timeline.clipMenuSpeed (st.selected[0]); return true; }
         return false;
     }
     auto ch = juce::CharacterFunctions::toLowerCase (k.getTextCharacter());
+    if (ch == 'e' && shift)
+    {
+        if (! st.selected.isEmpty())
+        {
+            st.edit ("Enable"); bool on = true;
+            if (auto* f = s.findClip (st.selected[0])) on = ! f->enabled;
+            for (auto& id : st.selected) if (auto* cl = s.findClip (id)) cl->enabled = on;
+            refresh (true);
+        }
+        return true;
+    }
     if (ch == 'e') { setTool (Tool::Select); return true; }
     if (ch == 'p') { setTool (Tool::Paint); return true; }
     if (ch == 'd') { setTool (Tool::Delete); return true; }
@@ -423,7 +444,7 @@ bool MainComponent::keyPressed (const juce::KeyPress& k)
     }
     if (c == juce::KeyPress::deleteKey || c == juce::KeyPress::backspaceKey)
     {
-        if (! st.selected.isEmpty()) { st.edit ("Delete"); deleteClips (s, st.selected, st.ripple); st.selected.clear(); refresh (true); }
+        if (! st.selected.isEmpty()) { st.edit (shift ? "Ripple Delete" : "Delete"); deleteClips (s, st.selected, st.ripple || shift); st.selected.clear(); refresh (true); }
         else if (st.rangeB > st.rangeA) delRangeBtn.onClick();
         return true;
     }

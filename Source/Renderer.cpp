@@ -428,7 +428,7 @@ bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int 
     {
         if (c.track < 0 || c.track >= (int) s.tracks.size()) continue;
         auto& tr = s.tracks[(size_t) c.track];
-        if (tr.kind != TrackKind::Video || tr.hidden) continue;
+        if (tr.kind != TrackKind::Video || tr.hidden || ! c.enabled) continue;
         if (t >= c.start && t < c.end()) active.push_back (&c);
     }
     std::stable_sort (active.begin(), active.end(), [] (const Clip* a, const Clip* b) { return a->track < b->track; });

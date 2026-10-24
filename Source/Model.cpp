@@ -174,6 +174,9 @@ juce::var toVar (const Project& p)
             co->setProperty ("opacity", c.opacity); co->setProperty ("volume", c.volume);
             co->setProperty ("trans", (int) c.transIn); co->setProperty ("transLen", t2s (c.transLen));
             co->setProperty ("fx", fxToVar (c.fx));
+            if (c.name.isNotEmpty()) co->setProperty ("name", c.name);
+            if (! c.enabled) co->setProperty ("enabled", false);
+            if (c.label != 0) co->setProperty ("label", c.label);
             cl.add (juce::var (co));
         }
         o->setProperty ("clips", cl);
@@ -245,6 +248,7 @@ bool fromVar (const juce::var& v, Project& p, juce::String& error)
                     c.volume = cv.hasProperty ("volume") ? (float) (double) cv["volume"] : 1.0f;
                     c.transIn = (TransitionType) (int) cv["trans"]; c.transLen = s2t (cv["transLen"]);
                     fxFromVar (cv["fx"], c.fx);
+                    c.name = cv["name"].toString(); c.enabled = cv.hasProperty ("enabled") ? (bool) cv["enabled"] : true; c.label = (int) cv["label"];
                     if (c.track >= 0 && c.track < (int) s.tracks.size()) s.clips.push_back (c);
                 }
             r.sequences.push_back (s);

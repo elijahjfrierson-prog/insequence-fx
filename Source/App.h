@@ -45,6 +45,7 @@ struct AppState
     Ticks playhead = 0, rangeA = 0, rangeB = 0;
     SnapMode snap = SnapMode::Sixteenth;
     bool snapOn = true, ripple = false, showGrid = true, magnetic = true;
+    std::vector<Clip> clipboard;
     juce::ChangeBroadcaster changed;   // project edited -> repaint everything
 
     void edit (const juce::String& what) { history.push (project, what); dirty = true; }
@@ -117,6 +118,7 @@ class Timeline : public juce::Component, public juce::DragAndDropTarget, public 
 public:
     explicit Timeline (AppState& s);
     std::function<void (const juce::Array<juce::File>&, int track, Ticks at)> onFilesDropped;   // from Finder/Explorer
+    std::function<void (const juce::String& title, const juce::String& def, std::function<void (juce::String)>)> onAskText;
     bool isInterestedInFileDrag (const juce::StringArray&) override { return true; }
     void filesDropped (const juce::StringArray&, int x, int y) override;
     std::function<void()> onEdited;          // after any edit
@@ -134,6 +136,8 @@ public:
     void zoomBy (float f, int anchorX);
     void ensureVisible (Ticks t);
     void clipMenu (const juce::String& id);
+public:
+    void clipMenuSpeed (const juce::String& id);   // Ctrl+R Speed/Duration dialog
     bool switchAngles = true;
     double pxPerSec = 60;   // zoom
     double scrollSec = 0;

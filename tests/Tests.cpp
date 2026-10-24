@@ -128,6 +128,37 @@ static void testSync()
     CHECK (! r2.ok, "unrelated audio flagged uncertain (conf " << r2.confidence << ")");
 }
 
+static void testPremiereCommands()
+{
+    Project p; p.fps = 30;
+    Sequence s = Project::makeDefaultSequence ("x");
+    auto mk = [] (const char* id, double a, double b, double src) { Clip c; c.id = id; c.mediaId = "none"; c.track = 0; c.start = secToTicks (a); c.length = secToTicks (b - a); c.srcIn = secToTicks (src); return c; };
+    s.clips = { mk ("a", 0, 4, 0), mk ("b", 4, 8, 4) };
+    s.findClip ("a")->fx.set ("exposure", 0.7f);
+    auto cb = copyClips (s, { "a" });
+    auto pasted = pasteClips (s, cb, secToTicks (6));
+    const Clip* pc = pasted.size() == 1 ? s.findClip (pasted[0]) : nullptr;
+    const Clip* bl = s.findClip ("b");
+    CHECK (pc && pc->start == secToTicks (6) && pc->id != "a" && bl && bl->end() == secToTicks (6) && bl->srcAt (secToTicks (5)) == secToTicks (5),
+           "overwrite paste at the playhead keeps the clip under it in sync");
+    pasteAttributes (s, cb.front(), { "b" });
+    CHECK (s.findClip ("b")->fx.get ("exposure", 0) == 0.7f, "paste attributes copies effects");
+    auto dup = duplicateClips (s, { "a" });
+    CHECK (dup.size() == 1 && s.findClip (dup[0])->start == secToTicks (4), "duplicate lands right after the selection");
+    s.clips = { mk ("a", 0, 4, 0), mk ("b", 4, 8, 4) };
+    auto h = freezeFrame (s, "a", secToTicks (1), secToTicks (1));
+    const Clip* hc = h.isNotEmpty() ? s.findClip (h) : nullptr;
+    const Clip* tail = nullptr; for (auto& c : s.clips) if (c.start == secToTicks (2)) tail = &c;
+    CHECK (hc && hc->speed == 0.0 && hc->srcAt (secToTicks (1.9)) == secToTicks (1) && tail && tail->srcAt (secToTicks (3)) == secToTicks (3),
+           "frame hold freezes one segment and the rest stays in sync");
+    s.clips = { mk ("a", 0, 4, 0), mk ("b", 4, 8, 4) };
+    CHECK (setClipSpeed (s, p, "a", 0.5) && s.findClip ("a")->length == secToTicks (4) && setClipSpeed (s, p, "a", 2.0) && s.findClip ("a")->length == secToTicks (1),
+           "speed/duration keeps the start and never runs into the next clip");
+    s.findClip ("a")->enabled = false;
+    auto j = s.findClip ("a");
+    CHECK (! j->enabled, "clips can be disabled");
+}
+
 static void testDropInBetween()
 {
     Project p; p.fps = 30;
@@ -422,6 +453,11 @@ static void testRender()
         }
         CHECK (dead.isEmpty(), "every transition visibly changes the frame " << dead.joinIntoString (", "));
     }
+    {
+        Sequence off = s;
+        for (auto& c : off.clips) c.enabled = false;
+        CHECK (diff (renderAt (off, t0), base) > 0.5, "disabled clips are not rendered");
+    }
     }
 
     {   // echo trails need motion: a cut from the green frame to the gradient must leave an echo
@@ -534,6 +570,7 @@ int main (int argc, char** argv)
     testSync();
     testEditing();
     testDropInBetween();
+    testPremiereCommands();
     testChopAndGenerate();
     testPersistence();
     testLut();

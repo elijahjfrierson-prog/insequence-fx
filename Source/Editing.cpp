@@ -184,12 +184,12 @@ void fillGaps (Sequence& s, const Project& p, int track)
         if (gap <= 0) continue;
         auto* ma = p.findMedia (a.mediaId);
         Ticks roomA = (ma == nullptr || ma->kind == MediaKind::Image) ? gap
-                    : (Ticks) ((double) (ma->duration - a.srcAt (a.end())) / a.speed);
+                    : (a.speed <= 0 ? gap : (Ticks) ((double) (ma->duration - a.srcAt (a.end())) / a.speed));
         Ticks ext = std::min (gap, std::max<Ticks> (0, roomA));
         if (! a.locked) { a.length += ext; gap -= ext; }
         if (gap > 0 && ! b.locked)
         {
-            Ticks e2 = std::min (gap, std::max<Ticks> (0, (Ticks) ((double) b.srcIn / b.speed)));
+            Ticks e2 = b.speed <= 0 ? gap : std::min (gap, std::max<Ticks> (0, (Ticks) ((double) b.srcIn / b.speed)));
             b.start -= e2; b.length += e2; b.srcIn -= (Ticks) ((double) e2 * b.speed);
         }
     }
@@ -563,5 +563,76 @@ int autoCutClip (Project& p, const juce::String& clipId, AutoCut mode, bool swit
     }
     s.sortClips();
     return made;
+}
+// ------------------------------------------------------------------ Premiere-style clip commands
+std::vector<Clip> copyClips (const Sequence& s, const juce::StringArray& ids)
+{
+    std::vector<Clip> out;
+    for (auto& c : s.clips) if (ids.contains (c.id)) out.push_back (c);
+    return out;
+}
+
+juce::StringArray pasteClips (Sequence& s, const std::vector<Clip>& clips, Ticks at)
+{
+    juce::StringArray ids;
+    if (clips.empty()) return ids;
+    Ticks first = clips.front().start;
+    for (auto& c : clips) first = std::min (first, c.start);
+    for (auto c : clips)
+    {
+        if (c.track < 0 || c.track >= (int) s.tracks.size() || s.tracks[(size_t) c.track].locked) continue;
+        c.id = newId(); c.start = at + (c.start - first); c.locked = false; c.group = 0;
+        s.clips.push_back (c); ids.add (c.id);
+    }
+    settleClips (s, ids);   // overwrite paste: only covers the pasted span
+    return ids;
+}
+
+juce::StringArray duplicateClips (Sequence& s, const juce::StringArray& ids)
+{
+    auto src = copyClips (s, ids);
+    if (src.empty()) return {};
+    Ticks end = 0;
+    for (auto& c : src) end = std::max (end, c.end());
+    return pasteClips (s, src, end);
+}
+
+void pasteAttributes (Sequence& s, const Clip& from, const juce::StringArray& ids)
+{
+    for (auto& c : s.clips)
+        if (ids.contains (c.id) && ! c.locked)
+        {
+            c.fx = from.fx; c.opacity = from.opacity; c.volume = from.volume;
+            c.transIn = from.transIn; c.transLen = from.transLen;
+        }
+}
+
+juce::String freezeFrame (Sequence& s, const juce::String& id, Ticks at, Ticks len)
+{
+    auto* c = s.findClip (id);
+    if (c == nullptr || at <= c->start || at >= c->end() || len <= 0) return {};
+    const int track = c->track;
+    if (! splitAt (s, at, { id })) return {};
+    Clip* mid = nullptr;
+    for (auto& k : s.clips) if (k.track == track && k.start == at) mid = &k;
+    if (mid == nullptr) return {};
+    juce::String mid_id = mid->id;
+    if (mid->length > len) splitAt (s, at + len, { mid_id });
+    mid = s.findClip (mid_id);
+    mid->speed = 0.0;   // srcIn already points at the frame under the playhead; the rest of the clip keeps its song position
+    return mid_id;
+}
+
+bool setClipSpeed (Sequence& s, const Project& p, const juce::String& id, double speed)
+{
+    auto* c = s.findClip (id);
+    if (c == nullptr || c->locked || speed <= 0) return false;
+    Ticks len = (Ticks) std::llround ((double) c->length * (c->speed > 0 ? c->speed : 1.0) / speed);
+    if (auto* m = p.findMedia (c->mediaId); m != nullptr && m->kind != MediaKind::Image)
+        len = std::min (len, (Ticks) ((double) (m->duration - c->srcIn) / speed));
+    for (auto& o : s.clips)
+        if (o.track == c->track && &o != c && o.start >= c->end()) len = std::min (len, o.start - c->start);
+    c->speed = speed; c->length = std::max<Ticks> (1, len);
+    return true;
 }
 }

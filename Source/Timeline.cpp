@@ -98,7 +98,9 @@ void Timeline::paint (juce::Graphics& g)
         bool audio = tr.kind == TrackKind::Audio, sel = st.selected.contains (c.id);
         auto base = audio ? juce::Colour (0xff1f6f5c) : juce::Colour (0xff3a3f7a);
         if (m && m->missing) base = bad.darker (0.6f);
-        if (tr.hidden || tr.mute) base = base.withSaturation (0.1f).darker (0.4f);
+        static const juce::uint32 labels[] { 0, 0xff8e6bd6, 0xff4f7fe0, 0xff2fb3a8, 0xffb38be0, 0xff3aa0d8, 0xff4c9a4c, 0xffd85c8a, 0xffe0963a };
+        if (c.label > 0 && c.label < 9) base = juce::Colour (labels[c.label]).darker (0.35f);
+        if (tr.hidden || tr.mute || ! c.enabled) base = base.withSaturation (0.1f).darker (0.4f);
         g.setColour (base); g.fillRoundedRectangle (r.toFloat(), 3);
         juce::Graphics::ScopedSaveState ss (g);
         g.reduceClipRegion (r);
@@ -133,8 +135,10 @@ void Timeline::paint (juce::Graphics& g)
             }
         }
         g.setColour (text); g.setFont (11.0f);
-        juce::String label = m ? m->name : juce::String ("(missing)");
-        if (c.speed != 1.0) label << "  " << juce::String (c.speed * 100, 0) << "%";
+        juce::String label = c.name.isNotEmpty() ? c.name : (m ? m->name : juce::String ("(missing)"));
+        if (! c.enabled) label = "[off] " + label;
+        if (c.speed == 0.0) label << "  hold";
+        else if (c.speed != 1.0) label << "  " << juce::String (c.speed * 100, 0) << "%";
         if (! c.fx.p.empty()) label << "  fx";
         g.drawText (label, r.reduced (4, 2), juce::Justification::topLeft, true);
         if (m && m->kind == MediaKind::Video && m->sync.status != SyncInfo::None)
@@ -491,28 +495,115 @@ void Timeline::clipMenu (const juce::String& id)
     for (int i = 0; i < names.size(); ++i) cut.addItem (100 + i, names[i]);
     cut.addSeparator();
     cut.addItem (99, "Switch camera angles on each cut", video, switchAngles && video);
-    juce::PopupMenu m;
-    m.addSubMenu ("Auto Cut", cut, ! c->locked);
-    m.addItem (2, "Split at playhead  (Ctrl+K)", st.playhead > c->start && st.playhead < c->end());
-    m.addItem (3, "Reverse speed to 100%", c->speed != 1.0);
-    m.addItem (4, c->locked ? "Unlock clip" : "Lock clip");
-    m.addItem (5, "Delete" + juce::String (st.ripple ? " (ripple)" : ""), ! c->locked);
+    const bool lk = c->locked;
+    const bool many = st.selected.size() > 1;
+    juce::PopupMenu m, trans, scale, labelM;
+    auto tn = transitionNames();
+    for (int i = 1; i < tn.size(); ++i) trans.addItem (300 + i, tn[i], ! lk, (int) c->transIn == i);
+    trans.addSeparator(); trans.addItem (300, "Remove transition", ! lk && c->transIn != TransitionType::Cut);
+    int rf = (int) std::lround (c->fx.get ("reframe", 0.0f));
+    scale.addItem (40, "Set to Frame Size (fill)", video && ! lk, rf == 0);
+    scale.addItem (41, "Scale to Frame Size (fit)", video && ! lk, rf == 1);
+    scale.addItem (42, "Fit with blurred background", video && ! lk, rf == 2);
+    const char* ln[] { "None", "Violet", "Iris", "Caribbean", "Lavender", "Cerulean", "Forest", "Rose", "Mango" };
+    for (int i = 0; i < 9; ++i) labelM.addItem (200 + i, ln[i], true, c->label == i);
+    m.addItem (10, "Cut  (Ctrl+X)", ! lk);
+    m.addItem (11, "Copy  (Ctrl+C)");
+    m.addItem (12, "Paste at playhead  (Ctrl+V)", ! st.clipboard.empty());
+    m.addItem (13, "Paste Attributes  (Ctrl+Alt+V)", st.clipboard.size() == 1 && ! lk);
+    m.addItem (14, "Duplicate", ! lk);
+    m.addSeparator();
+    m.addItem (5, "Delete", ! lk);
+    m.addItem (6, "Ripple Delete  (Shift+Del)", ! lk);
+    m.addItem (2, "Split at playhead  (Ctrl+K)", ! lk && st.playhead > c->start && st.playhead < c->end());
+    m.addSubMenu ("Auto Cut", cut, ! lk);
+    m.addSeparator();
+    m.addItem (20, juce::String (c->enabled ? "Disable" : "Enable") + "  (Shift+E)", ! lk);
+    m.addItem (21, "Group  (G)", many && ! lk);
+    m.addItem (22, "Ungroup", c->group != 0);
+    m.addSeparator();
+    m.addItem (30, "Speed/Duration...  (Ctrl+R)", ! lk);
+    m.addItem (3, "Reset speed to 100%", ! lk && c->speed != 1.0);
+    m.addItem (31, "Add Frame Hold Segment (1 beat)", ! lk && video && st.playhead > c->start && st.playhead < c->end());
+    m.addSubMenu ("Transition in", trans, ! lk);
+    m.addSubMenu ("Scale / Reframe", scale, video && ! lk);
+    m.addItem (32, "Remove Effects", ! lk && (! c->fx.p.empty() || c->opacity != 1.0f || c->transIn != TransitionType::Cut));
+    m.addSeparator();
+    m.addItem (33, "Rename...");
+    m.addSubMenu ("Label", labelM);
+    m.addItem (4, c->locked ? "Unlock clip  (L)" : "Lock clip  (L)");
     m.showMenuAsync (juce::PopupMenu::Options(), [this, id] (int r)
     {
-        auto* cl = st.project.seq().findClip (id);
+        auto& sq = st.project.seq();
+        auto* cl = sq.findClip (id);
         if (cl == nullptr || r == 0) return;
         if (r == 99) { switchAngles = ! switchAngles; juce::MessageManager::callAsync ([this, id] { clipMenu (id); }); return; }
-        if (r >= 100)
+        auto sel = st.selected.contains (id) ? st.selected : juce::StringArray { id };
+        const Ticks beat = secToTicks (st.project.song.valid ? st.project.song.beatSec() : 0.5);
+        if (r >= 100 && r < 200)
         {
             st.edit ("Auto Cut");
             int n = autoCutClip (st.project, id, (AutoCut) (r - 100), switchAngles, (juce::uint32) juce::Time::currentTimeMillis());
             if (n == 0) st.history.undo (st.project);
             st.selected.clear();
         }
-        if (r == 2) { st.edit ("Split"); splitAt (st.project.seq(), st.playhead, { id }); }
-        if (r == 3) { st.edit ("Speed"); cl->speed = 1.0; }
+        if (r >= 200 && r < 209) { st.edit ("Label"); for (auto& i : sel) if (auto* k = sq.findClip (i)) k->label = r - 200; }
+        if (r >= 300 && r < 400)
+        {
+            st.edit ("Transition");
+            for (auto& i : sel) if (auto* k = sq.findClip (i); k && ! k->locked)
+            {
+                k->transIn = (TransitionType) (r - 300);
+                if (k->transLen == 0 && r > 300) k->transLen = beat / 2;
+            }
+        }
+        if (r >= 40 && r <= 42) { st.edit ("Scale to frame"); for (auto& i : sel) if (auto* k = sq.findClip (i)) k->fx.set ("reframe", (float) (r - 40)); }
+        if (r == 10) { st.clipboard = copyClips (sq, sel); st.edit ("Cut"); deleteClips (sq, sel, false); st.selected.clear(); }
+        if (r == 11) st.clipboard = copyClips (sq, sel);
+        if (r == 12) { st.edit ("Paste"); st.selected = pasteClips (sq, st.clipboard, st.playhead); }
+        if (r == 13) { st.edit ("Paste Attributes"); pasteAttributes (sq, st.clipboard.front(), sel); }
+        if (r == 14) { st.edit ("Duplicate"); st.selected = duplicateClips (sq, sel); }
+        if (r == 2) { st.edit ("Split"); splitAt (sq, st.playhead, { id }); }
+        if (r == 3) { st.edit ("Speed"); setClipSpeed (sq, st.project, id, 1.0); }
         if (r == 4) { st.edit ("Lock"); cl->locked = ! cl->locked; }
-        if (r == 5) { st.edit ("Delete"); deleteClips (st.project.seq(), { id }, st.ripple); st.selected.clear(); }
+        if (r == 5) { st.edit ("Delete"); deleteClips (sq, sel, false); st.selected.clear(); }
+        if (r == 6) { st.edit ("Ripple Delete"); deleteClips (sq, sel, true); st.selected.clear(); }
+        if (r == 20) { st.edit ("Enable"); bool on = ! cl->enabled; for (auto& i : sel) if (auto* k = sq.findClip (i)) k->enabled = on; }
+        if (r == 21 || r == 22)
+        {
+            st.edit (r == 21 ? "Group" : "Ungroup");
+            int ng = 1; for (auto& k : sq.clips) ng = std::max (ng, k.group + 1);
+            int g0 = cl->group;
+            for (auto& k : sq.clips) if (r == 21 ? sel.contains (k.id) : (k.group == g0)) k.group = r == 21 ? ng : 0;
+        }
+        if (r == 30 && onAskText)
+            onAskText ("Speed / Duration (%)", juce::String (cl->speed * 100, 0), [this, id] (juce::String v)
+            {
+                double pc = v.retainCharacters ("0123456789.").getDoubleValue();
+                if (pc <= 0) return;
+                st.edit ("Speed/Duration"); setClipSpeed (st.project.seq(), st.project, id, pc / 100.0);
+                if (onEdited) onEdited();
+            });
+        if (r == 31) { st.edit ("Frame Hold"); auto h = freezeFrame (sq, id, st.playhead, beat); if (h.isNotEmpty()) st.selected = { h }; }
+        if (r == 32) { st.edit ("Remove Effects"); for (auto& i : sel) if (auto* k = sq.findClip (i)) { k->fx = {}; k->opacity = 1; k->transIn = TransitionType::Cut; k->transLen = 0; } }
+        if (r == 33 && onAskText)
+            onAskText ("Rename clip", cl->name, [this, id] (juce::String v)
+            {
+                if (auto* k = st.project.seq().findClip (id)) { st.edit ("Rename"); k->name = v; }
+                if (onEdited) onEdited();
+            });
+        if (onEdited) onEdited();
+    });
+}
+void Timeline::clipMenuSpeed (const juce::String& id)
+{
+    auto* cl = st.project.seq().findClip (id);
+    if (cl == nullptr || cl->locked || ! onAskText) return;
+    onAskText ("Speed / Duration (%)", juce::String (cl->speed * 100, 0), [this, id] (juce::String v)
+    {
+        double pc = v.retainCharacters ("0123456789.").getDoubleValue();
+        if (pc <= 0) return;
+        st.edit ("Speed/Duration"); setClipSpeed (st.project.seq(), st.project, id, pc / 100.0);
         if (onEdited) onEdited();
     });
 }

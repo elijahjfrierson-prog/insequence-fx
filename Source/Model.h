@@ -100,6 +100,9 @@ struct Clip
     float volume = 1.0f;
     TransitionType transIn = TransitionType::Cut;
     Ticks transLen = 0;
+    juce::String name;       // display name override (Rename)
+    bool enabled = true;     // Enable/Disable: a disabled clip stays on the timeline but is not seen or heard
+    int label = 0;           // label colour index (0 = default)
     FxStack fx;              // per-clip: exposure, contrast, saturation, scale, posX, posY, rotation, flash
     Ticks end() const { return start + length; }
     Ticks srcAt (Ticks t) const { return srcIn + (Ticks) std::llround ((double) (t - start) * speed); }
