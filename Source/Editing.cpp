@@ -5,7 +5,7 @@
 
 namespace isfx
 {
-juce::StringArray snapModeNames() { return { "Off", "Bar", "Beat", "1/2", "1/4", "1/8", "1/16", "1/32", "Triplet", "Frame" }; }
+juce::StringArray snapModeNames() { return { "Off", "Bar", "Beat", "1/2", "1/4", "1/8", "1/16", "1/32", "Triplet", "Frame", "1 s", "100 ms", "10 ms" }; }
 
 // beat = quarter note. 1/8 note = 2 per beat, 1/16 = 4, 1/32 = 8
 int snapPerBeat (SnapMode m)
@@ -26,6 +26,11 @@ int snapPerBeat (SnapMode m)
 Ticks snapTime (Ticks t, const Project& p, SnapMode m)
 {
     if (m == SnapMode::Off) return t;
+    if (m == SnapMode::Sec1 || m == SnapMode::Ms100 || m == SnapMode::Ms10)
+    {
+        const Ticks step = secToTicks (m == SnapMode::Sec1 ? 1.0 : m == SnapMode::Ms100 ? 0.1 : 0.01);
+        return (t + step / 2) / step * step;
+    }
     if (m == SnapMode::Frame || ! p.song.valid) return quantizeToFrame (t, p.fps);
     const auto& s = p.song;
     double beats = s.beatAt (t);

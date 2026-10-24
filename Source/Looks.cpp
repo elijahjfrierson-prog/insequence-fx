@@ -44,6 +44,7 @@ const std::vector<ParamDef>& sequenceParams()
         { "bloom",      "Bloom",        0, 1, 0, "Film",  "Soft glow from the brightest parts of the image." },
         { "vignette",   "Vignette",     0, 1, 0, "Film",  "Darkens the frame edges." },
         { "letterbox",  "Letterbox",    0, 1, 0, "Film",  "Cinema bars (0.5 = 2.39:1)." },
+        { "letterboxRatio", "Bars ratio", 1.33f, 2.76f, 2.39f, "Film", "Movie border aspect: 2.39 scope, 2.00, 1.85 flat." },
         { "vhs",        "VHS",          0, 1, 0, "Distort","Tape chroma bleed, tracking wobble, noise lines." },
         { "rgbSplit",   "RGB Split",    0, 1, 0, "Distort","Separates red and blue channels horizontally." },
         { "glitch",     "Glitch",       0, 1, 0, "Distort","Block displacement bursts, driven by the beat." },

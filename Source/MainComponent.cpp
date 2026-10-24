@@ -131,7 +131,7 @@ MainComponent::MainComponent()
 {
     setLookAndFeel (&lnf);
     juce::LookAndFeel::setDefaultLookAndFeel (&lnf);
-    for (auto* c : std::initializer_list<juce::Component*> { &preview, &timeline, &media, &fxlib, &inspector, &mediaTgl, &inspTgl, &maxPrevBtn, &maxTlBtn, &hscroll, &fileBtn, &undoBtn, &redoBtn, &importBtn,
+    for (auto* c : std::initializer_list<juce::Component*> { &preview, &timeline, &media, &fxlib, &inspector, &mediaTgl, &inspTgl, &maxPrevBtn, &maxTlBtn, &movieBtn, &hscroll, &fileBtn, &undoBtn, &redoBtn, &importBtn,
             &presetsBtn, &pluginsBtn, &playBtn, &exportBtn, &snapBtn, &rippleBtn, &magnetBtn, &gridBtn, &chopBtn, &genBtn, &keepBtn, &delRangeBtn, &zoomIn, &zoomOut,
             &seqBox, &aspectBox, &snapBox, &chopBox, &styleBox, &status })
         addAndMakeVisible (c);
@@ -178,6 +178,28 @@ MainComponent::MainComponent()
     }
     exportBtn.onClick = [this] { exportDialog(); };
     genBtn.onClick = [this] { generate(); };
+    movieBtn.setTooltip ("Movie Border: one-click cinema bars on the whole video (preview and export).");
+    movieBtn.onClick = [this]
+    {
+        auto& fx = st.project.seq().fx;
+        const bool on = fx.get ("letterbox", 0) > 0;
+        const float ratio = fx.get ("letterboxRatio", 2.39f);
+        const float ratios[] { 2.39f, 2.0f, 1.85f, 2.76f };
+        juce::PopupMenu m;
+        m.addItem (1, "Off", true, ! on);
+        for (int i = 0; i < 4; ++i)
+            m.addItem (2 + i, juce::String (ratios[i], 2) + ":1", true, on && std::abs (ratio - ratios[i]) < 0.01f);
+        m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&movieBtn), [this, ratios] (int r)
+        {
+            if (r <= 0) return;
+            st.edit ("Movie border");
+            auto& f = st.project.seq().fx;
+            if (r == 1) f.set ("letterbox", 0);
+            else { f.set ("letterbox", 1); f.set ("letterboxRatio", ratios[r - 2]); }
+            movieBtn.setToggleState (r != 1, juce::dontSendNotification);
+            refresh (true);
+        });
+    };
     chopBtn.onClick = [this] { chop(); };
     keepBtn.onClick = [this] { if (st.rangeB <= st.rangeA) return; st.edit ("Keep range"); keepRange (st.project.seq(), st.rangeA, st.rangeB); refresh (true); };
     delRangeBtn.onClick = [this] { if (st.rangeB <= st.rangeA) return; st.edit ("Delete range"); deleteRange (st.project.seq(), st.rangeA, st.rangeB, st.ripple, -1); refresh (true); };
@@ -316,7 +338,7 @@ void MainComponent::resized()
     top.removeFromLeft (50);
     auto place = [] (juce::Rectangle<int>& row, juce::Component& c, int w) { c.setBounds (row.removeFromLeft (w)); row.removeFromLeft (5); };
     place (top, fileBtn, 56); place (top, undoBtn, 30); place (top, redoBtn, 30); place (top, importBtn, 70); place (top, presetsBtn, 76); place (top, pluginsBtn, 80);
-    top.removeFromLeft (6); place (top, mediaTgl, 58); place (top, inspTgl, 72); place (top, maxPrevBtn, 92); place (top, maxTlBtn, 98);
+    top.removeFromLeft (6); place (top, mediaTgl, 58); place (top, inspTgl, 72); place (top, maxPrevBtn, 92); place (top, maxTlBtn, 98); place (top, movieBtn, 104);
     exportBtn.setBounds (top.removeFromRight (110)); top.removeFromRight (6);
     playBtn.setBounds (top.removeFromRight (70)); top.removeFromRight (4);
     startBtn.setBounds (top.removeFromRight (26).reduced (3, 6)); top.removeFromRight (6);

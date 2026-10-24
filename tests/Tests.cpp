@@ -413,7 +413,7 @@ static void testRender()
     for (auto& d : sequenceParams())
     {
         juce::String id (d.id);
-        if (id == "lutMix" || id == "grainSize" || id == "trails" || id == "sharpen") continue;   // modifiers / need motion or texture (tested below)
+        if (id == "lutMix" || id == "grainSize" || id == "trails" || id == "sharpen" || id == "letterboxRatio") continue;   // modifiers / need motion or texture (tested below)
         Sequence sq = s; float v = d.def > 0.5f * (d.min + d.max) ? d.min : d.max;
         if (id == "contrast" || id == "saturation") v = d.max;
         sq.fx.set (id, v);
@@ -424,6 +424,12 @@ static void testRender()
         juce::ignoreUnused (finite);
     }
     CHECK (dead == 0, "every sequence FX visibly changes the frame " << deadList);
+    {
+        Sequence a1 = s, a2 = s;
+        a1.fx.set ("letterbox", 1.0f); a1.fx.set ("letterboxRatio", 2.39f);
+        a2.fx.set ("letterbox", 1.0f); a2.fx.set ("letterboxRatio", 1.85f);
+        CHECK (diff (renderAt (a1, t0), renderAt (a2, t0)) > 0.5, "Movie Border ratio changes the bars");
+    }
     {
         Sequence boxed = s; for (auto& c : boxed.clips) c.fx.set ("scale", 0.5f);
         Sequence sharp = boxed; sharp.fx.set ("sharpen", 1.0f);
@@ -849,6 +855,12 @@ int main (int argc, char** argv)
     testLayoutsStacksAndLayers();
     testReverseAndSlowMo();
     testSyncShortClip();
+    {
+        Project sp = Project::makeNew();
+        CHECK (snapTime (secToTicks (1.234), sp, SnapMode::Ms100) == secToTicks (1.2), "time grid snaps to 100 ms");
+        CHECK (snapTime (secToTicks (1.236), sp, SnapMode::Ms10) == secToTicks (1.24), "time grid snaps to 10 ms");
+        CHECK (snapTime (secToTicks (7.6), sp, SnapMode::Sec1) == secToTicks (8.0), "time grid snaps to 1 s");
+    }
     std::cout << (failures == 0 ? "ALL TESTS PASSED" : "FAILURES: ") << (failures ? juce::String (failures) : juce::String()) << "\n";
     return failures;
 }

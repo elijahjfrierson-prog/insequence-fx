@@ -5,7 +5,7 @@ namespace isfx
 {
 constexpr double kMaxSongSeconds = 600.0;   // full music videos up to 10 minutes
 
-enum class SnapMode { Off = 0, Bar, Beat, Half, Quarter, Eighth, Sixteenth, ThirtySecond, Triplet, Frame };
+enum class SnapMode { Off = 0, Bar, Beat, Half, Quarter, Eighth, Sixteenth, ThirtySecond, Triplet, Frame, Sec1, Ms100, Ms10 };
 juce::StringArray snapModeNames();
 int snapPerBeat (SnapMode m);                 // grid lines per beat (0 = bar/frame/off)
 Ticks snapTime (Ticks t, const Project& p, SnapMode m);

@@ -155,7 +155,7 @@ void Timeline::paint (juce::Graphics& g)
     // ruler
     g.setColour (panel2); g.fillRect (0, 0, W, kRuler);
     g.setColour (dim); g.setFont (10.0f);
-    if (p.song.valid)
+    if (p.song.valid && st.snap < SnapMode::Sec1)
     {
         double barSec = p.song.beatSec() * p.song.beatsPerBar;
         int step = 1; while (barSec * step * pxPerSec < 48) step *= 2;
@@ -181,12 +181,17 @@ void Timeline::paint (juce::Graphics& g)
     }
     else
     {
-        double step = 1; while (step * pxPerSec < 60) step *= 2;
+        double step = 60;
+        for (double c : { 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 15.0, 30.0, 60.0 })
+            if (c * pxPerSec >= 60) { step = c; break; }
         for (double sec = std::floor (t0 / step) * step; sec < t1; sec += step)
         {
             int x = secToX (sec);
             g.drawVerticalLine (x, 16, (float) kRuler);
-            g.drawText (juce::String ((int) sec / 60) + ":" + juce::String ((int) sec % 60).paddedLeft ('0', 2), x + 2, 2, 50, 12, juce::Justification::left);
+            const auto ms = (juce::int64) std::llround (sec * 1000);
+            juce::String txt = juce::String (ms / 60000) + ":" + juce::String ((ms / 1000) % 60).paddedLeft ('0', 2);
+            if (step < 1) txt << "." << juce::String (ms % 1000).paddedLeft ('0', 3);
+            g.drawText (txt, x + 2, 2, 70, 12, juce::Justification::left);
         }
     }
 
