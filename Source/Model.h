@@ -106,6 +106,7 @@ struct Clip
     FxStack fx;              // per-clip: exposure, contrast, saturation, scale, posX, posY, rotation, flash
     Ticks end() const { return start + length; }
     bool reverse = false;    // plays the same source range backwards
+    bool keep = false;       // pinned: Randomize shot leaves it alone
     Ticks srcAt (Ticks t) const
     {
         if (reverse) return srcIn + (Ticks) std::llround ((double) (end() - t) * speed) - 1;

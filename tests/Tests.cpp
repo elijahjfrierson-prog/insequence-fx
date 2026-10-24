@@ -856,6 +856,28 @@ int main (int argc, char** argv)
     testReverseAndSlowMo();
     testSyncShortClip();
     {
+        Project rp = Project::makeNew();
+        for (int i = 0; i < 3; ++i)
+        {
+            MediaItem m; m.id = "take" + juce::String (i); m.name = m.id; m.kind = MediaKind::Video; m.duration = secToTicks (20);
+            m.sync.status = SyncInfo::Synced; m.sync.offset = secToTicks (i * 0.5); rp.media.push_back (m);
+        }
+        auto& rs = rp.seq();
+        Clip a; a.id = "a"; a.mediaId = "take0"; a.track = 0; a.start = secToTicks (4); a.length = secToTicks (1); a.srcIn = a.start;
+        Clip b = a; b.id = "b"; b.start = secToTicks (6); b.srcIn = b.start; b.keep = true;
+        rs.clips = { a, b };
+        const int swapped = randomizeShots (rp, rs, { "a", "b" }, 7);
+        auto* ra = rs.findClip ("a"); auto* rb = rs.findClip ("b");
+        auto* ma = rp.findMedia (ra->mediaId);
+        CHECK (swapped == 1 && ra->mediaId != "take0" && ra->srcIn == ra->start - ma->sync.offset, "Randomize shot swaps take and stays in sync");
+        CHECK (rb->mediaId == "take0" && rb->srcIn == rb->start, "Keep pins a clip against Randomize");
+        const size_t tracks0 = rs.tracks.size();
+        const int layers = addTakeLayers (rp, rs);
+        int hiddenTakes = 0;
+        for (auto& c : rs.clips) if (c.id != "a" && c.id != "b" && rs.tracks[(size_t) c.track].hidden && rs.tracks[(size_t) c.track].mute) ++hiddenTakes;
+        CHECK (layers == 3 && rs.tracks.size() == tracks0 + 3 && hiddenTakes == 3, "all takes sit under the edit on hidden, muted tracks");
+    }
+    {
         Project sp = Project::makeNew();
         CHECK (snapTime (secToTicks (1.234), sp, SnapMode::Ms100) == secToTicks (1.2), "time grid snaps to 100 ms");
         CHECK (snapTime (secToTicks (1.236), sp, SnapMode::Ms10) == secToTicks (1.24), "time grid snaps to 10 ms");

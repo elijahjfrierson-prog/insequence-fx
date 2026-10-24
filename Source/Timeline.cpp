@@ -139,6 +139,7 @@ void Timeline::paint (juce::Graphics& g)
         g.setColour (text); g.setFont (11.0f);
         juce::String label = c.name.isNotEmpty() ? c.name : (m ? m->name : juce::String ("(missing)"));
         if (! c.enabled) label = "[off] " + label;
+        if (c.keep) label = "[keep] " + label;
         if (c.speed == 0.0) label << "  hold";
         else if (c.speed != 1.0) label << "  " << juce::String (c.speed * 100, 0) << "%";
         if (! c.fx.p.empty()) label << "  fx";
@@ -588,7 +589,7 @@ void Timeline::clipMenu (const juce::String& id)
 {
     auto* c = st.project.seq().findClip (id);
     if (c == nullptr) return;
-    st.selected = { id };
+    if (! st.selected.contains (id)) st.selected = { id };   // right-click inside a selection keeps it
     if (onEdited) onEdited();
     bool video = st.project.seq().tracks[(size_t) c->track].kind == TrackKind::Video;
     juce::PopupMenu cut;
@@ -640,6 +641,12 @@ void Timeline::clipMenu (const juce::String& id)
         const int nSel = st.selected.contains (c->id) ? st.selected.size() : 1;
         m.addItem (43, nSel > 1 ? "Sync " + juce::String (nSel) + " clips to audio" : juce::String ("Sync clip to audio"),
                    hasMedia && md != nullptr && md->kind != MediaKind::Image);
+    }
+    {
+        const int nSel = st.selected.contains (c->id) ? st.selected.size() : 1;
+        m.addItem (44, nSel > 1 ? "Randomize " + juce::String (nSel) + " shots" : juce::String ("Randomize shot"), video && ! lk && ! c->keep);
+        m.addItem (45, "Keep (pin, Randomize skips it)", video, c->keep);
+        m.addItem (46, "Randomize all unpinned shots on this track", video && ! lk);
     }
     m.addItem (31, "Add Frame Hold Segment (1 beat)", ! lk && video && st.playhead > c->start && st.playhead < c->end());
     m.addSubMenu ("Transition in", trans, ! lk);
@@ -696,6 +703,14 @@ void Timeline::clipMenu (const juce::String& id)
         if (r == 14) { st.edit ("Duplicate"); st.selected = duplicateClips (sq, sel); }
         if (r == 2) { st.edit ("Split"); splitAt (sq, st.playhead, { id }); }
         if (r == 3) { st.edit ("Speed"); setClipSpeed (sq, st.project, id, 1.0); }
+        if (r == 44 || r == 46)
+        {
+            juce::StringArray ids = sel;
+            if (r == 46) { ids.clear(); for (auto& k : sq.clips) if (k.track == cl->track) ids.add (k.id); }
+            st.edit ("Randomize shots");
+            if (randomizeShots (st.project, sq, ids, (juce::uint32) juce::Time::currentTimeMillis()) == 0) st.history.undo (st.project);
+        }
+        if (r == 45) { st.edit ("Keep"); const bool on = ! cl->keep; for (auto& i : sel) if (auto* k = sq.findClip (i)) k->keep = on; }
         if (r == 34) { st.edit ("Reverse"); bool on = ! cl->reverse; for (auto& i : sel) if (auto* k = sq.findClip (i); k && ! k->locked && k->mediaId.isNotEmpty()) k->reverse = on; }
         if (r >= 35 && r <= 39)
         {
