@@ -344,6 +344,78 @@ const Frame* VideoDecoder::frameRef (Ticks t)
     return &cur;
 }
 
+PrefetchDecoder::PrefetchDecoder() : juce::Thread ("ISFX prefetch") {}
+PrefetchDecoder::~PrefetchDecoder() { signalThreadShouldExit(); wake.signal(); stopThread (3000); }
+
+bool PrefetchDecoder::open (const juce::File& f, int maxHeight, juce::String& error)
+{
+    if (! dec.open (f, maxHeight, error)) return false;
+    rot = dec.rotation();
+    frameDur = std::max<Ticks> (1, secToTicks (1.0 / std::max (1.0, dec.fps())));
+    startThread();
+    return true;
+}
+
+void PrefetchDecoder::prime (Ticks t)
+{
+    { const juce::ScopedLock sl (lock); target = std::max<Ticks> (0, t); }
+    wake.signal();
+}
+
+std::shared_ptr<const Frame> PrefetchDecoder::get (Ticks t, int waitMs)
+{
+    prime (t);
+    const double until = juce::Time::getMillisecondCounterHiRes() + waitMs;
+    for (;;)
+    {
+        {
+            const juce::ScopedLock sl (lock);
+            std::shared_ptr<Frame> best;
+            for (auto& f : q) { if (f->pts <= t + frameDur / 4) best = f; else break; }
+            if (best == nullptr && ! q.empty() && q.front()->pts - t < frameDur * 2) best = q.front();
+            if (best != nullptr) return best;
+        }
+        const double left = until - juce::Time::getMillisecondCounterHiRes();
+        if (left <= 0) return nullptr;
+        ready.wait ((int) std::ceil (left));
+    }
+}
+
+void PrefetchDecoder::run()
+{
+    while (! threadShouldExit())
+    {
+        Ticks from = -1; bool reseek = false; std::shared_ptr<Frame> slot;
+        {
+            const juce::ScopedLock sl (lock);
+            const Ticks t = target;
+            if (t >= 0)
+            {
+                while (q.size() > 1 && q[1]->pts <= t) { pool.push_back (q.front()); q.pop_front(); }   // passed frames
+                const bool jumped = q.empty() || t < q.front()->pts - frameDur || t > q.back()->pts + secToTicks (1.0);
+                if (jumped) { for (auto& f : q) pool.push_back (f); q.clear(); atEnd = false; reseek = true; from = t; }
+                else if (q.size() < maxAhead && ! atEnd) from = q.back()->pts + frameDur;
+                if (from >= 0) { if (! pool.empty()) { slot = pool.back(); pool.pop_back(); } else slot = std::make_shared<Frame>(); }
+            }
+        }
+        if (from < 0) { wake.wait (20); continue; }
+        const Frame* fr = dec.frameRef (from);
+        const bool ok = fr != nullptr && fr->valid();
+        if (ok) { slot->w = fr->w; slot->h = fr->h; slot->pts = fr->pts; slot->rgba.assign (fr->rgba.begin(), fr->rgba.end()); }
+        {
+            const juce::ScopedLock sl (lock);
+            if (ok && (reseek || q.empty() || slot->pts > q.back()->pts))
+            {
+                if (reseek && ! q.empty()) { for (auto& f : q) pool.push_back (f); q.clear(); }
+                q.push_back (slot);
+                maxAhead = (size_t) juce::jlimit (2, 6, (int) (48000000 / std::max<size_t> (1, slot->rgba.size())));
+            }
+            else { if (! reseek) atEnd = true; pool.push_back (slot); }
+        }
+        ready.signal();
+    }
+}
+
 juce::File proxyFileFor (const juce::File& source, int height)
 {
     auto key = source.getFullPathName() + "|" + juce::String (source.getSize()) + "|"

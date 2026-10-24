@@ -786,23 +786,48 @@ static void soakPlayback (const juce::String& files, int q, double secs)
         s.clips.push_back (c); s.sortClips();
         ++track;
     }
+    // ISFX_SOAK_CUTS=0.5: one montage track that cuts every 0.5 s between the files at varying source points
+    // (the "10 clips in a row" case: every cut is a seek on a different decoder)
+    const double cutSec = juce::SystemStats::getEnvironmentVariable ("ISFX_SOAK_CUTS", "0").getDoubleValue();
+    if (cutSec > 0 && ! p.media.empty())
+    {
+        s.clips.clear();
+        const Ticks L = secToTicks (cutSec);
+        loopLen = secToTicks (30);
+        for (int i = 0; (Ticks) i * L < loopLen; ++i)
+        {
+            auto& m = p.media[(size_t) i % p.media.size()];
+            Clip c; c.id = newId(); c.mediaId = m.id; c.track = 0; c.start = (Ticks) i * L; c.length = L;
+            const Ticks room = std::max<Ticks> (1, m.duration - L - secToTicks (0.2));
+            c.srcIn = (Ticks) ((juce::int64) (i * 7919) % (juce::int64) std::max<Ticks> (1, room / secToTicks (0.1))) * secToTicks (0.1);
+            s.clips.push_back (c);
+        }
+        s.sortClips();
+        track = (int) s.clips.size();
+    }
+    const bool liveMode = juce::SystemStats::getEnvironmentVariable ("ISFX_SOAK_LIVE", "0") == "1";
     if (! lookLibrary().empty()) applyLook (s.fx, lookLibrary()[0], 1.0f);
     // output size: the app's preview panel (~960x540 on a 1600x960 window), capped by the tier like Preview does
     const int H = std::min (540, tier), W = H * 16 / 9;
     Renderer r; std::vector<juce::uint8> o;
+    r.setLive (liveMode);
     const long rss0 = rssMB();
     long rssPeak = rss0;
     std::vector<double> times;
     const double t0 = juce::Time::getMillisecondCounterHiRes();
     double now = 0, nextRep = 10;
     std::cout << "SOAK quality " << (q <= 1 ? juce::String ("Full") : "1/" + juce::String (q)) << " (decode " << tier << (proxy ? "p proxy" : " original")
-              << ", output " << W << "x" << H << ", " << track << " stacked layers + look), RSS start " << rss0 << " MB\n";
+              << ", output " << W << "x" << H << ", " << track << (cutSec > 0 ? " clips cut every " + juce::String (cutSec) + " s" : juce::String (" stacked layers"))
+              << " + look, " << (liveMode ? "decode-ahead" : "synchronous decode") << ", paced 30 fps), RSS start " << rss0 << " MB\n";
     int lastN = 0; double lastT = 0;
     while ((now = (juce::Time::getMillisecondCounterHiRes() - t0) / 1000.0) < secs)
     {
         const double a = juce::Time::getMillisecondCounterHiRes();
         r.render (p, s, secToTicks (now) % loopLen, W, H, o, tier);
         times.push_back (juce::Time::getMillisecondCounterHiRes() - a);
+        // pace like the app (30 fps preview); a slow frame just delays the next one, the playhead keeps wall time
+        const double next = t0 + (double) times.size() * (1000.0 / 30.0);
+        if (const double w = next - juce::Time::getMillisecondCounterHiRes(); w > 1) juce::Thread::sleep ((int) w);
         rssPeak = std::max (rssPeak, rssMB());
         if (now >= nextRep)
         {
@@ -815,11 +840,12 @@ static void soakPlayback (const juce::String& files, int q, double secs)
     auto pct = [&] (double f) { return sorted.empty() ? 0.0 : sorted[(size_t) std::min<double> ((double) sorted.size() - 1, f * (double) sorted.size())]; };
     double sum = 0; for (auto x : times) sum += x;
     const int shown = (int) times.size(), expected30 = (int) (secs * 30);
-    int over100 = 0; for (auto x : times) over100 += x > 100;
+    int over100 = 0, over50 = 0; for (auto x : times) { over100 += x > 100; over50 += x > 50; }
     std::cout << "  RESULT " << shown << " frames in " << juce::String (secs, 0) << " s = " << juce::String (shown / secs, 1) << " fps"
               << " | avg " << juce::String (sum / std::max (1, shown), 1) << " ms, median " << juce::String (pct (0.5), 1) << ", 99% " << juce::String (pct (0.99), 1)
               << ", worst " << juce::String (sorted.empty() ? 0.0 : sorted.back(), 1) << " ms | frames >100 ms: " << over100
-              << " | dropped vs 30 fps: " << std::max (0, expected30 - shown)
+              << " | frames >50 ms: " << over50 << " | dropped vs 30 fps: " << std::max (0, expected30 - shown)
+              << " | stale (repeated) frames: " << r.lateFrames()
               << " | RSS start " << rss0 << " MB, end " << rssMB() << " MB, peak " << rssPeak << " MB\n";
 }
 
