@@ -1,0 +1,89 @@
+InSequence FX — End User License Agreement
+EULA version 1.0 — Last updated: 2026
+
+IMPORTANT: READ THIS AGREEMENT BEFORE INSTALLING OR USING THE SOFTWARE. BY
+CLICKING "I ACCEPT", INSTALLING, OR USING THE SOFTWARE, YOU AGREE TO BE BOUND BY
+THIS AGREEMENT. IF YOU DO NOT AGREE, DO NOT INSTALL OR USE THE SOFTWARE.
+
+1. PARTIES AND SUBJECT
+This End User License Agreement ("Agreement") is between you ("you") and
+HumHouse ("we", "us"), and covers the InSequence FX music video editing
+application, together with its looks, effects, presets, documentation and
+updates (the "Software").
+
+2. LICENSE GRANTED
+We grant you a personal, non-exclusive, worldwide, revocable license to install
+and use the Software on computers you own or control, for both personal and
+commercial video production. You may make backup copies for your own use.
+
+3. YOUR VIDEOS ARE YOURS
+We claim no rights in the footage, songs, projects, or videos you import into or
+create with the Software. No royalty, credit, or reporting is owed to us for
+anything you produce with it. You are responsible for holding the rights to any
+music, footage, or reference material you import.
+
+4. LOCAL PROCESSING AND PRIVACY
+All editing, analysis, synchronization, automatic editing, and rendering run
+locally on your computer. The Software does not upload your media, does not
+collect analytics, and does not use your media to train any model. If a future
+version offers optional cloud features, they will be off by default and require
+your separate consent.
+
+5. RESTRICTIONS
+You may not:
+  (a) sell, rent, lease, sublicense, or redistribute the Software itself as a
+      product, whether alone or bundled with another product;
+  (b) remove or alter any copyright, trademark, or license notice;
+  (c) reverse engineer, decompile, or disassemble the Software, except to the
+      extent that applicable law expressly permits it despite this limitation.
+
+6. OWNERSHIP
+The Software is licensed, not sold. We and our licensors retain all right, title
+and interest in the Software, including all intellectual property rights.
+
+7. THIRD-PARTY COMPONENTS
+The Software is built with the JUCE framework (https://juce.com) and with FFmpeg
+libraries (https://ffmpeg.org), which are licensed separately under their own
+terms (FFmpeg under the GNU LGPL / GPL as noted in the bundled notices). Those
+terms apply to those components.
+
+8. NO AFFILIATION
+HumHouse is not affiliated with, endorsed by, or sponsored by Adobe, ByteDance,
+Triller, Apple, Microsoft, Image-Line, or Blackmagic Design. "Premiere Pro",
+"After Effects", "CapCut", "Triller", "FL Studio" and other product names are
+trademarks of their respective owners and are used only to describe workflow.
+The Software is an independent, original implementation and contains no code or
+assets from any other vendor's product.
+
+9. PHOTOSENSITIVITY WARNING
+Flash, strobe and glitch effects can trigger seizures in people with
+photosensitive epilepsy. Use conservative settings and warn your viewers.
+
+10. UPDATES
+We may provide updates or new versions at our discretion. Unless an update ships
+with its own license terms, this Agreement governs it. If the terms change
+materially, the Software will ask you to accept the new version.
+
+11. TERM AND TERMINATION
+This Agreement takes effect when you install the Software and continues until
+terminated. It terminates automatically if you breach it. On termination you must
+stop using the Software and remove all installed copies. Your projects and
+exported videos remain yours. Sections 3, 6, 12, 13 and 14 survive termination.
+
+12. NO WARRANTY
+THE SOFTWARE IS PROVIDED "AS IS" AND "AS AVAILABLE", WITHOUT WARRANTY OF ANY
+KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE IMPLIED WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT.
+
+13. LIMITATION OF LIABILITY
+TO THE MAXIMUM EXTENT PERMITTED BY LAW, WE WILL NOT BE LIABLE FOR ANY INDIRECT,
+INCIDENTAL, SPECIAL, CONSEQUENTIAL, OR PUNITIVE DAMAGES, OR FOR ANY LOSS OF
+PROFITS, REVENUE, DATA, FOOTAGE, PROJECTS, OR GOODWILL, ARISING OUT OF OR
+RELATED TO THE SOFTWARE. OUR TOTAL AGGREGATE LIABILITY UNDER THIS AGREEMENT WILL
+NOT EXCEED THE GREATER OF THE AMOUNT YOU PAID FOR THE SOFTWARE OR USD $25.
+
+14. GENERAL
+If any provision of this Agreement is held unenforceable, the remainder stays in
+force. This Agreement is the entire agreement between us regarding the Software.
+
+Questions: https://github.com/elijahjfrierson-prog/insequence-fx/issues
