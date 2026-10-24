@@ -66,6 +66,10 @@ public:
         centreWithSize (std::min (1600, juce::Desktop::getInstance().getDisplays().getPrimaryDisplay()->userArea.getWidth() - 40),
                         std::min (960, juce::Desktop::getInstance().getDisplays().getPrimaryDisplay()->userArea.getHeight() - 40));
         setVisible (true);
+       #if JUCE_WINDOWS
+        // JUCE 8's Direct2D peer crashes while tearing the window down on some GPUs/VMs; the software renderer is stable
+        if (auto* peer = getPeer()) peer->setCurrentRenderingEngine (0);
+       #endif
     }
     void closeButtonPressed() override { mc->tryQuit ([] { juce::JUCEApplication::getInstance()->systemRequestedQuit(); }); }
     MainComponent* mc = nullptr;
