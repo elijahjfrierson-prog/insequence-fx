@@ -21,6 +21,8 @@ namespace theme
                        text { 0xffe8e9ee }, dim { 0xff8a8f9c }, accent { 0xffff3d6e }, accent2 { 0xff38d6ff },
                        good { 0xff3ddc84 }, warn { 0xffffb020 }, bad { 0xffff4d4d };
 }
+void drawLogo (juce::Graphics&, juce::Rectangle<float> area);  // sleek InSequence FX wordmark
+
 class ISFXLookAndFeel : public juce::LookAndFeel_V4
 {
 public:
@@ -42,7 +44,7 @@ struct AppState
     juce::StringArray selected;
     Ticks playhead = 0, rangeA = 0, rangeB = 0;
     SnapMode snap = SnapMode::Sixteenth;
-    bool snapOn = true, ripple = false, showGrid = true;
+    bool snapOn = true, ripple = false, showGrid = true, magnetic = true;
     juce::ChangeBroadcaster changed;   // project edited -> repaint everything
 
     void edit (const juce::String& what) { history.push (project, what); dirty = true; }
@@ -91,6 +93,7 @@ public:
     void sourcesChanged() { clearReq = true; requestFrame (lastReq); }
     void setProject (const Project& p);
     double renderMs() const { return lastMs; }
+    void setLive (bool b) { if (live.exchange (b) && ! b) requestFrame (lastReq); }
 private:
     void run() override;
     void handleAsyncUpdate() override { repaint(); }
@@ -101,7 +104,8 @@ private:
     Ticks want = -1, lastReq = 0;
     std::shared_ptr<const Project> snap;
     int wantW = 0, wantH = 0;
-    std::atomic<bool> clearReq { false };
+    std::atomic<bool> clearReq { false }, live { false };
+    int wantDecodeH = 0;
     juce::Image shown;
     double lastMs = 0;
 };
@@ -141,6 +145,8 @@ private:
     enum class Drag { None, Move, TrimL, TrimR, Range, Scrub } drag = Drag::None;
     juce::String dragClip;
     Ticks dragStart = 0, dragOrig = 0; int dragTrack = 0;
+    Ticks snapGuide = -1;
+    Ticks magnetSnap (Ticks t, Ticks len);
     Project beforeDrag;
 };
 

@@ -1,4 +1,9 @@
 #include "Renderer.h"
+#include <cstdio>
+#include <array>
+#include <functional>
+#include <condition_variable>
+#include <mutex>
 #include <thread>
 #include <algorithm>
 
@@ -40,16 +45,83 @@ juce::StringArray blendModeNames()
 // ---------------------------------------------------------------- helpers
 namespace
 {
+class RowPool
+{
+public:
+    static RowPool& get() { static RowPool p; return p; }
+    void run (int H, const std::function<void (int)>& fn)
+    {
+        std::unique_lock<std::mutex> callLock (callMx);
+        {
+            std::lock_guard<std::mutex> g (mx);
+            job = &fn; rows = H; next = 0; done = 0; ++gen;
+        }
+        cv.notify_all();
+        work (gen);
+        std::unique_lock<std::mutex> g (mx);
+        doneCv.wait (g, [this] { return done >= rows; });
+        job = nullptr;
+    }
+    ~RowPool()
+    {
+        { std::lock_guard<std::mutex> g (mx); quit = true; ++gen; }
+        cv.notify_all();
+        for (auto& t : threads) t.join();
+    }
+private:
+    RowPool()
+    {
+        int n = (int) juce::jlimit (1u, 16u, std::thread::hardware_concurrency()) - 1;
+        for (int i = 0; i < n; ++i)
+            threads.emplace_back ([this]
+            {
+                juce::uint64 seen = 0;
+                for (;;)
+                {
+                    juce::uint64 g;
+                    {
+                        std::unique_lock<std::mutex> l (mx);
+                        cv.wait (l, [&] { return quit || gen != seen; });
+                        if (quit) return;
+                        seen = g = gen;
+                    }
+                    work (g);
+                }
+            });
+    }
+    void work (juce::uint64 g)
+    {
+        constexpr int band = 8;
+        for (;;)
+        {
+            const std::function<void (int)>* f; int y0, y1;
+            {
+                std::lock_guard<std::mutex> l (mx);
+                if (gen != g || job == nullptr || next >= rows) return;
+                f = job; y0 = next; y1 = std::min (rows, next + band); next = y1;
+            }
+            for (int y = y0; y < y1; ++y) (*f) (y);
+            {
+                std::lock_guard<std::mutex> l (mx);
+                done += y1 - y0;
+                if (done >= rows) doneCv.notify_all();
+            }
+        }
+    }
+    std::mutex callMx, mx;
+    std::condition_variable cv, doneCv;
+    std::vector<std::thread> threads;
+    const std::function<void (int)>* job = nullptr;
+    int rows = 0, next = 0, done = 0;
+    juce::uint64 gen = 0;
+    bool quit = false;
+};
+
 template <typename F> void parallelRows (int H, F&& fn)
 {
-    int n = (int) juce::jlimit (1u, 16u, std::thread::hardware_concurrency());
-    if (H < 32) n = 1;
-    if (n == 1) { for (int y = 0; y < H; ++y) fn (y); return; }
-    std::vector<std::thread> th;
-    int chunk = (H + n - 1) / n;
-    for (int i = 0; i < n; ++i)
-        th.emplace_back ([&, i] { for (int y = i * chunk; y < std::min (H, (i + 1) * chunk); ++y) fn (y); });
-    for (auto& t : th) t.join();
+    if (H < 32) { for (int y = 0; y < H; ++y) fn (y); return; }
+    std::function<void (int)> f = [&fn] (int y) { fn (y); };
+    RowPool::get().run (H, f);
 }
 
 inline float hash3 (int x, int y, int z)
@@ -201,6 +273,68 @@ void thermalColor (float l, float* o)
 }
 }
 
+namespace
+{
+struct ToneCurve
+{
+    bool active = false;
+    std::array<float, 4 * 257> t {};  // master, R, G, B
+};
+
+ToneCurve makeCurve (const FxStack& fx, const std::vector<ParamDef>& defs)
+{
+    ToneCurve tc;
+    const char chans[4] = { 'M', 'R', 'G', 'B' };
+    for (int c = 0; c < 4; ++c)
+    {
+        float y[5];
+        for (int i = 0; i < 5; ++i)
+        {
+            char id[8]; std::snprintf (id, sizeof (id), "crv%c%d", chans[c], i);
+            y[i] = fxValue (fx, defs, id);
+            if (std::abs (y[i] - i / 4.0f) > 1e-4f) tc.active = true;
+        }
+        for (int k = 0; k <= 256; ++k)
+        {
+            float x = k / 256.0f * 4.0f; int i = std::min (3, (int) x); float u = x - i;
+            float p1 = y[i], p2 = y[i + 1];
+            float p0 = i > 0 ? y[i - 1] : 2 * p1 - p2, p3 = i < 3 ? y[i + 2] : 2 * p2 - p1;
+            float v = 0.5f * (2 * p1 + (-p0 + p2) * u + (2 * p0 - 5 * p1 + 4 * p2 - p3) * u * u + (-p0 + 3 * p1 - 3 * p2 + p3) * u * u * u);
+            tc.t[(size_t) c * 257 + (size_t) k] = std::clamp (v, 0.0f, 1.0f);
+        }
+    }
+    return tc;
+}
+
+inline float curveAt (const float* t, float v)
+{
+    v = std::clamp (v, 0.0f, 1.0f) * 256.0f;
+    int i = std::min (255, (int) v); float u = v - i;
+    return t[i] + (t[i + 1] - t[i]) * u;
+}
+
+inline void applyCurve (const ToneCurve& tc, float* c)
+{
+    for (int q = 0; q < 3; ++q) c[q] = curveAt (tc.t.data(), curveAt (tc.t.data() + (q + 1) * 257, c[q]));
+}
+
+inline void adjustTones (float* c, float bright, float hi, float sh)
+{
+    if (bright != 0)
+    {
+        float g = std::exp (-bright * 0.9f);
+        for (int q = 0; q < 3; ++q) c[q] = std::pow (std::clamp (c[q], 0.0f, 1.0f), g);
+    }
+    if (hi != 0 || sh != 0)
+    {
+        float l = std::clamp (0.2126f * c[0] + 0.7152f * c[1] + 0.0722f * c[2], 0.0f, 1.0f);
+        float ws = 1 - std::clamp (l / 0.55f, 0.0f, 1.0f), wh = std::clamp ((l - 0.45f) / 0.55f, 0.0f, 1.0f);
+        float d = sh * 0.35f * ws * ws * (3 - 2 * ws) + hi * 0.35f * wh * wh * (3 - 2 * wh);
+        for (int q = 0; q < 3; ++q) c[q] += d;
+    }
+}
+}
+
 // ---------------------------------------------------------------- sources
 void Renderer::clearSources() { sources.clear(); luts.clear(); trailT = -1; }
 
@@ -208,7 +342,9 @@ const Frame* Renderer::frameFor (const Project& p, const juce::String& mediaId, 
 {
     auto* m = p.findMedia (mediaId);
     if (m == nullptr || m->missing || m->kind == MediaKind::Audio) return nullptr;
-    auto key = mediaId + "@" + juce::String (decodeH);
+    const bool useProxy = m->kind == MediaKind::Video && decodeH > 0 && decodeH <= kProxyHeight
+                          && m->proxyPath.isNotEmpty() && juce::File (m->proxyPath).existsAsFile();
+    auto key = mediaId + "@" + juce::String (decodeH) + (useProxy ? "p" : "");
     auto& src = sources[key];
     if (src == nullptr)
     {
@@ -239,16 +375,16 @@ const Frame* Renderer::frameFor (const Project& p, const juce::String& mediaId, 
         {
             src->dec = std::make_unique<VideoDecoder>();
             juce::String err;
-            if (! src->dec->open (f, decodeH, err)) src->failed = true;
+            if (useProxy && src->dec->open (juce::File (m->proxyPath), decodeH, err)) src->rotation = m->rotation;
+            else if (! src->dec->open (f, decodeH, err)) src->failed = true;
             else src->rotation = src->dec->rotation();
         }
     }
     if (src->failed) return nullptr;
     rotation = src->rotation;
     if (m->kind == MediaKind::Image) return &src->still;
-    Frame fr;
-    if (src->dec->frameAt (juce::jmax ((Ticks) 0, srcT), fr) && fr.valid()) src->last = std::move (fr);
-    return src->last.valid() ? &src->last : nullptr;
+    if (auto* fr = src->dec->frameRef (juce::jmax ((Ticks) 0, srcT))) return fr;
+    return nullptr;
 }
 
 std::shared_ptr<Lut3D> Renderer::lutFor (const juce::String& path)
@@ -311,6 +447,8 @@ bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int 
         bool mirror = cv ("mirror") > 0.5f;
         float offX = cv ("posX") * W * 0.5f + camX + whip * W, offY = cv ("posY") * H * 0.5f + camY;
         float cExp = std::pow (2.0f, cv ("exposure")), cCon = cv ("contrast"), cSat = cv ("saturation");
+        const float cBri = cv ("brightness"), cHi = cv ("highlights"), cSh = cv ("shadows"), cTemp = cv ("temperature"), cTint = cv ("tint");
+        const ToneCurve cCurve = makeCurve (c.fx, CP);
         int blend = juce::jlimit (0, 11, (int) std::lround (cv ("blend")));
         float chroma = cv ("chromaKey"), keyHue = cv ("keyHue"), keyTol = cv ("keyTol");
         float lumaK = cv ("lumaKey"), lumaT = cv ("lumaThresh");
@@ -365,6 +503,13 @@ bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int 
                 for (int q = 0; q < 3; ++q) col[q] = (col[q] * cExp - 0.45f) * cCon + 0.45f;
                 float l = luma (col);
                 for (int q = 0; q < 3; ++q) col[q] = clamp01 (l + (col[q] - l) * cSat);
+                if (cTemp != 0 || cTint != 0)
+                {
+                    col[0] += cTemp * 0.08f + cTint * 0.03f; col[2] += -cTemp * 0.08f + cTint * 0.03f; col[1] -= cTint * 0.06f;
+                }
+                adjustTones (col, cBri, cHi, cSh);
+                if (cCurve.active) applyCurve (cCurve, col);
+                for (int q = 0; q < 3; ++q) col[q] = clamp01 (col[q]);
                 if (chroma > 0)
                 {
                     float h, sat, v; rgbToHsv (col, h, sat, v);
@@ -503,6 +648,8 @@ bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int 
     const float hueC = sv ("hueCycle"), post = sv ("posterize"), sol = sv ("solarize"), therm = sv ("thermal");
     bool invert = sv ("invertHits") > 0 && be.snareIdx >= 0 && be.sinceSnare < 2.0 / p.fps && hash3 (be.snareIdx, 77, 1) < sv ("invertHits");
     float hueAng = hueC * ((float) T * 1.4f + be.kickIdx * 0.6f);
+    const float gBri = sv ("brightness"), gHi = sv ("highlights"), gSh = sv ("shadows");
+    const ToneCurve gCurve = makeCurve (s.fx, SP);
     float ch = std::cos (hueAng), shh = std::sin (hueAng);
     parallelRows (H, [&] (int y) {
         for (int x = 0; x < W; ++x)
@@ -514,6 +661,7 @@ bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int 
             for (int q = 0; q < 3; ++q) c[q] = (c[q] - 0.45f) * con + 0.45f;
             float l = luma (c);
             for (int q = 0; q < 3; ++q) c[q] = l + (c[q] - l) * sat;
+            adjustTones (c, gBri, gHi, gSh);
             if (splitT > 0)
             {
                 float lw = clamp01 (l);
@@ -525,6 +673,7 @@ bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int 
                 for (int q = 0; q < 3; ++q) { float v = std::max (0.0f, (c[q] - crush * 0.1f) / (1 - crush * 0.1f)); c[q] = std::pow (v, 1 + crush * 0.5f); }
             if (fade > 0) for (int q = 0; q < 3; ++q) c[q] = fade * 0.14f + c[q] * (1 - fade * 0.2f);
             for (int q = 0; q < 3; ++q) c[q] = clamp01 (c[q]);
+            if (gCurve.active) applyCurve (gCurve, c);
             if (lut != nullptr && lutMix > 0)
             {
                 int n = lut->size; float fx = c[0] * (n - 1), fy = c[1] * (n - 1), fz = c[2] * (n - 1);
@@ -702,6 +851,25 @@ bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int 
         }
     }
 
+    // ---- sharpen (unsharp mask against a 4-neighbour blur)
+    if (float shp = sv ("sharpen"); shp > 0)
+    {
+        auto src = img;
+        parallelRows (H, [&] (int y) {
+            const size_t ya = (size_t) std::max (0, y - 1) * W, yb = (size_t) std::min (H - 1, y + 1) * W, yc = (size_t) y * W;
+            for (int x = 0; x < W; ++x)
+            {
+                const size_t xa = (size_t) std::max (0, x - 1), xb = (size_t) std::min (W - 1, x + 1);
+                for (int q = 0; q < 3; ++q)
+                {
+                    float b = (src[(ya + x) * 3 + q] + src[(yb + x) * 3 + q] + src[(yc + xa) * 3 + q] + src[(yc + xb) * 3 + q]) * 0.25f;
+                    float& d = img[(yc + x) * 3 + q];
+                    d += (d - b) * shp * 1.6f;
+                }
+            }
+        });
+    }
+
     // ---- vignette, grain, letterbox, output
     float vig = sv ("vignette"), grain = sv ("grain"), gSize = sv ("grainSize"), lbox = sv ("letterbox");
     int cell = std::max (1, (int) std::lround ((1 + gSize * 1.2f) * H / 1080.0f));
@@ -731,7 +899,7 @@ bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int 
             }
             if (y < bar || y >= H - bar) c[0] = c[1] = c[2] = 0;
             auto* o = &rgba[((size_t) y * W + x) * 4];
-            for (int q = 0; q < 3; ++q) o[q] = (juce::uint8) std::lround (clamp01 (c[q]) * 255.0f);
+            for (int q = 0; q < 3; ++q) o[q] = (juce::uint8) (clamp01 (c[q]) * 255.0f + 0.5f);
             o[3] = 255;
         }
     });

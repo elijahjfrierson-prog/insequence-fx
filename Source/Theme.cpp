@@ -51,4 +51,31 @@ void ISFXLookAndFeel::drawButtonBackground (juce::Graphics& g, juce::Button& b, 
     g.setColour (b.getToggleState() ? theme::accent.brighter (0.3f) : theme::line);
     g.drawRoundedRectangle (r, 4.0f, 1.0f);
 }
+
+void drawLogo (juce::Graphics& g, juce::Rectangle<float> r)
+{
+    // mark: three rounded "frame" bars rising left to right, the last one lit
+    auto m = r.removeFromLeft (r.getHeight() * 0.8f).reduced (0, r.getHeight() * 0.22f);
+    const float bw = m.getWidth() * 0.2f;
+    for (int i = 0; i < 3; ++i)
+    {
+        float h = m.getHeight() * (0.42f + 0.29f * (float) i);
+        juce::Path p; p.addRoundedRectangle (m.getX() + (float) i * m.getWidth() * 0.4f, m.getBottom() - h, bw, h, bw * 0.5f);
+        g.setColour (i == 2 ? theme::accent : theme::text.withAlpha (0.28f + 0.3f * (float) i));
+        g.fillPath (p);
+    }
+    r.removeFromLeft (9);
+    auto drawWord = [&] (const juce::String& w, const juce::Font& f, juce::Colour c, float x)
+    {
+        juce::GlyphArrangement ga;
+        ga.addLineOfText (f, w, x, r.getCentreY() + f.getAscent() * 0.5f - f.getDescent() * 0.25f);
+        juce::Path p; ga.createPath (p);
+        g.setColour (c); g.fillPath (p);
+        return ga.getBoundingBox (0, -1, true).getRight();
+    };
+    juce::Font word (juce::FontOptions (14.5f, juce::Font::plain)); word.setExtraKerningFactor (0.22f);
+    juce::Font fx (juce::FontOptions (11.0f, juce::Font::bold)); fx.setExtraKerningFactor (0.12f);
+    float end = drawWord ("INSEQUENCE", word, theme::text, r.getX());
+    drawWord ("FX", fx, theme::accent, end + 7);
+}
 }

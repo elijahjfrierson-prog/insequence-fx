@@ -31,10 +31,14 @@ void Preview::requestFrame (Ticks t)
 {
     auto fa = frameArea();
     // preview renders at most ~540p (export renders at full size through the same renderer)
-    int sh = juce::jlimit (90, 540, std::min (fa.getWidth(), fa.getHeight()));
+    double scale = 1.0;
+    if (auto* d = juce::Desktop::getInstance().getDisplays().getDisplayForRect (getScreenBounds())) scale = d->scale;
+    int phys = (int) std::round (std::min (fa.getWidth(), fa.getHeight()) * scale);
+    // playback renders a light preview from proxy-sized decodes; a paused frame renders sharp at screen resolution
+    int sh = live ? juce::jlimit (90, 540, phys) : juce::jlimit (90, 1080, phys);
     int W, H; outputSize (st.project, sh, W, H);
     const juce::ScopedLock sl (lock);
-    want = t; lastReq = t; wantW = W; wantH = H;
+    want = t; lastReq = t; wantW = W; wantH = H; wantDecodeH = live ? std::min (H, 540) : std::min (H, 1080);
     wake.signal();
 }
 
@@ -44,16 +48,16 @@ void Preview::run()
     while (! threadShouldExit())
     {
         wake.wait (100);
-        Ticks t; int W, H; std::shared_ptr<const Project> p;
+        Ticks t; int W, H, decH; std::shared_ptr<const Project> p;
         {
             const juce::ScopedLock sl (lock);
             if (want < 0) continue;
-            t = want; want = -1; W = wantW; H = wantH; p = snap;
+            t = want; want = -1; W = wantW; H = wantH; p = snap; decH = wantDecodeH;
         }
         if (W <= 0 || H <= 0 || p == nullptr) continue;
         if (clearReq.exchange (false)) renderer.clearSources();
         auto t0 = juce::Time::getMillisecondCounterHiRes();
-        renderer.render (*p, p->seq(), t, W, H, px, std::min (H, 720));
+        renderer.render (*p, p->seq(), t, W, H, px, decH);
         lastMs = juce::Time::getMillisecondCounterHiRes() - t0;
         juce::Image im (juce::Image::ARGB, W, H, false);
         {
@@ -61,8 +65,9 @@ void Preview::run()
             for (int y = 0; y < H; ++y)
             {
                 auto* src = px.data() + (size_t) y * W * 4;
+                auto* dst = reinterpret_cast<juce::PixelARGB*> (bd.getLinePointer (y));
                 for (int x = 0; x < W; ++x, src += 4)
-                    bd.setPixelColour (x, y, juce::Colour (src[0], src[1], src[2]));
+                    dst[x].setARGB (255, src[0], src[1], src[2]);
             }
         }
         { const juce::ScopedLock sl (lock); shown = im; }
@@ -76,7 +81,11 @@ void Preview::paint (juce::Graphics& g)
     auto fa = frameArea();
     juce::Image im; { const juce::ScopedLock sl (lock); im = shown; }
     g.setColour (juce::Colours::black); g.fillRect (fa);
-    if (im.isValid()) g.drawImage (im, fa.toFloat(), juce::RectanglePlacement::stretchToFit);
+    if (im.isValid())
+    {
+        g.setImageResamplingQuality (juce::Graphics::highResamplingQuality);
+        g.drawImage (im, fa.toFloat(), juce::RectanglePlacement::stretchToFit);
+    }
     g.setColour (theme::line); g.drawRect (fa.expanded (1));
     g.setColour (theme::dim); g.setFont (11.0f);
     double sec = ticksToSec (st.playhead);
@@ -250,13 +259,104 @@ Inspector::Inspector (AppState& s) : st (s)
 
 void Inspector::paint (juce::Graphics& g) { g.fillAll (theme::panel); }
 
+// CapCut-style tone curves: RGB master plus R, G, B; five draggable points per channel.
+struct CurveEditor : public juce::Component
+{
+    CurveEditor (std::function<FxStack&()> s, std::function<void()> b, std::function<void()> e)
+        : stack (std::move (s)), begin (std::move (b)), edited (std::move (e)) {}
+    static juce::String pid (int c, int i) { return juce::String ("crv") + juce::String::charToString ("MRGB"[c]) + juce::String (i); }
+    float val (int c, int i) const { return stack().get (pid (c, i), (float) i / 4.0f); }
+    juce::Rectangle<float> plot() const { auto r = getLocalBounds().toFloat().reduced (4); r.removeFromTop (26); return r; }
+    float eval (int c, float x) const
+    {
+        float y[5]; for (int i = 0; i < 5; ++i) y[i] = val (c, i);
+        float f = juce::jlimit (0.0f, 1.0f, x) * 4; int i = std::min (3, (int) f); float u = f - (float) i;
+        float p1 = y[i], p2 = y[i + 1], p0 = i > 0 ? y[i - 1] : 2 * p1 - p2, p3 = i < 3 ? y[i + 2] : 2 * p2 - p1;
+        return juce::jlimit (0.0f, 1.0f, 0.5f * (2 * p1 + (-p0 + p2) * u + (2 * p0 - 5 * p1 + 4 * p2 - p3) * u * u + (-p0 + 3 * p1 - 3 * p2 + p3) * u * u * u));
+    }
+    static juce::Colour colourFor (int c)
+    {
+        return c == 0 ? juce::Colours::white : c == 1 ? juce::Colour (0xffff5a5a) : c == 2 ? juce::Colour (0xff4ade80) : juce::Colour (0xff5aa9ff);
+    }
+    void paint (juce::Graphics& g) override
+    {
+        const char* names[4] = { "RGB", "R", "G", "B" };
+        for (int c = 0; c < 4; ++c)
+        {
+            juce::Rectangle<float> tab (4.0f + (float) c * 46.0f, 4.0f, 42.0f, 20.0f);
+            g.setColour (c == ch ? colourFor (c).withAlpha (0.25f) : theme::panel2); g.fillRoundedRectangle (tab, 4);
+            g.setColour (c == ch ? colourFor (c) : theme::dim); g.setFont (11.0f);
+            g.drawText (names[c], tab, juce::Justification::centred);
+        }
+        g.setColour (theme::dim); g.setFont (10.0f);
+        g.drawText ("double-click resets", getLocalBounds().removeFromTop (28).reduced (6, 0), juce::Justification::centredRight);
+        auto p = plot();
+        g.setColour (juce::Colour (0xff0b0c10)); g.fillRoundedRectangle (p, 4);
+        g.setColour (theme::line);
+        for (int i = 1; i < 4; ++i)
+        {
+            g.drawVerticalLine ((int) (p.getX() + p.getWidth() * (float) i / 4), p.getY(), p.getBottom());
+            g.drawHorizontalLine ((int) (p.getY() + p.getHeight() * (float) i / 4), p.getX(), p.getRight());
+        }
+        g.drawLine (p.getX(), p.getBottom(), p.getRight(), p.getY(), 0.6f);
+        for (int pass = 0; pass < 2; ++pass)
+            for (int c = 0; c < 4; ++c)
+            {
+                if ((pass == 1) != (c == ch)) continue;
+                juce::Path path;
+                for (int k = 0; k <= 64; ++k)
+                {
+                    float x = (float) k / 64, y = eval (c, x);
+                    juce::Point<float> pt (p.getX() + x * p.getWidth(), p.getBottom() - y * p.getHeight());
+                    if (k == 0) path.startNewSubPath (pt); else path.lineTo (pt);
+                }
+                g.setColour (colourFor (c).withAlpha (c == ch ? 1.0f : 0.22f));
+                g.strokePath (path, juce::PathStrokeType (c == ch ? 1.8f : 1.0f));
+            }
+        for (int i = 0; i < 5; ++i)
+        {
+            juce::Point<float> pt (p.getX() + p.getWidth() * (float) i / 4, p.getBottom() - val (ch, i) * p.getHeight());
+            g.setColour (juce::Colour (0xff0b0c10)); g.fillEllipse (juce::Rectangle<float> (10, 10).withCentre (pt));
+            g.setColour (colourFor (ch)); g.drawEllipse (juce::Rectangle<float> (10, 10).withCentre (pt), 1.6f);
+        }
+    }
+    void mouseDown (const juce::MouseEvent& e) override
+    {
+        if (e.y < 28) { ch = juce::jlimit (0, 3, (e.x - 4) / 46); dragIdx = -1; repaint(); return; }
+        auto p = plot();
+        dragIdx = juce::jlimit (0, 4, (int) std::lround ((e.position.x - p.getX()) / p.getWidth() * 4));
+        if (begin) begin();
+        setFromMouse (e);
+    }
+    void mouseDrag (const juce::MouseEvent& e) override { if (dragIdx >= 0) setFromMouse (e); }
+    void mouseUp (const juce::MouseEvent&) override { dragIdx = -1; }
+    void mouseDoubleClick (const juce::MouseEvent& e) override
+    {
+        if (e.y < 28) return;
+        if (begin) begin();
+        for (int i = 0; i < 5; ++i) stack().set (pid (ch, i), (float) i / 4.0f);
+        if (edited) edited();
+        repaint();
+    }
+    void setFromMouse (const juce::MouseEvent& e)
+    {
+        auto p = plot();
+        stack().set (pid (ch, dragIdx), juce::jlimit (0.0f, 1.0f, 1 - (e.position.y - p.getY()) / p.getHeight()));
+        if (edited) edited();
+        repaint();
+    }
+    std::function<FxStack&()> stack;
+    std::function<void()> begin, edited;
+    int ch = 0, dragIdx = -1;
+};
+
 void Inspector::resized()
 {
     auto r = getLocalBounds().reduced (8);
     title.setBounds (r.removeFromTop (24));
     view.setBounds (r);
     int w = view.getWidth() - view.getScrollBarThickness() - 2, y = 0;
-    for (auto* c : items) { int h = dynamic_cast<Heading*> (c) ? 24 : 26; c->setBounds (0, y, w, h); y += h; }
+    for (auto* c : items) { int h = dynamic_cast<Heading*> (c) ? 24 : dynamic_cast<CurveEditor*> (c) ? 236 : 26; c->setBounds (0, y, w, h); y += h; }
     content.setSize (w, y + 10);
 }
 
@@ -279,8 +379,14 @@ void Inspector::rebuild()
     auto addParams = [&] (const std::vector<ParamDef>& defs, std::function<FxStack&()> stack)
     {
         juce::String group;
+        bool curves = false;
         for (auto& d : defs)
         {
+            if (juce::String (d.group) == "Curves")
+            {
+                if (! curves) { curves = true; group = d.group; add (new Heading ("Curves")); add (new CurveEditor (stack, [this] { st.edit ("Curve"); }, edited)); }
+                continue;
+            }
             if (juce::String (d.group) != group) { group = d.group; add (new Heading (group)); }
             float v = stack().get (d.id, d.def);
             bool discrete = juce::String (d.id) == "reframe" || juce::String (d.id) == "blend" || juce::String (d.id) == "maskShape" || juce::String (d.id) == "maskInvert";

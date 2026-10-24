@@ -9,6 +9,7 @@ struct ImportResult
     std::map<juce::String, juce::Image> thumbs;
     std::map<juce::String, Waveform> waves;
     std::map<juce::String, std::shared_ptr<const std::vector<float>>> stereo;
+    std::map<juce::String, juce::String> proxies;
     juce::String newSongId;
     SongAnalysis song;
     std::shared_ptr<std::vector<float>> songMono;
@@ -77,7 +78,7 @@ private:
     juce::TextButton fileBtn { "File" }, undoBtn { "Undo" }, redoBtn { "Redo" }, importBtn { "Import" }, presetsBtn { "Presets" },
         pluginsBtn { "Plug-ins" }, playBtn { "Play" }, exportBtn { "EXPORT" },
         toolBtn[4] { juce::TextButton ("E Select"), juce::TextButton ("P Paint"), juce::TextButton ("D Delete"), juce::TextButton ("C Cut") },
-        snapBtn { "S Snap" }, rippleBtn { "R Ripple" }, gridBtn { "B Grid" }, chopBtn { "CHOP" }, genBtn { "GENERATE 3 EDITS" },
+        snapBtn { "S Snap" }, rippleBtn { "R Ripple" }, magnetBtn { "Magnet" }, gridBtn { "B Grid" }, chopBtn { "CHOP" }, genBtn { "GENERATE 3 EDITS" },
         keepBtn { "Keep range" }, delRangeBtn { "Delete range" }, zoomIn { "+" }, zoomOut { "-" };
     juce::ComboBox seqBox, aspectBox, snapBox, chopBox, styleBox;
     juce::Label status;

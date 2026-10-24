@@ -15,6 +15,8 @@ juce::StringArray blendModeNames();
 
 // Composites a sequence frame: tracks + transforms + keys/masks + blend modes, then grade, LUT, film,
 // beat-reactive, acid and generated overlay FX. Preview and export use this same code path.
+constexpr int kProxyHeight = 540;
+
 class Renderer
 {
 public:

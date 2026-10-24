@@ -291,6 +291,23 @@ static void testExport()
     std::vector<float> back;
     CHECK (decodeAudio (job.output, kMixRate, 2, back, err) && std::abs ((double) back.size() / 2 / kMixRate - 3.0) < 0.06, "export audio length matches video (A/V sync)");
     job.output.deleteFile();
+
+    // edit proxy: 720p source -> 540p MJPEG, frame-accurate and decodes back at the same time
+    ExportJob hd; hd.width = 1280; hd.height = 720; hd.fps = 24; hd.mbps = 4;
+    hd.output = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("isfx_hd.mp4");
+    ok = runExport (s, cache, hd, [&] (Ticks t, std::vector<juce::uint8>& px)
+    {
+        auto f = ticksToFrame (t, 24);
+        for (size_t i = 0; i < px.size(); i += 4) { px[i] = (juce::uint8) (f * 10); px[i + 1] = 80; px[i + 2] = 160; px[i + 3] = 255; }
+        return true;
+    }, nullptr, cancel, err, &codec);
+    auto pf = proxyFileFor (hd.output, kProxyHeight); pf.deleteFile();
+    CHECK (ok && makeProxy (hd.output, pf, kProxyHeight, 3.0, nullptr, err), "build 540p edit proxy " << err);
+    VideoDecoder pd; Frame pfr;
+    CHECK (pd.open (pf, kProxyHeight, err) && pd.height() == 540 && pd.width() == 960 && pd.frameAt (secToTicks (1.0), pfr)
+           && std::abs ((int) pfr.rgba[0] - 240) < 30, "proxy decodes 960x540 with the right frame at 1 s (" << pd.width() << "x" << pd.height() << ")");
+    CHECK (pd.frameAt (secToTicks (0.5), pfr) && std::abs ((int) pfr.rgba[0] - 120) < 30, "proxy seeks back frame-accurately");
+    pf.deleteFile(); hd.output.deleteFile();
 }
 
 
@@ -339,8 +356,8 @@ static void testRender()
     for (auto& d : sequenceParams())
     {
         juce::String id (d.id);
-        if (id == "lutMix" || id == "grainSize" || id == "trails") continue;   // modifiers / need motion (tested below)
-        Sequence sq = s; float v = d.max;
+        if (id == "lutMix" || id == "grainSize" || id == "trails" || id == "sharpen") continue;   // modifiers / need motion or texture (tested below)
+        Sequence sq = s; float v = d.def > 0.5f * (d.min + d.max) ? d.min : d.max;
         if (id == "contrast" || id == "saturation") v = d.max;
         sq.fx.set (id, v);
         if (id == "letterbox") sq.fx.set (id, 1.0f);
@@ -350,6 +367,20 @@ static void testRender()
         juce::ignoreUnused (finite);
     }
     CHECK (dead == 0, "every sequence FX visibly changes the frame " << deadList);
+    {
+        Sequence boxed = s; for (auto& c : boxed.clips) c.fx.set ("scale", 0.5f);
+        Sequence sharp = boxed; sharp.fx.set ("sharpen", 1.0f);
+        auto bp = renderAt (boxed, t0), sp = renderAt (sharp, t0);
+        double sd = diff (sp, bp);
+        CHECK (sd > 0.1, "sharpen boosts edge detail (diff " << sd << ")");
+        Sequence lifted = s; lifted.fx.set ("crvM2", 0.8f);
+        auto lp = renderAt (lifted, t0);
+        CHECK (at (lp, W / 2, H / 2, 0) > at (base, W / 2, H / 2, 0) + 40, "RGB curve lifts the midtones (" << at (lp, W / 2, H / 2, 0) << ")");
+        Sequence redCut = s; redCut.fx.set ("crvR2", 0.2f);
+        auto rp = renderAt (redCut, t0);
+        CHECK (at (rp, W / 2, H / 2, 0) < at (base, W / 2, H / 2, 0) - 40 && std::abs (at (rp, W / 2, H / 2, 1) - at (base, W / 2, H / 2, 1)) < 3,
+               "red curve changes only red");
+    }
 
     {   // echo trails need motion: a cut from the green frame to the gradient must leave an echo
         Sequence sq = s; sq.clips[0].mediaId = gr;

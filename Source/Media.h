@@ -1,4 +1,5 @@
 #pragma once
+#include <functional>
 #include "Model.h"
 #include <juce_graphics/juce_graphics.h>
 
@@ -43,6 +44,8 @@ public:
     bool isOpen() const { return fmt != nullptr; }
     // returns the frame showing at source time t (the last frame with pts <= t)
     bool frameAt (Ticks t, Frame& out);
+    const Frame* frameRef (Ticks t);  // valid until the next call
+    bool readNext (Frame& out) { return isOpen() && ! eof && decodeNext (out); }
     int width() const { return outW; }
     int height() const { return outH; }
     int rotation() const { return rot; }
@@ -62,6 +65,10 @@ private:
 };
 
 juce::Image frameToImage (const Frame& f, int rotation);
+// Intra-only MJPEG edit proxy (every frame a keyframe: instant seeks, light decode) for smooth preview playback.
+juce::File proxyFileFor (const juce::File& source, int height);
+bool makeProxy (const juce::File& source, const juce::File& dest, int height, double durationSec,
+                const std::function<bool (double)>& progress, juce::String& error);
 juce::Image makeThumbnail (const juce::File& f, Ticks t, int height);
 
 // Peak overview for waveform drawing (min/max pairs per bucket).

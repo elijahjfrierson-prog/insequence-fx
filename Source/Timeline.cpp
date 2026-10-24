@@ -207,6 +207,13 @@ void Timeline::paint (juce::Graphics& g)
     g.setColour (dim); g.setFont (10.0f);
     g.drawText (p.song.valid ? juce::String (p.song.bpm, 2) + " BPM" : juce::String ("no song"), 4, 0, kHeader - 6, kRuler, juce::Justification::centredLeft);
 
+    if (snapGuide >= 0 && drag != Drag::None)
+    {
+        int gx = secToX (ticksToSec (snapGuide));
+        g.setColour (accent2); g.drawVerticalLine (gx, (float) kRuler, (float) H);
+        g.fillEllipse ((float) gx - 3, (float) kRuler - 3, 6, 6);
+    }
+
     // playhead
     int px = secToX (ticksToSec (st.playhead));
     if (px >= kHeader)
@@ -214,6 +221,26 @@ void Timeline::paint (juce::Graphics& g)
         g.setColour (accent); g.drawVerticalLine (px, 0, (float) H);
         juce::Path tri; tri.addTriangle ((float) px - 5, 0, (float) px + 5, 0, (float) px, 8); g.fillPath (tri);
     }
+}
+
+Ticks Timeline::magnetSnap (Ticks t, Ticks len)
+{
+    snapGuide = -1;
+    if (! st.snapOn) return t;
+    const Ticks thr = secToTicks (10.0 / pxPerSec);
+    std::vector<Ticks> cands { 0, st.playhead };
+    for (auto& c : st.project.seq().clips)
+        if (c.id != dragClip && ! st.selected.contains (c.id)) { cands.push_back (c.start); cands.push_back (c.end()); }
+    Ticks best = -1, bestD = thr + 1, guide = -1;
+    for (auto cand : cands)
+    {
+        if (std::abs (cand - t) < bestD) { bestD = std::abs (cand - t); best = cand; guide = cand; }
+        if (len > 0 && std::abs (cand - (t + len)) < bestD) { bestD = std::abs (cand - (t + len)); best = cand - len; guide = cand; }
+    }
+    if (best >= 0 && bestD <= thr) { snapGuide = guide; return best; }
+    Ticks g = st.snapT (t);
+    snapGuide = g;
+    return g;
 }
 
 void Timeline::mouseMove (const juce::MouseEvent& e)
@@ -339,7 +366,8 @@ void Timeline::mouseDrag (const juce::MouseEvent& e)
         case Drag::Move:
         {
             st.project = beforeDrag;
-            Ticks delta = st.snapT (dragOrig + (t - dragStart)) - dragOrig;
+            const auto* dc = beforeDrag.seq().findClip (dragClip);
+            Ticks delta = magnetSnap (dragOrig + (t - dragStart), dc != nullptr ? dc->length : 0) - dragOrig;
             if (dragOrig + delta < 0) delta = -dragOrig;
             int td = trackAt (pos.y) - dragTrack;
             if (! moveClips (st.project.seq(), st.selected, delta, td)) moveClips (st.project.seq(), st.selected, delta, 0);
@@ -349,7 +377,7 @@ void Timeline::mouseDrag (const juce::MouseEvent& e)
         case Drag::TrimL: case Drag::TrimR:
         {
             st.project = beforeDrag;
-            trimClip (st.project.seq(), st.project, dragClip, drag == Drag::TrimL, st.snapT (dragOrig + (t - dragStart)));
+            trimClip (st.project.seq(), st.project, dragClip, drag == Drag::TrimL, magnetSnap (dragOrig + (t - dragStart), 0));
             if (onEdited) onEdited();
             break;
         }
@@ -360,6 +388,17 @@ void Timeline::mouseDrag (const juce::MouseEvent& e)
 
 void Timeline::mouseUp (const juce::MouseEvent&)
 {
+    snapGuide = -1;
+    if (drag == Drag::Move && st.magnetic)
+    {
+        // CapCut-style magnetic main track: V1 clips butt together from 0 with no gaps
+        std::vector<Clip*> main;
+        for (auto& c : st.project.seq().clips) if (c.track == 0) main.push_back (&c);
+        std::sort (main.begin(), main.end(), [] (const Clip* a, const Clip* b) { return a->start < b->start; });
+        Ticks cur = 0;
+        for (auto* c : main) { c->start = cur; cur = c->end(); }
+        if (onEdited) onEdited();
+    }
     if (drag == Drag::Move || drag == Drag::TrimL || drag == Drag::TrimR)
     {
         if (toVar (beforeDrag).toString() != toVar (st.project).toString())

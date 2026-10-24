@@ -124,7 +124,7 @@ juce::var toVar (const Project& p)
         o->setProperty ("id", m.id); o->setProperty ("path", m.path); o->setProperty ("name", m.name);
         o->setProperty ("kind", (int) m.kind); o->setProperty ("duration", t2s (m.duration));
         o->setProperty ("fps", m.fps); o->setProperty ("w", m.width); o->setProperty ("h", m.height);
-        o->setProperty ("rot", m.rotation); o->setProperty ("audio", m.hasAudio); o->setProperty ("fav", m.favorite);
+        o->setProperty ("rot", m.rotation); o->setProperty ("proxy", m.proxyPath); o->setProperty ("audio", m.hasAudio); o->setProperty ("fav", m.favorite);
         o->setProperty ("quality", m.quality);
         o->setProperty ("syncStatus", (int) m.sync.status); o->setProperty ("syncOffset", t2s (m.sync.offset));
         o->setProperty ("syncConf", m.sync.confidence); o->setProperty ("syncNote", m.sync.note);
@@ -205,7 +205,7 @@ bool fromVar (const juce::var& v, Project& p, juce::String& error)
             MediaItem mi;
             mi.id = m["id"].toString(); mi.path = m["path"].toString(); mi.name = m["name"].toString();
             mi.kind = (MediaKind) (int) m["kind"]; mi.duration = s2t (m["duration"]); mi.fps = (double) m["fps"];
-            mi.width = (int) m["w"]; mi.height = (int) m["h"]; mi.rotation = (int) m["rot"]; mi.hasAudio = (bool) m["audio"];
+            mi.width = (int) m["w"]; mi.height = (int) m["h"]; mi.rotation = (int) m["rot"]; mi.proxyPath = m["proxy"].toString(); mi.hasAudio = (bool) m["audio"];
             mi.favorite = (bool) m["fav"]; mi.quality = (float) (double) m["quality"];
             mi.sync.status = (SyncInfo::Status) (int) m["syncStatus"]; mi.sync.offset = s2t (m["syncOffset"]);
             mi.sync.confidence = (float) (double) m["syncConf"]; mi.sync.note = m["syncNote"].toString();

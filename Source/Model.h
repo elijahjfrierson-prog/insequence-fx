@@ -74,6 +74,7 @@ struct SyncInfo
 struct MediaItem
 {
     juce::String id, path, name;
+    juce::String proxyPath;    // light intra-only copy used for preview playback (export always uses path)
     MediaKind kind = MediaKind::Video;
     Ticks duration = 0;
     double fps = 30.0;

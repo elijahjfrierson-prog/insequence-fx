@@ -189,7 +189,9 @@ bool VideoDecoder::decodeNext (Frame& out)
             auto startTs = fmt->streams[stream]->start_time != AV_NOPTS_VALUE ? fmt->streams[stream]->start_time : 0;
             out.pts = secToTicks ((double) (ts - startTs) * tb);
             sws = sws_getCachedContext (sws, frame->width, frame->height, (AVPixelFormat) frame->format,
-                                        outW, outH, AV_PIX_FMT_RGBA, SWS_BILINEAR, nullptr, nullptr, nullptr);
+                                        outW, outH, AV_PIX_FMT_RGBA,
+                                        (outH < frame->height ? SWS_AREA : SWS_BICUBIC) | SWS_ACCURATE_RND | SWS_FULL_CHR_H_INT,
+                                        nullptr, nullptr, nullptr);
             out.w = outW; out.h = outH; out.rgba.resize ((size_t) (outW * outH * 4));
             uint8_t* dst[1] = { out.rgba.data() }; int ls[1] = { outW * 4 };
             sws_scale (sws, frame->data, frame->linesize, 0, frame->height, dst, ls);
@@ -217,7 +219,15 @@ bool VideoDecoder::seekTo (Ticks t)
 
 bool VideoDecoder::frameAt (Ticks t, Frame& out)
 {
-    if (! isOpen()) return false;
+    auto* f = frameRef (t);
+    if (f == nullptr) return false;
+    out = *f;
+    return true;
+}
+
+const Frame* VideoDecoder::frameRef (Ticks t)
+{
+    if (! isOpen()) return nullptr;
     const Ticks frameDur = secToTicks (1.0 / frameRate);
     bool backwards = cur.valid() && t < cur.pts;
     bool farAhead = cur.valid() && t > cur.pts + secToTicks (2.0);
@@ -232,9 +242,88 @@ bool VideoDecoder::frameAt (Ticks t, Frame& out)
         if (next.pts <= t + frameDur / 4 || ! cur.valid()) { std::swap (cur, next); haveNext = false; if (cur.pts >= t) break; }
         else break;
     }
-    if (! cur.valid()) return false;
-    out = cur;
-    return true;
+    return cur.valid() ? &cur : nullptr;
+}
+
+juce::File proxyFileFor (const juce::File& source, int height)
+{
+    auto key = source.getFullPathName() + "|" + juce::String (source.getSize()) + "|"
+             + juce::String (source.getLastModificationTime().toMilliseconds()) + "|" + juce::String (height);
+    return juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
+        .getChildFile ("HumHouse").getChildFile ("InSequence FX").getChildFile ("Proxies")
+        .getChildFile (juce::String::toHexString (key.hashCode64()) + ".mkv");
+}
+
+bool makeProxy (const juce::File& source, const juce::File& dest, int height, double durationSec,
+                const std::function<bool (double)>& progress, juce::String& error)
+{
+    VideoDecoder d;
+    if (! d.open (source, height, error)) return false;
+    const int W = d.width() & ~1, H = d.height() & ~1;
+    dest.getParentDirectory().createDirectory();
+    auto tmp = dest.getSiblingFile (dest.getFileNameWithoutExtension() + ".part.mkv");
+    tmp.deleteFile();
+    AVFormatContext* oc = nullptr;
+    AVCodecContext* enc = nullptr;
+    AVFrame* yuv = nullptr;
+    AVPacket* pk = av_packet_alloc();
+    SwsContext* sw = nullptr;
+    bool ok = false;
+    auto cleanup = [&]
+    {
+        if (oc != nullptr) { if (oc->pb != nullptr) avio_closep (&oc->pb); avformat_free_context (oc); }
+        avcodec_free_context (&enc); av_frame_free (&yuv); av_packet_free (&pk); sws_freeContext (sw);
+        if (! ok) tmp.deleteFile();
+        return ok;
+    };
+    avformat_alloc_output_context2 (&oc, nullptr, "matroska", tmp.getFullPathName().toRawUTF8());
+    auto* codec = avcodec_find_encoder (AV_CODEC_ID_MJPEG);
+    if (oc == nullptr || codec == nullptr) { error = "MJPEG proxy encoder unavailable"; return cleanup(); }
+    enc = avcodec_alloc_context3 (codec);
+    enc->width = W; enc->height = H; enc->pix_fmt = AV_PIX_FMT_YUVJ420P;
+    enc->time_base = { 1, 1000 };
+    enc->flags |= AV_CODEC_FLAG_QSCALE; enc->global_quality = FF_QP2LAMBDA * 3;
+    enc->thread_count = 0;
+    if (oc->oformat->flags & AVFMT_GLOBALHEADER) enc->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+    int e = avcodec_open2 (enc, codec, nullptr);
+    if (e < 0) { error = avErr (e); return cleanup(); }
+    auto* st = avformat_new_stream (oc, nullptr);
+    avcodec_parameters_from_context (st->codecpar, enc);
+    st->time_base = { 1, 1000 };
+    if ((e = avio_open (&oc->pb, tmp.getFullPathName().toRawUTF8(), AVIO_FLAG_WRITE)) < 0) { error = avErr (e); return cleanup(); }
+    if ((e = avformat_write_header (oc, nullptr)) < 0) { error = avErr (e); return cleanup(); }
+    yuv = av_frame_alloc(); yuv->format = enc->pix_fmt; yuv->width = W; yuv->height = H;
+    av_frame_get_buffer (yuv, 0);
+    sw = sws_getContext (d.width(), d.height(), AV_PIX_FMT_RGBA, W, H, AV_PIX_FMT_YUVJ420P, SWS_BICUBIC, nullptr, nullptr, nullptr);
+    auto drain = [&]
+    {
+        while (avcodec_receive_packet (enc, pk) >= 0)
+        {
+            av_packet_rescale_ts (pk, enc->time_base, st->time_base);
+            pk->stream_index = st->index;
+            av_interleaved_write_frame (oc, pk);
+        }
+    };
+    Frame f; int64_t lastPts = -1;
+    while (d.readNext (f))
+    {
+        int64_t pts = std::max (lastPts + 1, (int64_t) std::llround (ticksToSec (f.pts) * 1000.0));
+        lastPts = pts;
+        av_frame_make_writable (yuv);
+        const uint8_t* src[1] = { f.rgba.data() }; int ls[1] = { f.w * 4 };
+        sws_scale (sw, src, ls, 0, f.h, yuv->data, yuv->linesize);
+        yuv->pts = pts;
+        if (avcodec_send_frame (enc, yuv) < 0) { error = "proxy encode failed"; return cleanup(); }
+        drain();
+        if (progress && ! progress (durationSec > 0 ? pts / 1000.0 / durationSec : 0)) { error = "cancelled"; return cleanup(); }
+    }
+    avcodec_send_frame (enc, nullptr); drain();
+    av_write_trailer (oc);
+    ok = lastPts >= 0;
+    if (! ok) error = "no frames decoded";
+    cleanup();
+    if (ok) { dest.deleteFile(); ok = tmp.moveFileTo (dest); }
+    return ok;
 }
 
 juce::Image frameToImage (const Frame& f, int rotation)
