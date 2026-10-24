@@ -652,6 +652,71 @@ std::vector<int> generateEdits (Project& p, juce::uint32 seed, const juce::Strin
     return idx;
 }
 
+int buildSeqEdit (Project& p, juce::uint32 seed)
+{
+    const auto& a = p.song;
+    if (! a.valid) return -1;
+    std::vector<const MediaItem*> vids;
+    for (auto& m : p.media)
+        if (m.kind == MediaKind::Video && ! m.missing && m.id != p.songId && m.duration > 0) vids.push_back (&m);
+    if (vids.empty()) return -1;
+    int n = 1;
+    for (auto& q : p.sequences) if (q.name.startsWith ("SEQ ")) ++n;
+    Sequence s = Project::makeDefaultSequence ("SEQ " + juce::String (n));
+    s.style = "SEQ"; s.seed = seed;
+    juce::Random rng ((juce::int64) seed);
+    const Ticks songLen = std::min (a.duration, secToTicks (kMaxSongSeconds));
+    if (auto* song = p.song_())
+    {
+        Clip c; c.id = newId(); c.mediaId = song->id; c.track = (int) s.tracks.size() - 1; c.start = 0; c.length = std::min (song->duration, songLen);
+        c.locked = p.musicLock; c.volume = 1.0f;
+        s.clips.push_back (c);
+    }
+    // cut points: a bar in verses, 2 beats in pre-hooks, every beat + hat rolls in hooks/drops
+    std::vector<Ticks> cuts { 0 };
+    for (Ticks t = 0; t < songLen;)
+    {
+        const int sec = juce::jlimit (0, 2, a.sectionAt (t + 1));
+        const double per = sec == 2 ? 1.0 : sec == 1 ? 2.0 : 4.0;
+        const double bt = a.beatAt (t);
+        Ticks t1 = a.gridTime (std::floor (bt / per + 1e-6) * per + per);
+        if (t1 - t < secToTicks (a.beatSec() * 0.5)) t1 = a.gridTime (std::floor (bt / per + 1e-6) * per + 2 * per);
+        t1 = std::min (songLen, std::max (t1, t + secToTicks (1.0 / p.fps)));
+        if (sec == 2) for (auto e : hatRolls (a, t, t1)) cuts.push_back (e);
+        cuts.push_back (t1);
+        t = t1;
+    }
+    for (auto& c : cuts) c = quantizeToFrame (c, p.fps);
+    std::sort (cuts.begin(), cuts.end());
+    cuts.erase (std::unique (cuts.begin(), cuts.end()), cuts.end());
+    // deal the videos like cards: each used evenly, never twice in a row, each one plays forward through its own footage
+    std::vector<const MediaItem*> deck;
+    std::map<juce::String, Ticks> cursor;
+    for (auto* m : vids) cursor[m->id] = (Ticks) (rng.nextDouble() * 0.3 * (double) m->duration);
+    juce::String prev;
+    for (size_t i = 0; i + 1 < cuts.size(); ++i)
+    {
+        const Ticks c0 = cuts[i], c1 = cuts[i + 1];
+        if (c1 - c0 < secToTicks (1.0 / p.fps)) continue;
+        if (deck.empty())
+        {
+            deck = vids;
+            for (size_t k = deck.size(); k > 1; --k) std::swap (deck[k - 1], deck[(size_t) rng.nextInt ((int) k)]);
+            if (deck.size() > 1 && deck.back()->id == prev) std::swap (deck.front(), deck.back());
+        }
+        const MediaItem* m = deck.back(); deck.pop_back();
+        Clip c; c.id = newId(); c.mediaId = m->id; c.track = 0; c.start = c0; c.length = std::min (c1 - c0, m->duration); c.volume = 0.0f;
+        Ticks& cur = cursor[m->id];
+        if (cur + c.length > m->duration) cur = 0;
+        c.srcIn = cur; cur += c.length;
+        s.clips.push_back (c);
+        prev = m->id;
+    }
+    s.sortClips();
+    p.sequences.push_back (s);
+    return (int) p.sequences.size() - 1;
+}
+
 int stackGenerated (Project& p, juce::uint32 seed, const juce::String& styleMode)
 {
     if (! p.song.valid) return 0;

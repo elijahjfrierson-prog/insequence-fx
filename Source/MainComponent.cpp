@@ -133,7 +133,7 @@ MainComponent::MainComponent()
     setLookAndFeel (&lnf);
     juce::LookAndFeel::setDefaultLookAndFeel (&lnf);
     for (auto* c : std::initializer_list<juce::Component*> { &preview, &timeline, &media, &fxlib, &inspector, &mediaTgl, &inspTgl, &maxPrevBtn, &maxTlBtn, &movieBtn, &hscroll, &fileBtn, &saveBtn, &undoBtn, &redoBtn, &importBtn,
-            &presetsBtn, &pluginsBtn, &playBtn, &exportBtn, &snapBtn, &rippleBtn, &magnetBtn, &gridBtn, &chopBtn, &genBtn, &keepBtn, &delRangeBtn, &zoomIn, &zoomOut,
+            &presetsBtn, &pluginsBtn, &playBtn, &exportBtn, &snapBtn, &rippleBtn, &magnetBtn, &gridBtn, &chopBtn, &genBtn, &seqBtn, &keepBtn, &delRangeBtn, &zoomIn, &zoomOut,
             &seqBox, &aspectBox, &snapBox, &chopBox, &styleBox, &status })
         addAndMakeVisible (c);
     const char* toolHelp[4] = { "E: select, move (drag) and trim (drag clip edges). Drag in the ruler to select a range.",
@@ -180,6 +180,19 @@ MainComponent::MainComponent()
         addAndMakeVisible (startBtn); addAndMakeVisible (qualityBox);
     }
     exportBtn.onClick = [this] { exportDialog(); };
+    seqBtn.setColour (juce::TextButton::buttonColourId, juce::Colour (0xff7b4fd6));
+    seqBtn.setTooltip ("SEQ (Triller-style): cuts all your random videos, each with its own unrelated sound, to the song's beat in a new SEQ sequence. Their audio is muted under the song. Every cut stays a normal editable clip; press again for a new shuffle.");
+    seqBtn.onClick = [this]
+    {
+        if (! st.project.song.valid) { showMsg ("SEQ", "Import a song first, then your videos (any audio)."); return; }
+        st.edit ("SEQ");
+        const int i = buildSeqEdit (st.project, genSeed++);
+        if (i < 0) { st.history.undo (st.project); showMsg ("SEQ", "Import some videos first."); return; }
+        st.project.active = i;
+        st.selected.clear();
+        status.setText (st.project.sequences[(size_t) i].name + ": your videos are cut to the beat (their sound muted). Pick other SEQ versions in the sequence list.", juce::dontSendNotification);
+        refresh (true);
+    };
     genBtn.onClick = [this]
     {
         juce::PopupMenu m;
@@ -405,7 +418,7 @@ void MainComponent::resized()
     if (showBottom) r.removeFromBottom (6);   // drag bar
     splitY = bottom.getY() - 3;
     for (auto* c : std::initializer_list<juce::Component*> { &timeline, &hscroll, &zoomIn, &zoomOut, &snapBox, &snapBtn, &rippleBtn, &magnetBtn, &gridBtn,
-                                                           &chopBox, &chopBtn, &styleBox, &genBtn, &keepBtn, &delRangeBtn })
+                                                           &chopBox, &chopBtn, &styleBox, &genBtn, &seqBtn, &keepBtn, &delRangeBtn })
         c->setVisible (showBottom);
     for (auto& b : toolBtn) b.setVisible (showBottom);
     auto bar = bottom.removeFromTop (36).reduced (6, 5);
@@ -415,7 +428,7 @@ void MainComponent::resized()
     bar.removeFromLeft (8);
     place (bar, chopBox, 104); place (bar, chopBtn, 64);
     bar.removeFromLeft (8);
-    place (bar, styleBox, 130); place (bar, genBtn, 150);
+    place (bar, styleBox, 130); place (bar, genBtn, 150); place (bar, seqBtn, 56);
     bar.removeFromLeft (8);
     place (bar, keepBtn, 92); place (bar, delRangeBtn, 100);
     zoomIn.setBounds (bar.removeFromRight (30)); bar.removeFromRight (4); zoomOut.setBounds (bar.removeFromRight (30));

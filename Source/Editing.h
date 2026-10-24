@@ -68,6 +68,8 @@ int liftClips (const Project& p, Sequence& s, const juce::StringArray& ids, bool
 // Every synced take as one full clip on its own hidden, muted video track (raw material under the edit).
 int addTakeLayers (const Project& p, Sequence& s);
 std::vector<int> generateEdits (Project& p, juce::uint32 seed, const juce::String& styleMode = {});
+// SEQ (Triller-style): random videos with unrelated audio cut to the song beat in a new "SEQ n" sequence; returns its index or -1
+int buildSeqEdit (Project& p, juce::uint32 seed);
 // stack a fresh generated pass on new video tracks of the current sequence (keeps everything already there); returns clips added
 int stackGenerated (Project& p, juce::uint32 seed, const juce::String& styleMode = {});
 // Right-click Auto Cut: slices one clip on the grid / detected hits, or a hi-hat-style roll

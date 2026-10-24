@@ -417,20 +417,87 @@ FxLibrary::FxLibrary (AppState& s) : juce::Thread ("ISFX fx examples"), st (s)
     list.setModel (this); list.setRowHeight (22);
     list.setColour (juce::ListBox::backgroundColourId, theme::panel);
     addAndMakeVisible (list);
+    addChildComponent (popBtn);
+    popBtn.setTooltip ("Open the example in its own window you can move and resize (or dock it back).");
+    popBtn.onClick = [this] { popOut (exWin == nullptr); };
     startThread (juce::Thread::Priority::low);
 }
 
 FxLibrary::~FxLibrary()
 {
+    exWin.reset();
     signalThreadShouldExit(); exWake.signal(); stopThread (4000);
     cancelPendingUpdate();
+}
+
+namespace
+{
+struct ExampleView : juce::Component
+{
+    explicit ExampleView (FxLibrary& f) : fx (f) {}
+    void paint (juce::Graphics& g) override { g.fillAll (theme::panel); fx.paintExample (g, getLocalBounds().reduced (6)); }
+    FxLibrary& fx;
+};
+struct ExampleWindow : juce::DocumentWindow
+{
+    ExampleWindow() : juce::DocumentWindow ("Effect Example", theme::panel, juce::DocumentWindow::allButtons) {}
+    void closeButtonPressed() override { if (onClose) onClose(); }
+    std::function<void()> onClose;
+};
+}
+
+void FxLibrary::popOut (bool on)
+{
+    if (on && exWin == nullptr)
+    {
+        auto w = std::make_unique<ExampleWindow>();
+        w->setUsingNativeTitleBar (true);
+        w->setContentOwned (new ExampleView (*this), false);
+        w->setResizable (true, false);
+        w->setResizeLimits (240, 160, 4000, 3000);
+        w->centreWithSize (760, 460);
+        juce::Component::SafePointer<FxLibrary> safe (this);
+        w->onClose = [safe] { juce::MessageManager::callAsync ([safe] { if (safe) safe->popOut (false); }); };
+        w->setVisible (true);
+        exWin = std::move (w);
+    }
+    else if (! on) exWin.reset();
+    popBtn.setButtonText (exWin ? "Dock" : "Pop out");
+    resized(); repaint();
+}
+
+void FxLibrary::exRepaint()
+{
+    repaint (exArea);
+    if (exWin != nullptr) if (auto* c = exWin->getContentComponent()) c->repaint();
 }
 
 void FxLibrary::resized()
 {
     auto r = getLocalBounds().reduced (6).withTrimmedTop (20);
-    exArea = r.getHeight() > 150 ? r.removeFromBottom (juce::jlimit (90, 150, r.getHeight() * 2 / 5)) : juce::Rectangle<int>();
+    exArea = {};
+    if (exWin == nullptr && r.getHeight() > 150)
+    {
+        exArea = r.removeFromBottom (juce::jlimit (90, std::max (90, r.getHeight() - 60), juce::roundToInt (r.getHeight() * exFrac)));
+        r.removeFromBottom (6);   // divider: drag to resize
+        popBtn.setBounds (exArea.getRight() - 64, exArea.getY() + 6, 58, 15);
+    }
+    else popBtn.setBounds (getWidth() - 70, 3, 62, 16);
+    popBtn.setVisible (exWin != nullptr || ! exArea.isEmpty());
     list.setBounds (r);
+}
+
+void FxLibrary::mouseDown (const juce::MouseEvent& e) { dragDiv = onDivider (e.y); }
+void FxLibrary::mouseMove (const juce::MouseEvent& e)
+{
+    setMouseCursor (onDivider (e.y) ? juce::MouseCursor::UpDownResizeCursor : juce::MouseCursor::NormalCursor);
+}
+void FxLibrary::mouseDrag (const juce::MouseEvent& e)
+{
+    if (! dragDiv) return;
+    auto inner = getLocalBounds().reduced (6).withTrimmedTop (20);
+    exFrac = juce::jlimit (0.12f, 0.88f, (float) (inner.getBottom() - e.y) / (float) std::max (1, inner.getHeight()));
+    resized(); repaint();
 }
 
 void FxLibrary::reload()
@@ -555,7 +622,7 @@ void FxLibrary::selectedRowsChanged (int row)
         exNote = "Rendering example...";
     }
     exWake.signal();
-    repaint (exArea);
+    exRepaint();
 }
 
 static juce::Image rgbaToImage (const std::vector<juce::uint8>& px, int W, int H)
@@ -593,7 +660,7 @@ void FxLibrary::run()
             return m != nullptr && m->kind != MediaKind::Audio;
         };
         juce::Image out; juce::String note;
-        int W = 0, H = 0; outputSize (*p, 180, W, H);
+        int W = 0, H = 0; outputSize (*p, 360, W, H);
         if (desc.startsWith ("sfx:")) note = "Sound effect: drag it onto the timeline to hear it.";
         else if (desc.startsWith ("transition:"))
         {   // the transition on a real cut of this edit: 3 frames across it
@@ -691,7 +758,7 @@ void FxLibrary::run()
     }
 }
 
-void FxLibrary::handleAsyncUpdate() { repaint (exArea); }
+void FxLibrary::handleAsyncUpdate() { exRepaint(); }
 
 void FxLibrary::paint (juce::Graphics& g)
 {
@@ -699,13 +766,20 @@ void FxLibrary::paint (juce::Graphics& g)
     g.setColour (theme::accent2); g.setFont (headerFont (10.0f));
     g.drawText ("EFFECTS", 10, 4, getWidth() - 20, 16, juce::Justification::centredLeft);
     if (exArea.isEmpty()) return;
-    auto r = exArea.reduced (0, 4);
+    g.setColour (juce::Colours::white.withAlpha (0.25f));
+    g.fillRoundedRectangle ((float) exArea.getCentreX() - 18, (float) exArea.getY() - 5, 36, 3, 1.5f);   // divider grip
+    paintExample (g, exArea);
+}
+
+void FxLibrary::paintExample (juce::Graphics& g, juce::Rectangle<int> area)
+{
+    auto r = area.reduced (0, 4);
     g.setColour (theme::panel2.darker (0.3f)); g.fillRoundedRectangle (r.toFloat(), 4.0f);
     juce::Image im; juce::String note, name;
     { const juce::ScopedLock sl (exLock); im = example; note = exNote; name = exName; }
     auto top = r.removeFromTop (16);
     g.setColour (theme::accent); g.setFont (juce::FontOptions (10.5f, juce::Font::bold));
-    g.drawText (name.isEmpty() ? juce::String ("EXAMPLE: select an effect or transition") : "EXAMPLE: " + name, top.reduced (6, 0), juce::Justification::centredLeft, true);
+    g.drawText (name.isEmpty() ? juce::String ("EXAMPLE: select an effect or transition") : "EXAMPLE: " + name, top.reduced (6, 0).withTrimmedRight (exWin ? 0 : 64), juce::Justification::centredLeft, true);
     r = r.reduced (6, 4);
     if (im.isValid() && note.isEmpty())
         g.drawImageWithin (im, r.getX(), r.getY(), r.getWidth(), r.getHeight(), juce::RectanglePlacement::centred);

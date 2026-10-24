@@ -237,7 +237,18 @@ public:
     void reload();   // re-scan library folders (after Import Preset)
     void resized() override;
     void paint (juce::Graphics&) override;
+    void paintExample (juce::Graphics&, juce::Rectangle<int>);
+    void mouseDown (const juce::MouseEvent&) override;
+    void mouseDrag (const juce::MouseEvent&) override;
+    void mouseMove (const juce::MouseEvent&) override;
+    void popOut (bool on);
 private:
+    void exRepaint();
+    bool onDivider (int y) const { return ! exArea.isEmpty() && std::abs (y - (exArea.getY() - 3)) <= 5; }
+    float exFrac = 0.4f;
+    bool dragDiv = false;
+    juce::TextButton popBtn { "Pop out" };
+    std::unique_ptr<juce::DocumentWindow> exWin;
     // folder tree like Premiere's Effects panel: Video Transitions / Video Effects / Sound FX, each with subfolders
     struct Row { juce::String label, desc, help; bool header = false; int level = 0; juce::String folder, parent; int count = 0; };
     std::vector<Row> all, rows;   // all rows / rows inside open folders

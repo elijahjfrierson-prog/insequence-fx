@@ -282,6 +282,34 @@ static void testEditing()
     CHECK (snapTime (secToTicks (1.0), p, SnapMode::Sixteenth) == p.song.subdivTime (std::llround ((1.0 - 0.3) / (60.0 / 140 / 4)), 4), "snap to 1/16");
 }
 
+static void testSeqEdit()
+{
+    Project p = syntheticProject();
+    for (auto& m : p.media) if (m.id != p.songId) m.sync = SyncInfo();   // unrelated audio: nothing synced
+    const int before = (int) p.sequences.size();
+    const int i = buildSeqEdit (p, 7);
+    CHECK (i == before, "SEQ makes a new sequence");
+    if (i < 0) return;
+    const auto& s = p.sequences[(size_t) i];
+    int vids = 0, onBeat = 0; bool muted = true, repeats = false, inSrc = true; juce::String prev; std::set<juce::String> used;
+    for (auto& c : s.clips) if (s.tracks[(size_t) c.track].kind == TrackKind::Video)
+    {
+        ++vids; used.insert (c.mediaId);
+        if (c.volume != 0.0f) muted = false;
+        if (c.mediaId == prev) repeats = true;
+        prev = c.mediaId;
+        auto* m = p.findMedia (c.mediaId);
+        if (c.srcIn < 0 || c.srcIn + c.length > m->duration) inSrc = false;
+        const double b = p.song.beatAt (c.start);
+        if (std::abs (c.start - p.song.gridTime (std::round (b * 8) / 8)) <= secToTicks (1.0 / p.fps)) ++onBeat;   // 1/32-note grid, within a frame
+    }
+    CHECK (s.name.startsWith ("SEQ") && vids > 8, "SEQ cuts the song into many clips (" << vids << ")");
+    CHECK (muted, "SEQ mutes the videos' own audio");
+    CHECK (! repeats || used.size() < 2, "SEQ never repeats a video back-to-back");
+    CHECK (inSrc, "SEQ clips stay inside their source footage");
+    CHECK (onBeat >= vids * 9 / 10, "SEQ cuts land on the beat grid (" << onBeat << "/" << vids << ")");
+}
+
 static void testChopAndGenerate()
 {
     Project p = syntheticProject();
@@ -1039,6 +1067,7 @@ int main (int argc, char** argv)
     testDropInBetween();
     testPremiereCommands();
     testChopAndGenerate();
+    testSeqEdit();
     testPersistence();
     testLut();
     testExport();
