@@ -82,7 +82,8 @@ bool splitAt (Sequence& s, Ticks t, const juce::StringArray& only)
         if (t <= c.start || t >= c.end()) continue;
         Clip r = c;
         r.id = newId();
-        r.srcIn = c.srcAt (t);
+        if (c.reverse) { r.srcIn = c.srcIn; c.srcIn = c.srcAt (t) + 1; }   // reversed: the left half holds the later source
+        else r.srcIn = c.srcAt (t);
         r.start = t; r.length = c.end() - t;
         r.transIn = TransitionType::Cut; r.transLen = 0;
         c.length = t - c.start;
@@ -118,11 +119,11 @@ void clearTrackRange (Sequence& s, int track, Ticks a, Ticks b)
         if (c.track != track || c.end() <= a || c.start >= b) { keep.push_back (c); continue; }
         if (c.start < a)
         {
-            Clip l = c; l.length = a - c.start; keep.push_back (l);
+            Clip l = c; l.length = a - c.start; if (c.reverse) l.srcIn = c.srcAt (a) + 1; keep.push_back (l);
         }
         if (c.end() > b)
         {
-            Clip r = c; r.id = newId(); r.srcIn = c.srcAt (b); r.start = b; r.length = c.end() - b;
+            Clip r = c; r.id = newId(); r.srcIn = c.reverse ? c.srcIn : c.srcAt (b); r.start = b; r.length = c.end() - b;
             r.transIn = TransitionType::Cut; r.transLen = 0; keep.push_back (r);
         }
     }

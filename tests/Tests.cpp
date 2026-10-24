@@ -658,8 +658,108 @@ static void testAutoCutAndPresets()
     dir.deleteRecursively();
 }
 
+static void testReverseAndSlowMo()
+{
+    Clip c; c.id = "r"; c.mediaId = "m"; c.start = secToTicks (10); c.length = secToTicks (2); c.srcIn = secToTicks (5);
+    Clip f = c; c.reverse = true;
+    CHECK (std::abs (ticksToSec (c.srcAt (c.start)) - 7.0) < 1e-3 && std::abs (ticksToSec (c.srcAt (c.end() - secToTicks (0.5))) - 5.5) < 1e-3,
+           "reversed clip plays its source range backwards");
+    Sequence s; s.tracks.push_back ({}); s.clips.push_back (c);
+    const Ticks cutT = secToTicks (10.5);
+    const Ticks before = c.srcAt (cutT - 1), after = c.srcAt (cutT);
+    splitAt (s, cutT, {});
+    s.sortClips();
+    CHECK (s.clips.size() == 2 && std::llabs (s.clips[0].srcAt (cutT - 1) - before) <= 1 && std::llabs (s.clips[1].srcAt (cutT) - after) <= 1
+           && std::llabs (s.clips[0].srcAt (s.clips[0].start) - c.srcAt (c.start)) <= 1,
+           "splitting a reversed clip keeps every frame where it was");
+    // 60 fps source at 50% on a 30 fps timeline: output frame n shows source frame n exactly (no repeats, no blends)
+    f.speed = 0.5; f.srcIn = quantizeToFrame (secToTicks (5.01), 60.0);
+    bool clean = true;
+    for (int n = 0; n < 120; ++n)
+    {
+        auto src = f.srcAt (f.start + frameToTicks (n, 30.0));
+        clean = clean && ticksToFrame (src + secToTicks (1.0 / 240), 60.0) == ticksToFrame (f.srcIn, 60.0) + n;
+    }
+    CHECK (clean, "clean slow-mo: 60 fps at 50% on a 30 fps timeline uses every real frame once");
+}
+
+static void testSyncShortClip()
+{
+    const int rate = kAnalysisRate;
+    juce::Random rnd (7);
+    std::vector<float> song ((size_t) (rate * 40));
+    float env = 0;
+    for (size_t i = 0; i < song.size(); ++i)
+    {
+        if (i % (size_t) (rate / 8) == 0) env = rnd.nextFloat() < 0.45f ? 1.0f : 0.15f;
+        song[i] = env * (rnd.nextFloat() * 2 - 1);
+    }
+    // a take recorded from 12 s to 30 s of the song; the clip is only 0.8 s cut out of its middle
+    std::vector<float> take (song.begin() + rate * 12, song.begin() + rate * 30);
+    auto r = syncSegment (song, take, rate, secToTicks (9.4), secToTicks (0.8));
+    CHECK (r.ok && std::abs (ticksToSec (r.offset) - 12.0) < 0.01, "short clip syncs by its own sound (offset " + juce::String (ticksToSec (r.offset), 3) + " s)");
+}
+
+static long rssMB()
+{
+    auto s = juce::File ("/proc/self/status").loadFileAsString();
+    auto i = s.indexOf ("VmRSS:");
+    return i < 0 ? 0 : s.substring (i + 6).trim().getLargeIntValue() / 1024;
+}
+
+// ISFX_BENCH="a.mp4:b.mov:c.mov": real-time playback of 3 stacked layers (no proxies), like the app's preview
+static void benchPlayback (const juce::String& files, int W, int H, int decodeH, bool look, bool proxy)
+{
+    Project p = Project::makeNew();
+    auto& s = p.seq();
+    int track = 0;
+    for (auto& f : juce::StringArray::fromTokens (files, ":", ""))
+    {
+        auto pr = probeMedia (juce::File (f));
+        if (! pr.ok) { std::cout << "bench: cannot open " << f << "\n"; continue; }
+        MediaItem m; m.id = newId(); m.path = f; m.name = juce::File (f).getFileName(); m.kind = MediaKind::Video;
+        m.duration = pr.duration; m.fps = pr.fps; m.width = pr.width; m.height = pr.height; m.rotation = pr.rotation;
+        if (proxy)
+        {
+            auto pf = proxyFileFor (juce::File (f), 540); juce::String err;
+            if (! pf.existsAsFile()) makeProxy (juce::File (f), pf, 540, ticksToSec (pr.duration), [] (double) { return true; }, err);
+            m.proxyPath = pf.getFullPathName();
+        }
+        p.media.push_back (m);
+        if (track > 0) track = insertVideoTrack (s);
+        Clip c; c.id = newId(); c.mediaId = m.id; c.track = track; c.start = 0; c.length = std::min<Ticks> (pr.duration, secToTicks (8));
+        if (track > 0) { c.fx.set ("scale", 0.55f); c.fx.set ("posX", track == 1 ? -0.4f : 0.4f); }
+        s.clips.push_back (c); s.sortClips();
+        ++track;
+    }
+    if (look && ! lookLibrary().empty()) applyLook (s.fx, lookLibrary()[0], 1.0f);
+    Renderer r; std::vector<juce::uint8> o;
+    const long rss0 = rssMB();
+    double worst = 0, sum = 0; int n = 0;
+    const double t0 = juce::Time::getMillisecondCounterHiRes();
+    double now = 0;
+    while ((now = (juce::Time::getMillisecondCounterHiRes() - t0) / 1000.0) < 6.0)
+    {
+        double a = juce::Time::getMillisecondCounterHiRes();
+        r.render (p, s, secToTicks (now), W, H, o, decodeH);
+        double ms = juce::Time::getMillisecondCounterHiRes() - a;
+        worst = std::max (worst, ms); sum += ms; ++n;
+    }
+    std::cout << "BENCH " << (look ? "look " : "plain ") << (proxy ? "proxy " : "orig ") << W << "x" << H << " dec " << decodeH << ": " << n << " frames in 6 s (" << juce::String (n / 6.0, 1)
+              << " fps), avg " << juce::String (sum / std::max (1, n), 1) << " ms, worst " << juce::String (worst, 1)
+              << " ms, RSS " << rss0 << " -> " << rssMB() << " MB\n";
+}
+
 int main (int argc, char** argv)
 {
+    if (auto b = juce::SystemStats::getEnvironmentVariable ("ISFX_BENCH", {}); b.isNotEmpty())
+    {
+        benchPlayback (b, 960, 540, 540, true, false);
+        benchPlayback (b, 960, 540, 540, false, false);
+        benchPlayback (b, 480, 270, 270, true, false);
+        benchPlayback (b, 960, 540, 540, true, true);
+        return 0;
+    }
     juce::ignoreUnused (argc, argv);
     testTiming();
     testAnalysis();
@@ -674,6 +774,8 @@ int main (int argc, char** argv)
     testRender();
     testAutoCutAndPresets();
     testLayoutsStacksAndLayers();
+    testReverseAndSlowMo();
+    testSyncShortClip();
     std::cout << (failures == 0 ? "ALL TESTS PASSED" : "FAILURES: ") << (failures ? juce::String (failures) : juce::String()) << "\n";
     return failures;
 }

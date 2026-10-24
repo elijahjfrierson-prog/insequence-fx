@@ -146,6 +146,9 @@ void VideoDecoder::close()
 {
     if (sws) { sws_freeContext (sws); sws = nullptr; }
     if (frame) av_frame_free (&frame);
+    if (curAv) av_frame_free (&curAv);
+    if (nextAv) av_frame_free (&nextAv);
+    curPts = nextPts = -1; curConverted = false;
     if (pkt) av_packet_free (&pkt);
     if (dec) avcodec_free_context (&dec);
     if (fmt) avformat_close_input (&fmt);
@@ -165,7 +168,7 @@ bool VideoDecoder::open (const juce::File& f, int maxHeight, juce::String& error
     auto* st = fmt->streams[stream];
     dec = avcodec_alloc_context3 (codec);
     avcodec_parameters_to_context (dec, st->codecpar);
-    dec->thread_count = 0;
+    dec->thread_count = juce::jlimit (1, 8, juce::SystemStats::getNumCpus());   // more threads = more frame buffers, little gain
     dec->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
     if ((e = avcodec_open2 (dec, codec, nullptr)) < 0) { error = avErr (e); close(); return false; }
     tb = av_q2d (st->time_base);
@@ -175,35 +178,50 @@ bool VideoDecoder::open (const juce::File& f, int maxHeight, juce::String& error
     outW = dec->width; outH = dec->height;
     if (maxH > 0 && outH > maxH) { outW = (int) std::lround ((double) outW * maxH / outH) & ~1; outH = maxH; }
     frame = av_frame_alloc(); pkt = av_packet_alloc();
+    curAv = av_frame_alloc(); nextAv = av_frame_alloc();
+    fastScale = maxH > 0 && maxH <= 720;
     return true;
 }
 
-bool VideoDecoder::decodeNext (Frame& out)
+bool VideoDecoder::receive (AVFrame* into, Ticks& pts)
 {
     while (true)
     {
-        int r = avcodec_receive_frame (dec, frame);
+        int r = avcodec_receive_frame (dec, into);
         if (r >= 0)
         {
-            auto ts = frame->best_effort_timestamp != AV_NOPTS_VALUE ? frame->best_effort_timestamp : frame->pts;
+            auto ts = into->best_effort_timestamp != AV_NOPTS_VALUE ? into->best_effort_timestamp : into->pts;
             auto startTs = fmt->streams[stream]->start_time != AV_NOPTS_VALUE ? fmt->streams[stream]->start_time : 0;
-            out.pts = secToTicks ((double) (ts - startTs) * tb);
-            sws = sws_getCachedContext (sws, frame->width, frame->height, (AVPixelFormat) frame->format,
-                                        outW, outH, AV_PIX_FMT_RGBA,
-                                        (outH < frame->height ? SWS_AREA : SWS_BICUBIC) | SWS_ACCURATE_RND | SWS_FULL_CHR_H_INT,
-                                        nullptr, nullptr, nullptr);
-            out.w = outW; out.h = outH; out.rgba.resize ((size_t) (outW * outH * 4));
-            uint8_t* dst[1] = { out.rgba.data() }; int ls[1] = { outW * 4 };
-            sws_scale (sws, frame->data, frame->linesize, 0, frame->height, dst, ls);
+            pts = secToTicks ((double) (ts - startTs) * tb);
             return true;
         }
         if (r == AVERROR_EOF) { eof = true; return false; }
-        // need more input
         int rr = av_read_frame (fmt, pkt);
         if (rr < 0) { avcodec_send_packet (dec, nullptr); continue; }
         if (pkt->stream_index == stream) avcodec_send_packet (dec, pkt);
         av_packet_unref (pkt);
     }
+}
+
+void VideoDecoder::convert (const AVFrame* src, Frame& out)
+{
+    // Preview tiers: plain area averaging (clean, ~3x cheaper). Export/full: accurate rounding + full chroma.
+    const int flags = fastScale ? (outH < src->height ? SWS_AREA : SWS_BILINEAR)
+                                : ((outH < src->height ? SWS_AREA : SWS_BICUBIC) | SWS_ACCURATE_RND | SWS_FULL_CHR_H_INT);
+    sws = sws_getCachedContext (sws, src->width, src->height, (AVPixelFormat) src->format,
+                                outW, outH, AV_PIX_FMT_RGBA, flags, nullptr, nullptr, nullptr);
+    out.w = outW; out.h = outH; out.rgba.resize ((size_t) (outW * outH * 4));
+    uint8_t* dst[1] = { out.rgba.data() }; int ls[1] = { outW * 4 };
+    sws_scale (sws, src->data, src->linesize, 0, src->height, dst, ls);
+}
+
+bool VideoDecoder::decodeNext (Frame& out)
+{
+    Ticks pts = -1;
+    if (! receive (frame, pts)) return false;
+    convert (frame, out);
+    out.pts = pts;
+    return true;
 }
 
 bool VideoDecoder::seekTo (Ticks t)
@@ -214,6 +232,7 @@ bool VideoDecoder::seekTo (Ticks t)
     if (av_seek_frame (fmt, stream, ts, AVSEEK_FLAG_BACKWARD) < 0) return false;
     avcodec_flush_buffers (dec);
     eof = false; haveNext = false; cur = {};
+    curPts = nextPts = -1; curConverted = false;
     return true;
 }
 
@@ -229,20 +248,29 @@ const Frame* VideoDecoder::frameRef (Ticks t)
 {
     if (! isOpen()) return nullptr;
     const Ticks frameDur = secToTicks (1.0 / frameRate);
-    bool backwards = cur.valid() && t < cur.pts;
-    bool farAhead = cur.valid() && t > cur.pts + secToTicks (2.0);
-    if (! cur.valid() || backwards || farAhead) seekTo (t);
+    bool backwards = curPts >= 0 && t < curPts;
+    bool farAhead = curPts >= 0 && t > curPts + secToTicks (2.0);
+    if (curPts < 0 || backwards || farAhead) seekTo (t);
     while (true)
     {
         if (! haveNext)
         {
-            if (eof || ! decodeNext (next)) break;
+            // Catching up (playback outran decode): don't decode B-frames nobody will see.
+            dec->skip_frame = (curPts >= 0 && t - curPts > frameDur * 3) ? AVDISCARD_NONREF : AVDISCARD_DEFAULT;
+            if (eof || ! receive (nextAv, nextPts)) break;
             haveNext = true;
         }
-        if (next.pts <= t + frameDur / 4 || ! cur.valid()) { std::swap (cur, next); haveNext = false; if (cur.pts >= t) break; }
+        if (nextPts <= t + frameDur / 4 || curPts < 0)
+        {
+            std::swap (curAv, nextAv); curPts = nextPts; haveNext = false; curConverted = false;
+            if (curPts >= t) break;
+        }
         else break;
     }
-    return cur.valid() ? &cur : nullptr;
+    dec->skip_frame = AVDISCARD_DEFAULT;
+    if (curPts < 0) return nullptr;
+    if (! curConverted) { convert (curAv, cur); cur.pts = curPts; curConverted = true; }
+    return &cur;
 }
 
 juce::File proxyFileFor (const juce::File& source, int height)

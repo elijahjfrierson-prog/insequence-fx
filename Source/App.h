@@ -23,6 +23,7 @@ namespace theme
                        good { 0xff3ddc84 }, warn { 0xffffb020 }, bad { 0xffff4d4d };
 }
 void drawLogo (juce::Graphics&, juce::Rectangle<float> area);  // chrome InSequence FX mark + wordmark
+juce::Typeface::Ptr logoTypeface();
 juce::Font headerFont (float height);                            // wide logo-style face (Michroma) for titles
 
 class ISFXLookAndFeel : public juce::LookAndFeel_V4
@@ -96,6 +97,9 @@ public:
     void sourcesChanged() { clearReq = true; requestFrame (lastReq); }
     void setProject (const Project& p);
     double renderMs() const { return lastMs; }
+    // Playback resolution like Premiere: 1 = Full, 2 = 1/2, 4 = 1/4, 8 = 1/8 (paused frames always render sharp)
+    void setQuality (int div) { quality = juce::jmax (1, div); requestFrame (lastReq); }
+    int getQuality() const { return quality; }
     void setLive (bool b) { if (live.exchange (b) && ! b) requestFrame (lastReq); }
     // on-video transform: drag inside = move, corners = scale (Shift = free X/Y), edges = crop, knob = rotate (Shift = 15 deg)
     std::function<void()> onEdited, onSelect;
@@ -118,7 +122,7 @@ private:
     ClipGeom g0;
     juce::Point<float> down;
     void run() override;
-    void handleAsyncUpdate() override { repaint(); }
+    void handleAsyncUpdate() override;
     AppState& st;
     Renderer renderer;
     juce::CriticalSection lock;
@@ -129,7 +133,9 @@ private:
     std::atomic<bool> clearReq { false }, live { false };
     int wantDecodeH = 0;
     juce::Image shown;
-    double lastMs = 0;
+    std::atomic<double> lastMs { 0 }, avgMs { 0 };
+    std::atomic<int> quality { 2 };
+    double fps = 0, fpsT0 = 0; int fpsCount = 0;
 };
 
 // ---- timeline
@@ -140,6 +146,7 @@ public:
     explicit Timeline (AppState& s);
     std::function<void (const juce::Array<juce::File>&, int track, Ticks at)> onFilesDropped;   // from Finder/Explorer
     std::function<void (const juce::String& title, const juce::String& def, std::function<void (juce::String)>)> onAskText;
+    std::function<void (const juce::StringArray& clipIds)> onSyncClips;   // right-click Sync clip(s) to audio
     bool isInterestedInFileDrag (const juce::StringArray&) override { return true; }
     void filesDropped (const juce::StringArray&, int x, int y) override;
     std::function<void()> onEdited;          // after any edit

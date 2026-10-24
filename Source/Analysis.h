@@ -31,6 +31,10 @@ struct SyncResult
 
 // Cross-correlates the take's own audio with the master song.
 SyncResult syncToSong (const std::vector<float>& song, const std::vector<float>& take, int rate);
+// Syncs one piece of a file (e.g. a short clip) by its own sound. Short pieces are matched with at least
+// `minContext` seconds of surrounding audio. Returned offset = master-song time of the file's t = 0.
+SyncResult syncSegment (const std::vector<float>& song, const std::vector<float>& fileAudio, int rate,
+                        Ticks srcIn, Ticks len, double minContext = 3.0);
 
 // Shot quality 0..1 from a few decoded frames (sharpness + exposure); used by the generator.
 float scoreShotQuality (const juce::File& video);

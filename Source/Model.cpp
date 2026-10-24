@@ -160,7 +160,7 @@ juce::var toVar (const Project& p)
         {
             auto* to = new juce::DynamicObject();
             to->setProperty ("name", t.name); to->setProperty ("kind", (int) t.kind); to->setProperty ("mute", t.mute);
-            to->setProperty ("hidden", t.hidden); to->setProperty ("locked", t.locked); to->setProperty ("height", t.height);
+            to->setProperty ("hidden", t.hidden); to->setProperty ("solo", t.solo); to->setProperty ("locked", t.locked); to->setProperty ("height", t.height);
             tr.add (juce::var (to));
         }
         o->setProperty ("tracks", tr);
@@ -176,6 +176,7 @@ juce::var toVar (const Project& p)
             co->setProperty ("fx", fxToVar (c.fx));
             if (c.name.isNotEmpty()) co->setProperty ("name", c.name);
             if (! c.enabled) co->setProperty ("enabled", false);
+            if (c.reverse) co->setProperty ("reverse", true);
             if (c.label != 0) co->setProperty ("label", c.label);
             cl.add (juce::var (co));
         }
@@ -234,7 +235,7 @@ bool fromVar (const juce::var& v, Project& p, juce::String& error)
                 for (auto& tv : *tr)
                 {
                     Track t; t.name = tv["name"].toString(); t.kind = (TrackKind) (int) tv["kind"];
-                    t.mute = (bool) tv["mute"]; t.hidden = (bool) tv["hidden"]; t.locked = (bool) tv["locked"];
+                    t.mute = (bool) tv["mute"]; t.hidden = (bool) tv["hidden"]; t.solo = (bool) tv["solo"]; t.locked = (bool) tv["locked"];
                     t.height = tv.hasProperty ("height") ? (int) tv["height"] : 64;
                     s.tracks.push_back (t);
                 }
@@ -248,7 +249,7 @@ bool fromVar (const juce::var& v, Project& p, juce::String& error)
                     c.volume = cv.hasProperty ("volume") ? (float) (double) cv["volume"] : 1.0f;
                     c.transIn = (TransitionType) (int) cv["trans"]; c.transLen = s2t (cv["transLen"]);
                     fxFromVar (cv["fx"], c.fx);
-                    c.name = cv["name"].toString(); c.enabled = cv.hasProperty ("enabled") ? (bool) cv["enabled"] : true; c.label = (int) cv["label"];
+                    c.name = cv["name"].toString(); c.enabled = cv.hasProperty ("enabled") ? (bool) cv["enabled"] : true; c.reverse = (bool) cv["reverse"]; c.label = (int) cv["label"];
                     if (c.track >= 0 && c.track < (int) s.tracks.size()) s.clips.push_back (c);
                 }
             r.sequences.push_back (s);

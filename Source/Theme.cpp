@@ -6,6 +6,7 @@ namespace isfx
 ISFXLookAndFeel::ISFXLookAndFeel()
 {
     using namespace theme;
+    if (auto face = logoTypeface()) setDefaultSansSerifTypeface (face);   // whole UI in the logo's wide face
     setColour (juce::ResizableWindow::backgroundColourId, bg);
     setColour (juce::TextButton::buttonColourId, panel2);
     setColour (juce::TextButton::buttonOnColourId, accent);
@@ -55,17 +56,22 @@ void ISFXLookAndFeel::drawButtonBackground (juce::Graphics& g, juce::Button& b, 
 
 void drawLogo (juce::Graphics& g, juce::Rectangle<float> r)
 {
-    static const juce::Image logo = juce::ImageCache::getFromMemory (BinaryData::insequencelogo_png, BinaryData::insequencelogo_pngSize);
-    if (! logo.isValid()) return;
-    float h = std::min (r.getHeight() * 0.78f, r.getWidth() * (float) logo.getHeight() / (float) logo.getWidth());
-    float w = h * (float) logo.getWidth() / (float) logo.getHeight();
+    static const juce::Image mark = juce::ImageCache::getFromMemory (BinaryData::insequencemark_png, BinaryData::insequencemark_pngSize);
+    if (! mark.isValid()) return;
+    float h = std::min (r.getHeight() * 0.86f, r.getWidth());
     g.setImageResamplingQuality (juce::Graphics::highResamplingQuality);
-    g.drawImage (logo, { r.getX(), r.getCentreY() - h * 0.5f, w, h });
+    g.drawImage (mark, { r.getX(), r.getCentreY() - h * 0.5f, h, h });
+}
+
+juce::Typeface::Ptr logoTypeface()
+{
+    static const juce::Typeface::Ptr face = juce::Typeface::createSystemTypefaceFor (BinaryData::MichromaRegular_ttf, BinaryData::MichromaRegular_ttfSize);
+    return face;
 }
 
 juce::Font headerFont (float height)
 {
-    static const juce::Typeface::Ptr face = juce::Typeface::createSystemTypefaceFor (BinaryData::MichromaRegular_ttf, BinaryData::MichromaRegular_ttfSize);
+    auto face = logoTypeface();
     return face != nullptr ? juce::Font (juce::FontOptions (face).withHeight (height)) : juce::Font (juce::FontOptions (height, juce::Font::bold));
 }
 }

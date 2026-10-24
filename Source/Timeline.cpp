@@ -198,13 +198,37 @@ void Timeline::paint (juce::Graphics& g)
         int y = trackY (i);
         g.setColour (text); g.setFont (12.0f);
         g.drawText (tr.name, 6, y + 4, kHeader - 10, 14, juce::Justification::left);
-        const char* lab[3] = { tr.kind == TrackKind::Audio ? "M" : "H", "L", "" };
-        bool on[2] = { tr.kind == TrackKind::Audio ? tr.mute : tr.hidden, tr.locked };
-        for (int k = 0; k < 2; ++k)
+        // Premiere-style toggles. Video: eye (visible) + lock. Audio: speaker (mute) + S (solo) + lock.
+        const bool audio = tr.kind == TrackKind::Audio;
+        for (int k = 0; k < (audio ? 3 : 2); ++k)
         {
-            juce::Rectangle<int> b (6 + k * 22, y + 22, 18, 16);
-            g.setColour (on[k] ? accent : line); g.fillRoundedRectangle (b.toFloat(), 3);
-            g.setColour (text); g.setFont (10.0f); g.drawText (lab[k], b, juce::Justification::centred);
+            auto b = juce::Rectangle<int> (6 + k * 22, y + 22, 18, 16).toFloat();
+            const int kind = audio ? k + 1 : (k == 0 ? 0 : 3);   // 0 eye, 1 speaker, 2 solo, 3 lock
+            const bool active = kind == 0 ? ! tr.hidden : kind == 1 ? ! tr.mute : kind == 2 ? tr.solo : tr.locked;
+            const bool warn = (kind == 0 && tr.hidden) || (kind == 1 && tr.mute);
+            g.setColour (warn ? juce::Colour (0xff5a1e24) : (kind >= 2 && active) ? accent : line); g.fillRoundedRectangle (b, 3);
+            g.setColour (active || warn ? juce::Colours::white : dim);
+            auto c = b.getCentre();
+            if (kind == 0)
+            {
+                juce::Path eye; eye.startNewSubPath (c.x - 6, c.y); eye.quadraticTo (c.x, c.y - 6, c.x + 6, c.y); eye.quadraticTo (c.x, c.y + 6, c.x - 6, c.y);
+                g.strokePath (eye, juce::PathStrokeType (1.3f)); g.fillEllipse (c.x - 2, c.y - 2, 4, 4);
+            }
+            else if (kind == 1)
+            {
+                juce::Path sp; sp.addRectangle (c.x - 5, c.y - 2, 3, 4);
+                sp.addTriangle (c.x - 2, c.y - 2, c.x + 2, c.y - 5.5f, c.x + 2, c.y + 5.5f); sp.addTriangle (c.x - 2, c.y - 2, c.x + 2, c.y + 5.5f, c.x - 2, c.y + 2);
+                g.fillPath (sp);
+                if (! tr.mute) g.drawLine (c.x + 4, c.y - 3, c.x + 4, c.y + 3, 1.2f);
+            }
+            else if (kind == 2) { g.setFont (10.0f); g.drawText ("S", b, juce::Justification::centred); }
+            else
+            {
+                g.drawRect (juce::Rectangle<float> (c.x - 4, c.y - 1, 8, 6), 1.2f);
+                juce::Path sh; sh.addCentredArc (c.x, c.y - 1, 2.6f, 3.0f, 0, -juce::MathConstants<float>::halfPi, juce::MathConstants<float>::halfPi, true);
+                g.strokePath (sh, juce::PathStrokeType (1.2f));
+            }
+            if (warn) g.drawLine (b.getX() + 3, b.getBottom() - 3, b.getRight() - 3, b.getY() + 3, 1.4f);
         }
         g.setColour (line); g.drawHorizontalLine (y + tr.height - 1, 0, (float) kHeader);
     }
@@ -282,11 +306,15 @@ void Timeline::mouseDown (const juce::MouseEvent& e)
     {
         int tr = trackAt (pos.y); if (tr < 0) return;
         int k = (pos.x - 6) / 22; int y = trackY (tr);
-        if (pos.y >= y + 22 && pos.y < y + 38 && k >= 0 && k < 2)
+        const bool audio = s.tracks[(size_t) tr].kind == TrackKind::Audio;
+        if (pos.y >= y + 22 && pos.y < y + 38 && k >= 0 && k < (audio ? 3 : 2))
         {
             st.edit ("Track toggle");
             auto& T = s.tracks[(size_t) tr];
-            if (k == 0) { if (T.kind == TrackKind::Audio) T.mute = ! T.mute; else T.hidden = ! T.hidden; }
+            const int kind = audio ? k + 1 : (k == 0 ? 0 : 3);
+            if (kind == 0) T.hidden = ! T.hidden;
+            else if (kind == 1) T.mute = ! T.mute;
+            else if (kind == 2) T.solo = ! T.solo;
             else T.locked = ! T.locked;
             if (onEdited) onEdited();
         }
@@ -592,6 +620,22 @@ void Timeline::clipMenu (const juce::String& id)
     m.addSeparator();
     m.addItem (30, "Speed/Duration...  (Ctrl+R)", ! lk);
     m.addItem (3, "Reset speed to 100%", ! lk && c->speed != 1.0);
+    {
+        const bool hasMedia = c->mediaId.isNotEmpty();
+        m.addItem (34, "Reverse clip", ! lk && hasMedia, c->reverse);
+        juce::PopupMenu slow;
+        const auto* md = st.project.findMedia (c->mediaId);
+        const double srcFps = md != nullptr && md->fps > 0 ? md->fps : 0.0, tlFps = st.project.fps;
+        if (srcFps > tlFps + 1)
+            slow.addItem (35, "Clean slow-mo: every real frame (" + juce::String (juce::roundToInt (srcFps)) + " fps -> "
+                              + juce::String (juce::roundToInt (tlFps)) + " fps = " + juce::String (juce::roundToInt (100 * tlFps / srcFps)) + "%)", ! lk);
+        slow.addItem (39, "75%", ! lk); slow.addItem (36, "50%", ! lk); slow.addItem (38, "33%", ! lk); slow.addItem (37, "25%", ! lk);
+        slow.addSeparator(); slow.addItem (30, "Custom speed...", ! lk);
+        m.addSubMenu ("Slow motion", slow, ! lk && hasMedia);
+        const int nSel = st.selected.contains (c->id) ? st.selected.size() : 1;
+        m.addItem (43, nSel > 1 ? "Sync " + juce::String (nSel) + " clips to audio" : juce::String ("Sync clip to audio"),
+                   hasMedia && md != nullptr && md->kind != MediaKind::Image);
+    }
     m.addItem (31, "Add Frame Hold Segment (1 beat)", ! lk && video && st.playhead > c->start && st.playhead < c->end());
     m.addSubMenu ("Transition in", trans, ! lk);
     m.addSubMenu ("Scale / Reframe", scale, video && ! lk);
@@ -647,6 +691,22 @@ void Timeline::clipMenu (const juce::String& id)
         if (r == 14) { st.edit ("Duplicate"); st.selected = duplicateClips (sq, sel); }
         if (r == 2) { st.edit ("Split"); splitAt (sq, st.playhead, { id }); }
         if (r == 3) { st.edit ("Speed"); setClipSpeed (sq, st.project, id, 1.0); }
+        if (r == 34) { st.edit ("Reverse"); bool on = ! cl->reverse; for (auto& i : sel) if (auto* k = sq.findClip (i); k && ! k->locked && k->mediaId.isNotEmpty()) k->reverse = on; }
+        if (r >= 35 && r <= 39)
+        {
+            const auto* md = st.project.findMedia (cl->mediaId);
+            const double srcFps = md != nullptr && md->fps > 0 ? md->fps : 30.0;
+            const double sp = r == 35 ? st.project.fps / srcFps : r == 36 ? 0.5 : r == 37 ? 0.25 : r == 38 ? 1.0 / 3.0 : 0.75;
+            st.edit ("Slow motion");
+            for (auto& i : sel)
+                if (auto* k = sq.findClip (i); k && ! k->locked && k->mediaId.isNotEmpty())
+                {
+                    if (auto* km = st.project.findMedia (k->mediaId); km != nullptr && km->fps > 0)
+                        k->srcIn = quantizeToFrame (k->srcIn, km->fps);   // start on a real frame so every output frame is a real source frame
+                    setClipSpeed (sq, st.project, i, sp);
+                }
+        }
+        if (r == 43 && onSyncClips) { auto ids = sel; juce::MessageManager::callAsync ([this, ids] { onSyncClips (ids); }); return; }
         if (r == 4) { st.edit ("Lock"); cl->locked = ! cl->locked; }
         if (r == 5) { st.edit ("Delete"); deleteClips (sq, sel, false); st.selected.clear(); }
         if (r == 6) { st.edit ("Ripple Delete"); deleteClips (sq, sel, true); st.selected.clear(); }
