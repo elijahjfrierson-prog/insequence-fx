@@ -162,4 +162,39 @@ bool applyEditTemplate (Project& p, const juce::File& f, juce::String& error)
     p.aspectW = t.aspectW; p.aspectH = t.aspectH;
     return true;
 }
+
+bool renameEditTemplate (const juce::File& f, const juce::String& name, juce::String& error)
+{
+    auto v = juce::JSON::parse (f);
+    auto* o = v.getDynamicObject();
+    if (o == nullptr || ! (bool) v["template"]) { error = f.getFileName() + " is not an edit template"; return false; }
+    o->setProperty ("name", name);
+    if (auto* seqs = v["sequences"].getArray())
+        for (auto& sq : *seqs) if (auto* so = sq.getDynamicObject()) so->setProperty ("name", name);
+    if (! f.replaceWithText (juce::JSON::toString (v))) { error = "Could not write " + f.getFullPathName(); return false; }
+    return true;
+}
+
+static juce::File recentStore (const juce::File& store) { return store == juce::File() ? userDataDir().getChildFile ("recent.txt") : store; }
+
+juce::Array<juce::File> recentProjects (const juce::File& store)
+{
+    juce::StringArray lines; lines.addLines (recentStore (store).loadFileAsString());
+    juce::Array<juce::File> out;
+    for (auto& l : lines)
+        if (auto path = l.trim(); juce::File::isAbsolutePath (path))
+            if (juce::File f (path); f.existsAsFile() && ! out.contains (f)) out.add (f);
+    return out;
+}
+
+void noteRecentProject (const juce::File& f, const juce::File& store)
+{
+    auto a = recentProjects (store);
+    a.removeAllInstancesOf (f); a.insert (0, f);
+    juce::StringArray lines;
+    for (int i = 0; i < juce::jmin (12, a.size()); ++i) lines.add (a[i].getFullPathName());
+    auto out = recentStore (store);
+    out.getParentDirectory().createDirectory();
+    out.replaceWithText (lines.joinIntoString ("\n"));
+}
 }

@@ -131,7 +131,7 @@ MainComponent::MainComponent()
 {
     setLookAndFeel (&lnf);
     juce::LookAndFeel::setDefaultLookAndFeel (&lnf);
-    for (auto* c : std::initializer_list<juce::Component*> { &preview, &timeline, &media, &fxlib, &inspector, &mediaTgl, &inspTgl, &maxPrevBtn, &maxTlBtn, &movieBtn, &hscroll, &fileBtn, &undoBtn, &redoBtn, &importBtn,
+    for (auto* c : std::initializer_list<juce::Component*> { &preview, &timeline, &media, &fxlib, &inspector, &mediaTgl, &inspTgl, &maxPrevBtn, &maxTlBtn, &movieBtn, &hscroll, &fileBtn, &saveBtn, &undoBtn, &redoBtn, &importBtn,
             &presetsBtn, &pluginsBtn, &playBtn, &exportBtn, &snapBtn, &rippleBtn, &magnetBtn, &gridBtn, &chopBtn, &genBtn, &keepBtn, &delRangeBtn, &zoomIn, &zoomOut,
             &seqBox, &aspectBox, &snapBox, &chopBox, &styleBox, &status })
         addAndMakeVisible (c);
@@ -148,6 +148,8 @@ MainComponent::MainComponent()
     exportBtn.setColour (juce::TextButton::buttonColourId, theme::accent);
     genBtn.setColour (juce::TextButton::buttonColourId, theme::accent.darker (0.3f));
     fileBtn.onClick = [this] { fileMenu(); };
+    saveBtn.onClick = [this] { savePage(); };
+    saveBtn.setTooltip ("Save page: save, save as, save as template, recent projects and your templates");
     undoBtn.onClick = [this] { if (st.history.undo (st.project)) { st.dirty = true; refresh (true); } };
     redoBtn.onClick = [this] { if (st.history.redo (st.project)) { st.dirty = true; refresh (true); } };
     importBtn.onClick = [this] { media.onImport(); };
@@ -339,7 +341,7 @@ void MainComponent::resized()
     auto top = r.removeFromTop (44).reduced (6, 7);
     top.removeFromLeft (50);
     auto place = [] (juce::Rectangle<int>& row, juce::Component& c, int w) { c.setBounds (row.removeFromLeft (w)); row.removeFromLeft (5); };
-    place (top, fileBtn, 56); place (top, undoBtn, 30); place (top, redoBtn, 30); place (top, importBtn, 70); place (top, presetsBtn, 76); place (top, pluginsBtn, 80);
+    place (top, fileBtn, 56); place (top, saveBtn, 56); place (top, undoBtn, 30); place (top, redoBtn, 30); place (top, importBtn, 70); place (top, presetsBtn, 76); place (top, pluginsBtn, 80);
     top.removeFromLeft (6); place (top, mediaTgl, 58); place (top, inspTgl, 72); place (top, maxPrevBtn, 92); place (top, maxTlBtn, 98); place (top, movieBtn, 104);
     exportBtn.setBounds (top.removeFromRight (110)); top.removeFromRight (6);
     playBtn.setBounds (top.removeFromRight (70)); top.removeFromRight (4);
@@ -881,6 +883,7 @@ void MainComponent::save (bool as, std::function<void()> after)
         juce::String err;
         if (! saveProject (st.project, f, err)) { showMsg ("Save failed", err); return; }
         st.file = f; st.dirty = false;
+        noteRecentProject (f);
         status.setText ("Saved " + f.getFullPathName(), juce::dontSendNotification);
         refresh (false);
         if (after) after();
@@ -897,6 +900,7 @@ void MainComponent::openFile (const juce::File& f)
     if (! loadProject (f, p, err)) { showMsg ("Open failed", err); return; }
     player.stop(); playBtn.setButtonText ("Play");
     pluginWindows.clear();
+    noteRecentProject (f);
     st.project = p; st.file = f; st.dirty = false; st.history.clear(); st.selected.clear(); st.playhead = 0;
     st.thumbs.clear(); st.waves.clear(); songMono.reset();
     juce::StringArray perr; rack.fromVar (p.plugins, perr); rack.prepare (kMixRate, Player::kBlock);
@@ -944,7 +948,7 @@ void MainComponent::tryQuit (std::function<void()> quit)
 void MainComponent::fileMenu()
 {
     juce::PopupMenu m;
-    m.addItem (1, "New project  (Ctrl+N)"); m.addItem (2, "Open...  (Ctrl+O)"); m.addItem (3, "Save  (Ctrl+S)"); m.addItem (4, "Save as...  (Ctrl+Shift+S)");
+    m.addItem (1, "New project  (Ctrl+N)"); m.addItem (2, "Open...  (Ctrl+O)"); m.addItem (3, "Save  (Ctrl+S)"); m.addItem (4, "Save as...  (Ctrl+Shift+S)"); m.addItem (9, "Save page / templates...");
     m.addSeparator(); m.addItem (5, "Import media...  (Ctrl+I)"); m.addItem (6, "Export video...  (Ctrl+E)");
     m.addSeparator(); m.addItem (7, "Audio device settings...");
     m.addItem (8, "Keyboard shortcuts");
@@ -954,6 +958,7 @@ void MainComponent::fileMenu()
         if (r == 2) open();
         if (r == 3) save (false);
         if (r == 4) save (true);
+        if (r == 9) savePage();
         if (r == 5) media.onImport();
         if (r == 6) exportDialog();
         if (r == 7)
@@ -974,6 +979,157 @@ void MainComponent::fileMenu()
 }
 
 // ============================================================ presets / templates
+void MainComponent::saveTemplateDialog (std::function<void()> after)
+{
+    askText ("Save as template", st.project.seq().name, [this, after] (juce::String name)
+    {
+        auto f = userDataDir().getChildFile ("Templates").getChildFile (juce::File::createLegalFileName (name) + ".isfxtemplate");
+        f.getParentDirectory().createDirectory();
+        juce::String err;
+        if (! saveEditTemplate (st.project, st.project.seq(), name, f, err)) showMsg ("Template", err);
+        else status.setText ("Saved template \"" + name + "\": cuts are stored in beats, so it re-locks to any song", juce::dontSendNotification);
+        if (after) after();
+    });
+}
+
+void MainComponent::applyTemplateFile (const juce::File& f)
+{
+    st.edit ("Apply template");
+    juce::String err;
+    if (! applyEditTemplate (st.project, f, err)) { st.history.undo (st.project); showMsg ("Template", err); }
+    else status.setText ("New sequence from template \"" + templateName (f) + "\", locked to " + juce::String (st.project.song.bpm, 1) + " BPM", juce::dontSendNotification);
+    refresh (true);
+}
+
+namespace
+{
+struct FileRows : juce::ListBoxModel
+{
+    juce::Array<juce::File> files;
+    std::function<juce::String (const juce::File&)> label;
+    std::function<void (int)> activate;
+    int getNumRows() override { return files.size(); }
+    void paintListBoxItem (int row, juce::Graphics& g, int w, int h, bool sel) override
+    {
+        if (sel) g.fillAll (theme::accent.withAlpha (0.35f));
+        g.setColour (theme::text); g.setFont (14.0f);
+        g.drawText (label ? label (files[row]) : files[row].getFileNameWithoutExtension(), 8, 0, w - 16, h, juce::Justification::centredLeft, true);
+    }
+    void listBoxItemDoubleClicked (int row, const juce::MouseEvent&) override { if (activate) activate (row); }
+    void returnKeyPressed (int row) override { if (activate) activate (row); }
+};
+
+class SavePage : public juce::Component
+{
+public:
+    std::function<void()> onSave, onSaveAs, onSaveTemplate, onOpenOther;
+    std::function<void (const juce::File&)> onOpen, onApply;
+    std::function<void (const juce::File&, std::function<void()>)> onRename;
+
+    SavePage()
+    {
+        for (auto* l : { &projTitle, &tplTitle, &recentTitle }) { l->setColour (juce::Label::textColourId, theme::text); addAndMakeVisible (l); }
+        projTitle.setText ("PROJECT", juce::dontSendNotification);
+        recentTitle.setText ("Recent projects (double-click to open)", juce::dontSendNotification);
+        tplTitle.setText ("MY TEMPLATES (double-click to use on this song)", juce::dontSendNotification);
+        recent.label = [] (const juce::File& f) { return f.getFileNameWithoutExtension() + "   -   " + f.getParentDirectory().getFullPathName(); };
+        tpls.label = [] (const juce::File& f) { return templateName (f); };
+        recent.activate = [this] (int r) { if (r >= 0 && r < recent.files.size()) { auto f = recent.files[r]; close(); if (onOpen) onOpen (f); } };
+        tpls.activate = [this] (int r) { if (r >= 0 && r < tpls.files.size()) { auto f = tpls.files[r]; close(); if (onApply) onApply (f); } };
+        recentList.setModel (&recent); tplList.setModel (&tpls);
+        for (auto* lb : { &recentList, &tplList })
+        { lb->setRowHeight (26); lb->setColour (juce::ListBox::backgroundColourId, theme::bg); lb->setColour (juce::ListBox::outlineColourId, theme::line); lb->setOutlineThickness (1); addAndMakeVisible (lb); }
+        for (auto* b : { &saveB, &saveAsB, &saveTplB, &openB, &openRecentB, &applyB, &renameB, &deleteB, &folderB }) addAndMakeVisible (b);
+        saveB.onClick = [this] { close(); if (onSave) onSave(); };
+        saveAsB.onClick = [this] { close(); if (onSaveAs) onSaveAs(); };
+        openB.onClick = [this] { close(); if (onOpenOther) onOpenOther(); };
+        saveTplB.onClick = [this] { if (onSaveTemplate) onSaveTemplate(); };
+        openRecentB.onClick = [this] { recent.activate (recentList.getSelectedRow()); };
+        applyB.onClick = [this] { tpls.activate (tplList.getSelectedRow()); };
+        renameB.onClick = [this]
+        {
+            int r = tplList.getSelectedRow();
+            if (r >= 0 && r < tpls.files.size() && onRename) onRename (tpls.files[r], [sp = juce::Component::SafePointer<SavePage> (this)] { if (sp) sp->reload(); });
+        };
+        deleteB.onClick = [this]
+        {
+            int r = tplList.getSelectedRow();
+            if (r < 0 || r >= tpls.files.size()) return;
+            auto f = tpls.files[r];
+            juce::AlertWindow::showOkCancelBox (juce::MessageBoxIconType::WarningIcon, "Delete template", "Delete \"" + templateName (f) + "\"?", "Delete", "Cancel", this,
+                juce::ModalCallbackFunction::create ([sp = juce::Component::SafePointer<SavePage> (this), f] (int ok) { if (ok == 1) f.moveToTrash(); if (sp) sp->reload(); }));
+        };
+        folderB.onClick = [] { auto d = userDataDir().getChildFile ("Templates"); d.createDirectory(); d.revealToUser(); };
+        reload();
+        setSize (820, 480);
+    }
+
+    void reload()
+    {
+        recent.files = recentProjects();
+        tpls.files.clear(); for (auto& f : listEditTemplates()) tpls.files.add (f);
+        recentList.updateContent(); tplList.updateContent(); repaint();
+    }
+
+    void paint (juce::Graphics& g) override { g.fillAll (theme::panel); }
+
+    void resized() override
+    {
+        auto r = getLocalBounds().reduced (14);
+        auto left = r.removeFromLeft (r.getWidth() / 2 - 7); r.removeFromLeft (14);
+        projTitle.setBounds (left.removeFromTop (24));
+        auto row = left.removeFromTop (32);
+        const int bw = (row.getWidth() - 18) / 4;
+        for (auto* b : { &saveB, &saveAsB, &saveTplB, &openB }) { b->setBounds (row.removeFromLeft (bw)); row.removeFromLeft (6); }
+        left.removeFromTop (12);
+        recentTitle.setBounds (left.removeFromTop (22));
+        openRecentB.setBounds (left.removeFromBottom (30).removeFromLeft (140)); left.removeFromBottom (6);
+        recentList.setBounds (left);
+        tplTitle.setBounds (r.removeFromTop (24));
+        auto br = r.removeFromBottom (30); r.removeFromBottom (6);
+        const int tw = (br.getWidth() - 18) / 4;
+        for (auto* b : { &applyB, &renameB, &deleteB, &folderB }) { b->setBounds (br.removeFromLeft (tw)); br.removeFromLeft (6); }
+        tplList.setBounds (r);
+    }
+
+private:
+    void close()
+    {
+        if (auto* dw = findParentComponentOfClass<juce::DialogWindow>())
+            juce::MessageManager::callAsync ([sp = juce::Component::SafePointer<juce::DialogWindow> (dw)] { if (sp) sp->exitModalState (0); });
+    }
+    juce::Label projTitle, recentTitle, tplTitle;
+    juce::TextButton saveB { "Save" }, saveAsB { "Save As..." }, saveTplB { "Save as Template..." }, openB { "Open..." }, openRecentB { "Open selected" },
+                     applyB { "Use template" }, renameB { "Rename" }, deleteB { "Delete" }, folderB { "Show folder" };
+    FileRows recent, tpls;
+    juce::ListBox recentList { "recent" }, tplList { "templates" };
+};
+}
+
+void MainComponent::savePage()
+{
+    juce::Component::SafePointer<MainComponent> me (this);
+    auto* pg = new SavePage();
+    pg->onSave = [me] { if (me) me->save (false); };
+    pg->onSaveAs = [me] { if (me) me->save (true); };
+    pg->onOpenOther = [me] { if (me) me->open(); };
+    pg->onOpen = [me] (const juce::File& f) { if (me) me->tryQuit ([me, f] { if (me) me->openFile (f); }); };
+    pg->onApply = [me] (const juce::File& f) { if (me) me->applyTemplateFile (f); };
+    juce::Component::SafePointer<SavePage> pgp (pg);
+    pg->onSaveTemplate = [me, pgp] { if (me) me->saveTemplateDialog ([pgp] { if (pgp) pgp->reload(); }); };
+    pg->onRename = [me] (const juce::File& f, std::function<void()> done)
+    {
+        if (me) me->askText ("Rename template", templateName (f), [me, f, done] (juce::String name)
+        {
+            juce::String err;
+            if (! renameEditTemplate (f, name, err) && me) me->showMsg ("Template", err);
+            if (done) done();
+        });
+    };
+    juce::DialogWindow::LaunchOptions o; o.content.setOwned (pg); o.dialogTitle = "Save";
+    o.dialogBackgroundColour = theme::panel; o.useNativeTitleBar = true; o.resizable = true;
+    o.componentToCentreAround = this; o.launchAsync();
+}
 void MainComponent::presetsMenu()
 {
     auto templates = listEditTemplates();
@@ -1001,22 +1157,8 @@ void MainComponent::presetsMenu()
                 if (! saveUserPreset (up, f, err)) showMsg ("Preset", err);
                 else { status.setText ("Saved preset \"" + name + "\" (it is in the Look list in every project)", juce::dontSendNotification); inspector.rebuild(); }
             });
-        if (r == 3)
-            askText ("Save edit template", st.project.seq().name, [this] (juce::String name)
-            {
-                auto f = userDataDir().getChildFile ("Templates").getChildFile (juce::File::createLegalFileName (name) + ".isfxtemplate");
-                juce::String err;
-                if (! saveEditTemplate (st.project, st.project.seq(), name, f, err)) showMsg ("Template", err);
-                else status.setText ("Saved template \"" + name + "\": cuts are stored in beats, so it re-locks to any song", juce::dontSendNotification);
-            });
-        if (r >= 100 && r - 100 < (int) templates.size())
-        {
-            st.edit ("Apply template");
-            juce::String err;
-            if (! applyEditTemplate (st.project, templates[(size_t) (r - 100)], err)) { st.history.undo (st.project); showMsg ("Template", err); }
-            else status.setText ("New sequence from template, locked to " + juce::String (st.project.song.bpm, 1) + " BPM", juce::dontSendNotification);
-            refresh (true);
-        }
+        if (r == 3) saveTemplateDialog();
+        if (r >= 100 && r - 100 < (int) templates.size()) applyTemplateFile (templates[(size_t) (r - 100)]);
         if (r == 4) media.onImport();
         if (r == 5) userDataDir().getChildFile ("Presets").revealToUser();
     });

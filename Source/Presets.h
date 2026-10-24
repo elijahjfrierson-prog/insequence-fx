@@ -23,4 +23,9 @@ bool saveEditTemplate (const Project&, const Sequence&, const juce::String& name
 bool applyEditTemplate (Project&, const juce::File&, juce::String& error);   // adds a new active sequence
 std::vector<juce::File> listEditTemplates (const juce::File& dir = {});
 juce::String templateName (const juce::File&);
+bool renameEditTemplate (const juce::File&, const juce::String& name, juce::String& error);
+
+// ---- recent projects (newest first, at most 12), kept in userDataDir()/recent.txt
+void noteRecentProject (const juce::File&, const juce::File& store = {});
+juce::Array<juce::File> recentProjects (const juce::File& store = {});
 }

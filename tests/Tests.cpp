@@ -661,6 +661,18 @@ static void testAutoCutAndPresets()
     for (auto& k : dst.seq().clips) { if (dst.seq().tracks[(size_t) k.track].kind != TrackKind::Video) continue; ++vids;
         double b = dst.song.beatAt (k.start) * 2; grid &= std::abs (b - std::round (b)) * (30.0 / 140) <= 1.0 / 30 + 1e-6; }   // within one video frame of the 1/8 grid
     CHECK (dst.seq().name == "Eighth Flip" && vids >= 40 && grid, "template re-locked to 140 BPM grid (" << vids << " clips)");
+    CHECK (renameEditTemplate (tf, "My Flip", err) && templateName (tf) == "My Flip", "rename custom template " << err);
+    { Project d2 = dst; CHECK (applyEditTemplate (d2, tf, err) && d2.seq().name == "My Flip", "renamed template still applies " << err); }
+    {
+        auto store = dir.getChildFile ("recent.txt");
+        auto pa = dir.getChildFile ("a.isfx"), pb = dir.getChildFile ("b.isfx");
+        pa.replaceWithText ("{}"); pb.replaceWithText ("{}");
+        noteRecentProject (pa, store); noteRecentProject (pb, store); noteRecentProject (pa, store);
+        auto rp = recentProjects (store);
+        CHECK (rp.size() == 2 && rp[0] == pa && rp[1] == pb, "recent projects newest first, no duplicates");
+        pb.deleteFile();
+        CHECK (recentProjects (store).size() == 1, "recent projects drop deleted files");
+    }
     dir.deleteRecursively();
 }
 
