@@ -1,0 +1,20 @@
+{
+  "format": "InSequenceFX-Preset",
+  "version": 1,
+  "name": "tinytapes OPIUM LOOKS / @tinytapes OPIUM LOOKS / CRT Warped Inverted ",
+  "kind": "clip",
+  "fx": {
+    "params": {
+      "blur": 0.014999999664724,
+      "invert": 1.0,
+      "lensCurve": 1.0,
+      "opacity": 1.0,
+      "posX": 0.0,
+      "posY": 0.0,
+      "rotation": 0.0,
+      "scaleX": 1.0,
+      "scaleY": 4.0
+    },
+    "lut": ""
+  }
+}

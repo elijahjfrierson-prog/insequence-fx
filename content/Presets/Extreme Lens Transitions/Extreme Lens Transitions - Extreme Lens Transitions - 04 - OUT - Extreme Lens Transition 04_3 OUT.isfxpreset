@@ -1,0 +1,50 @@
+{
+  "format": "InSequenceFX-Preset",
+  "version": 1,
+  "name": "Extreme Lens Transitions / Extreme Lens Transitions / 04 / OUT / Extreme Lens Transition 04_3 OUT",
+  "kind": "clip",
+  "fx": {
+    "params": {
+      "contrast": 1.0,
+      "exposure": 0.0,
+      "highlights": 0.0,
+      "opacity": 0.0,
+      "saturation": 0.0,
+      "shadows": 0.0,
+      "temperature": 0.0,
+      "tint": 0.0
+    },
+    "lut": ""
+  },
+  "keys": {
+    "opacity": [
+      [
+        40242307,
+        0.0,
+        2
+      ],
+      [
+        94174080,
+        0.349999994039536,
+        2
+      ],
+      [
+        141261120,
+        0.0,
+        2
+      ],
+      [
+        188348160,
+        0.400000005960464,
+        2
+      ],
+      [
+        235435200,
+        0.0,
+        2
+      ]
+    ]
+  },
+  "length": 258978720,
+  "atEnd": true
+}

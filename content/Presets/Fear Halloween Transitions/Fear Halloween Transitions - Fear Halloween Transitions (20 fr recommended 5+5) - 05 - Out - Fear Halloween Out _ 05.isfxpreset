@@ -1,0 +1,91 @@
+{
+  "format": "InSequenceFX-Preset",
+  "version": 1,
+  "name": "Fear Halloween Transitions / Fear Halloween Transitions (20 fr recommended, 5+5) / 05 / Out / Fear Halloween Out _ 05",
+  "kind": "clip",
+  "fx": {
+    "params": {
+      "contrast": 1.0,
+      "exposure": -2.0,
+      "highlights": 0.155555576086044,
+      "opacity": 1.0,
+      "posX": 0.0,
+      "posY": 0.0,
+      "rotation": 0.0,
+      "saturation": 0.0,
+      "scale": 1.0,
+      "shadows": -0.546666622161865,
+      "temperature": 0.0,
+      "tint": 0.0
+    },
+    "lut": ""
+  },
+  "keys": {
+    "exposure": [
+      [
+        0,
+        -2.0,
+        2
+      ],
+      [
+        58858800,
+        2.0,
+        2
+      ],
+      [
+        117717600,
+        -2.0,
+        2
+      ],
+      [
+        176576400,
+        2.0,
+        2
+      ],
+      [
+        235435200,
+        -2.0,
+        2
+      ],
+      [
+        294294000,
+        2.0,
+        2
+      ],
+      [
+        353152800,
+        -2.0,
+        2
+      ],
+      [
+        412011600,
+        2.0,
+        2
+      ],
+      [
+        470870400,
+        -2.0,
+        2
+      ]
+    ],
+    "scale": [
+      [
+        66091200,
+        1.0,
+        2
+      ],
+      [
+        150763200,
+        1.149999976158142,
+        2
+      ],
+      [
+        235435200,
+        1.466228365898132,
+        2
+      ]
+    ]
+  },
+  "length": 235435200,
+  "atEnd": true
+}

@@ -1,0 +1,18 @@
+{
+  "format": "InSequenceFX-Preset",
+  "version": 1,
+  "name": "tinytapes OPIUM LOOKS / @tinytapes OPIUM LOOKS / Night Vision ",
+  "kind": "clip",
+  "fx": {
+    "params": {
+      "contrast": 1.0,
+      "exposure": 1.415929317474365,
+      "highlights": 1.0,
+      "saturation": 0.0,
+      "shadows": 0.0,
+      "temperature": 0.0,
+      "tint": 0.0
+    },
+    "lut": ""
+  }
+}

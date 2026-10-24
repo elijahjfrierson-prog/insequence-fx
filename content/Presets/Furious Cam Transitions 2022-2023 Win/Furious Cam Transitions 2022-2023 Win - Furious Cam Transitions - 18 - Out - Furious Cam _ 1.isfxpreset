@@ -1,0 +1,32 @@
+{
+  "format": "InSequenceFX-Preset",
+  "version": 1,
+  "name": "Furious Cam Transitions 2022-2023 Win / Furious Cam Transitions / 18 / Out / Furious Cam _ 1",
+  "kind": "clip",
+  "fx": {
+    "params": {
+      "opacity": 1.0,
+      "posX": 0.0,
+      "posY": 0.0,
+      "rotation": 0.0,
+      "scale": 1.0
+    },
+    "lut": ""
+  },
+  "keys": {
+    "scale": [
+      [
+        0,
+        1.0,
+        2
+      ],
+      [
+        235435200,
+        0.529999971389771,
+        2
+      ]
+    ]
+  },
+  "length": 353152800,
+  "atEnd": true
+}

@@ -435,6 +435,20 @@ void FxLibrary::reload()
         for (auto& f : sfx)
             rows.push_back ({ f.getFileNameWithoutExtension(), "sfx:" + f.getFullPathName(), "Drop on the timeline to add this sound at that spot.", false });
     }
+    if (auto cd = contentDir(); cd.isDirectory())   // bundled Premiere packs, rebuilt natively
+    {
+        auto packs = cd.getChildFile ("Presets").findChildFiles (juce::File::findDirectories, false);
+        packs.sort();
+        for (auto& d : packs)
+        {
+            auto ps = loadUserPresets (d);
+            if (ps.empty()) continue;
+            rows.push_back ({ "STOCK FX: " + d.getFileName() + "  (" + juce::String ((int) ps.size()) + ")", {}, {}, true });
+            for (auto& u : ps)
+                rows.push_back ({ u.name, "preset:" + u.file.getFullPathName(), "Stock preset from " + d.getFileName()
+                                  + ".\nDrop on a clip: applies its effects with their keyframes (IN/OUT presets line up with the clip start/end). Everything stays editable in the Inspector.", false });
+        }
+    }
     bool head = false;
     for (auto& u : loadUserPresets())
         if (u.clip)

@@ -397,6 +397,7 @@ int importPrfpset (const juce::File& file, const juce::File& outDir, juce::Strin
         if (o.tag == "BinTreeItem")
             for (auto& c : d.refs (o, "Item")) parent[c] = id;
     auto dir = outDir == juce::File() ? userDataDir().getChildFile ("Presets") : outDir;
+    juce::StringArray used;
     dir.createDirectory();
     int n = 0;
     for (auto& [id, o] : d.objs)
@@ -432,7 +433,12 @@ int importPrfpset (const juce::File& file, const juce::File& outDir, juce::Strin
         const auto lower = up.name.toLowerCase();
         up.atEnd = lower.contains (" out") || lower.endsWith ("out") || lower.contains ("outro");
         juce::File written; juce::String e;
-        UserPreset w = up; w.file = dir.getChildFile (juce::File::createLegalFileName (up.name.replace (" / ", " - ")) + ".isfxpreset");
+        UserPreset w = up;
+        auto base = juce::File::createLegalFileName (up.name.replace (" / ", " - "));
+        auto fname = base;
+        for (int k = 2; used.contains (fname.toLowerCase()); ++k) fname = base + " " + juce::String (k);   // same-named presets in one pack
+        used.add (fname.toLowerCase());
+        w.file = dir.getChildFile (fname + ".isfxpreset");
         if (saveUserPreset (w, written, e, dir)) ++n;
     }
     if (n == 0 && error.isEmpty()) error = "No video effects in " + file.getFileName() + " could be rebuilt";

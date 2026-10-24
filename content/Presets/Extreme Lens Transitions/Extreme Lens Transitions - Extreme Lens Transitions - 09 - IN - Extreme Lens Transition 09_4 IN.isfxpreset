@@ -1,0 +1,33 @@
+{
+  "format": "InSequenceFX-Preset",
+  "version": 1,
+  "name": "Extreme Lens Transitions / Extreme Lens Transitions / 09 / IN / Extreme Lens Transition 09_4 IN",
+  "kind": "clip",
+  "fx": {
+    "params": {
+      "lensCurve": -0.600000023841858
+    },
+    "lut": ""
+  },
+  "keys": {
+    "lensCurve": [
+      [
+        0,
+        -0.600000023841858,
+        2
+      ],
+      [
+        141261120,
+        -0.680000007152557,
+        2
+      ],
+      [
+        235435200,
+        0.0,
+        2
+      ]
+    ]
+  },
+  "length": 329609280,
+  "atEnd": false
+}

@@ -1,0 +1,51 @@
+{
+  "format": "InSequenceFX-Preset",
+  "version": 1,
+  "name": "tinytapes OPIUM LOOKS / @tinytapes OPIUM LOOKS / Flash Transition (4-6 Frames)",
+  "kind": "clip",
+  "fx": {
+    "params": {
+      "brightness": 0.0,
+      "contrast": 1.0
+    },
+    "lut": ""
+  },
+  "keys": {
+    "brightness": [
+      [
+        29400000,
+        0.0,
+        2
+      ],
+      [
+        88200000,
+        1.0,
+        2
+      ],
+      [
+        147000000,
+        0.0,
+        2
+      ]
+    ],
+    "contrast": [
+      [
+        29400000,
+        1.0,
+        2
+      ],
+      [
+        88200000,
+        1.809999942779541,
+        2
+      ],
+      [
+        147000000,
+        1.0,
+        2
+      ]
+    ]
+  },
+  "length": 176400000,
+  "atEnd": false
+}

@@ -1,0 +1,116 @@
+{
+  "format": "InSequenceFX-Preset",
+  "version": 1,
+  "name": "Trap Music Video FXs and HITS / Trap Music Video FXs and HITS / FXs / Rgb / B / Style 6 / Brighter / Out / Trap Music Video FX _ 3 _ OUT",
+  "kind": "clip",
+  "fx": {
+    "params": {
+      "contrast": 1.0,
+      "exposure": 0.0,
+      "highlights": 0.0,
+      "opacity": 1.0,
+      "saturation": 0.0,
+      "shadows": 0.0,
+      "temperature": 0.0,
+      "tint": 0.0
+    },
+    "lut": ""
+  },
+  "keys": {
+    "contrast": [
+      [
+        0,
+        1.0,
+        2
+      ],
+      [
+        47087040,
+        2.5,
+        2
+      ],
+      [
+        94174080,
+        1.0,
+        2
+      ],
+      [
+        141261120,
+        2.5,
+        2
+      ],
+      [
+        188348160,
+        1.0,
+        2
+      ],
+      [
+        235435200,
+        2.5,
+        2
+      ]
+    ],
+    "exposure": [
+      [
+        0,
+        0.0,
+        2
+      ],
+      [
+        47087040,
+        2.0,
+        2
+      ],
+      [
+        94174080,
+        0.0,
+        2
+      ],
+      [
+        141261120,
+        2.0,
+        2
+      ],
+      [
+        188348160,
+        0.0,
+        2
+      ],
+      [
+        235435200,
+        2.0,
+        2
+      ]
+    ],
+    "saturation": [
+      [
+        0,
+        1.0,
+        2
+      ],
+      [
+        94174080,
+        0.400000005960464,
+        2
+      ],
+      [
+        141261120,
+        0.0,
+        2
+      ]
+    ],
+    "temperature": [
+      [
+        0,
+        0.0,
+        2
+      ],
+      [
+        94174080,
+        1.0,
+        2
+      ]
+    ]
+  },
+  "length": 258978720,
+  "atEnd": true
+}

@@ -981,6 +981,19 @@ static void soakPlayback (const juce::String& files, int q, double secs)
 
 int main (int argc, char** argv)
 {
+    if (auto b = juce::SystemStats::getEnvironmentVariable ("ISFX_PRFPSET_IN", {}); b.isNotEmpty())
+    {   // dev tool: convert .prfpset packs into bundled stock presets (content/Presets/<pack>/)
+        const juce::File out (juce::SystemStats::getEnvironmentVariable ("ISFX_PRFPSET_OUT", {}));
+        for (auto& path : juce::StringArray::fromTokens (b, ";", {}))
+        {
+            juce::File f (path); juce::StringArray miss; juce::String err;
+            auto dir = out.getChildFile (f.getFileNameWithoutExtension().replace ("_", " ").trim());
+            dir.createDirectory();
+            const int n = importPrfpset (f, dir, miss, err);
+            std::printf ("%s: %d presets, %d unmapped %s\n", f.getFileName().toRawUTF8(), n, miss.size(), err.toRawUTF8());
+        }
+        return 0;
+    }
     if (auto b = juce::SystemStats::getEnvironmentVariable ("ISFX_SOAK", {}); b.isNotEmpty())
     {
         soakPlayback (b, juce::SystemStats::getEnvironmentVariable ("ISFX_SOAK_Q", "2").getIntValue(),

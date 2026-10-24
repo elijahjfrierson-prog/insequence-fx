@@ -1,0 +1,12 @@
+{
+  "format": "InSequenceFX-Preset",
+  "version": 1,
+  "name": "tinytapes OPIUM LOOKS / @tinytapes OPIUM LOOKS / Outline Effect 2",
+  "kind": "clip",
+  "fx": {
+    "params": {
+      "invert": 1.0
+    },
+    "lut": ""
+  }
+}

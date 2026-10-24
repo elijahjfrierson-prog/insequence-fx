@@ -1,0 +1,23 @@
+{
+  "format": "InSequenceFX-Preset",
+  "version": 1,
+  "name": "Dizzy Effects / Dizzy Effects / Chromatic Aberration / Wide Centre Subject / Style 2 / Dizzy Fx _ 3",
+  "kind": "clip",
+  "fx": {
+    "params": {
+      "contrast": 1.0,
+      "exposure": 0.0,
+      "highlights": 0.0,
+      "opacity": 1.0,
+      "posX": 0.0,
+      "posY": 0.0,
+      "rotation": 0.0,
+      "saturation": 0.0,
+      "scale": 3.150000095367432,
+      "shadows": 0.0,
+      "temperature": 0.0,
+      "tint": 0.0
+    },
+    "lut": ""
+  }
+}
