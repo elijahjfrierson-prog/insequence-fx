@@ -140,7 +140,7 @@ public:
         if (window && f.existsAsFile() && f.hasFileExtension ("isfx")) window->mc->openFile (f);
     }
 
-    void shutdown() override { window.reset(); settings.reset(); }
+    void shutdown() override { window.reset(); juce::LookAndFeel::setDefaultLookAndFeel (nullptr); settings.reset(); }
     void systemRequestedQuit() override { quit(); }
 private:
     std::unique_ptr<MainWindow> window;

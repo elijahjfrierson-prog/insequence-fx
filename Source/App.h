@@ -112,10 +112,13 @@ private:
 
 // ---- timeline
 enum class Tool { Select, Paint, Delete, Cut };
-class Timeline : public juce::Component, public juce::DragAndDropTarget, public juce::SettableTooltipClient
+class Timeline : public juce::Component, public juce::DragAndDropTarget, public juce::FileDragAndDropTarget, public juce::SettableTooltipClient
 {
 public:
     explicit Timeline (AppState& s);
+    std::function<void (const juce::Array<juce::File>&, int track, Ticks at)> onFilesDropped;   // from Finder/Explorer
+    bool isInterestedInFileDrag (const juce::StringArray&) override { return true; }
+    void filesDropped (const juce::StringArray&, int x, int y) override;
     std::function<void()> onEdited;          // after any edit
     std::function<void (Ticks)> onSeek;
     Tool tool = Tool::Select;

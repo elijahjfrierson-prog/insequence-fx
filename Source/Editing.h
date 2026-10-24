@@ -27,7 +27,10 @@ void keepRange (Sequence& s, Ticks a, Ticks b);   // removes everything outside 
 bool moveClips (Sequence& s, const juce::StringArray& ids, Ticks delta, int trackDelta);
 bool trimClip (Sequence& s, const Project& p, const juce::String& id, bool leftEdge, Ticks newEdge);
 juce::String paintClip (Sequence& s, const juce::String& templateId, Ticks at, int track);
-juce::String addMediaClip (Project& p, const juce::String& mediaId, int track, Ticks at);
+juce::String addMediaClip (Project& p, const juce::String& mediaId, int track, Ticks at, Ticks maxLen = 0);
+int insertVideoTrack (Sequence&);                                    // new top video layer, returns its index
+void settleClips (Sequence&, const juce::StringArray& ids);          // dropped clips cover what is under them
+void fillGaps (Sequence&, const Project&, int track);                // sync-safe magnet: extend neighbours, never slide
 void clearTrackRange (Sequence& s, int track, Ticks a, Ticks b);   // overwrite helper
 
 // sync-preserving angle switch: replaces V1 content in [a,b) with cuts between synced takes

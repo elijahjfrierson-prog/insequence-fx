@@ -370,7 +370,18 @@ void Timeline::mouseDrag (const juce::MouseEvent& e)
             Ticks delta = magnetSnap (dragOrig + (t - dragStart), dc != nullptr ? dc->length : 0) - dragOrig;
             if (dragOrig + delta < 0) delta = -dragOrig;
             int td = trackAt (pos.y) - dragTrack;
-            if (! moveClips (st.project.seq(), st.selected, delta, td)) moveClips (st.project.seq(), st.selected, delta, 0);
+            auto& sq = st.project.seq();
+            int target = trackAt (pos.y);
+            if (! moveClips (sq, st.selected, delta, td))
+            {
+                bool videoClip = dragTrack >= 0 && dragTrack < (int) sq.tracks.size() && sq.tracks[(size_t) dragTrack].kind == TrackKind::Video;
+                if (videoClip && target >= 0 && target < (int) sq.tracks.size() && sq.tracks[(size_t) target].kind == TrackKind::Audio)
+                {
+                    int nt = insertVideoTrack (sq);       // dragged past the video layers: new layer on top
+                    if (! moveClips (sq, st.selected, delta, nt - dragTrack)) moveClips (sq, st.selected, delta, 0);
+                }
+                else moveClips (sq, st.selected, delta, 0);
+            }
             if (onEdited) onEdited();
             break;
         }
@@ -389,14 +400,11 @@ void Timeline::mouseDrag (const juce::MouseEvent& e)
 void Timeline::mouseUp (const juce::MouseEvent&)
 {
     snapGuide = -1;
-    if (drag == Drag::Move && st.magnetic)
+    if (drag == Drag::Move)
     {
-        // CapCut-style magnetic main track: V1 clips butt together from 0 with no gaps
-        std::vector<Clip*> main;
-        for (auto& c : st.project.seq().clips) if (c.track == 0) main.push_back (&c);
-        std::sort (main.begin(), main.end(), [] (const Clip* a, const Clip* b) { return a->start < b->start; });
-        Ticks cur = 0;
-        for (auto* c : main) { c->start = cur; cur = c->end(); }
+        // dropped clips cover only the spot they land on; neighbours keep their song position (sync safe)
+        settleClips (st.project.seq(), st.selected);
+        if (st.magnetic) fillGaps (st.project.seq(), st.project, 0);
         if (onEdited) onEdited();
     }
     if (drag == Drag::Move || drag == Drag::TrimL || drag == Drag::TrimR)
@@ -442,9 +450,33 @@ void Timeline::itemDropped (const SourceDetails& d)
     if (! desc.startsWith ("media:")) return;
     int tr = trackAt (d.localPosition.y);
     st.edit ("Add clip");
-    auto id = addMediaClip (st.project, desc.fromFirstOccurrenceOf ("media:", false, false), tr, st.snapT (secToTicks (std::max (0.0, xToSec (d.localPosition.x)))));
+    dragClip = {};
+    Ticks at = magnetSnap (secToTicks (std::max (0.0, xToSec (d.localPosition.x))), 0);
+    snapGuide = -1;
+    // dropped in between existing clips: fill one bar (or up to the next edit) instead of wiping the rest of the track
+    Ticks maxLen = 0;
+    const auto& sq = st.project.seq();
+    for (auto& c : sq.clips)
+        if (c.track == tr && c.end() > at)
+        {
+            Ticks room = c.start > at ? c.start - at : 0;
+            Ticks bar = st.project.song.valid ? secToTicks (st.project.song.beatSec() * st.project.song.beatsPerBar) : secToTicks (2.0);
+            Ticks len = room > secToTicks (1.0 / st.project.fps) ? room : bar;
+            maxLen = maxLen == 0 ? len : std::min (maxLen, len);
+        }
+    auto id = addMediaClip (st.project, desc.fromFirstOccurrenceOf ("media:", false, false), tr, at, maxLen);
     if (id.isNotEmpty()) st.selected = { id };
     if (onEdited) onEdited();
+}
+
+void Timeline::filesDropped (const juce::StringArray& paths, int x, int y)
+{
+    juce::Array<juce::File> files;
+    for (auto& f : paths) files.add (juce::File (f));
+    dragClip = {};
+    Ticks at = magnetSnap (secToTicks (std::max (0.0, xToSec (x))), 0);
+    snapGuide = -1;
+    if (onFilesDropped) onFilesDropped (files, trackAt (y), at);
 }
 
 void Timeline::clipMenu (const juce::String& id)

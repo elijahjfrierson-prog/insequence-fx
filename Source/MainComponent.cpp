@@ -212,6 +212,24 @@ MainComponent::MainComponent()
     hscroll.addListener (this); hscroll.setAutoHide (false);
     timeline.onEdited = [this] { refresh (true); };
     timeline.onSeek = [this] (Ticks t) { seek (t); };
+    timeline.onFilesDropped = [this] (const juce::Array<juce::File>& files, int tr, Ticks at)
+    {
+        importFiles (files, [this, files, tr, at]
+        {
+            st.edit ("Add clip");
+            Ticks t = at; juce::StringArray added;
+            for (auto& f : files)
+                for (auto& m : st.project.media)
+                    if (m.path == f.getFullPathName() && m.id != st.project.songId)
+                    {
+                        auto id = addMediaClip (st.project, m.id, tr, t);
+                        if (auto* c = st.project.seq().findClip (id)) { t = c->end(); added.add (id); }
+                        break;
+                    }
+            if (! added.isEmpty()) st.selected = added;
+            refresh (true);
+        });
+    };
     inspector.onEdited = [this] { refresh (false); };
     media.onImport = [this]
     {
@@ -243,9 +261,10 @@ MainComponent::~MainComponent()
     stopTimer();
     devices.removeAudioCallback (&player);
     pluginWindows.clear();
-    juce::LookAndFeel::setDefaultLookAndFeel (nullptr);
     setLookAndFeel (nullptr);
 }
+
+ISFXLookAndFeel& sharedLookAndFeel() { static ISFXLookAndFeel l; return l; }
 
 void MainComponent::paint (juce::Graphics& g)
 {
@@ -433,14 +452,14 @@ void MainComponent::askText (const juce::String& title, const juce::String& def,
 }
 
 // ============================================================ media
-void MainComponent::importFiles (const juce::Array<juce::File>& files)
+void MainComponent::importFiles (const juce::Array<juce::File>& files, std::function<void()> then)
 {
     auto res = std::make_shared<ImportResult>();
     auto songId = st.project.songId; auto mono = songMono;
     bool makeSong = st.project.songId.isEmpty();
     runTask ("Importing media", [res, files, songId, mono, makeSong] (ProgressCb p, std::function<bool()> c)
              { *res = decodeFiles (files, songId, mono, makeSong, p, c); },
-             [this, res] { applyImport (*res); });
+             [this, res, then] { applyImport (*res); if (then) then(); });
 }
 
 void MainComponent::placeSongClip()

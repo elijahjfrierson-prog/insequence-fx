@@ -152,6 +152,49 @@ void keepRange (Sequence& s, Ticks a, Ticks b)
     }
 }
 
+int insertVideoTrack (Sequence& s)
+{
+    int at = 0, n = 0;
+    for (int i = 0; i < (int) s.tracks.size(); ++i) if (s.tracks[(size_t) i].kind == TrackKind::Video) { at = i + 1; ++n; }
+    Track t; t.name = "V" + juce::String (n + 1); t.kind = TrackKind::Video;
+    s.tracks.insert (s.tracks.begin() + at, t);
+    for (auto& c : s.clips) if (c.track >= at) ++c.track;
+    return at;
+}
+
+void settleClips (Sequence& s, const juce::StringArray& ids)
+{
+    std::vector<Clip> moved;
+    for (auto& c : s.clips) if (ids.contains (c.id)) moved.push_back (c);
+    s.clips.erase (std::remove_if (s.clips.begin(), s.clips.end(), [&] (const Clip& c) { return ids.contains (c.id); }), s.clips.end());
+    for (auto& m : moved) clearTrackRange (s, m.track, m.start, m.end());
+    for (auto& m : moved) s.clips.push_back (m);
+    s.sortClips();
+}
+
+void fillGaps (Sequence& s, const Project& p, int track)
+{
+    std::vector<Clip*> v;
+    for (auto& c : s.clips) if (c.track == track) v.push_back (&c);
+    std::sort (v.begin(), v.end(), [] (const Clip* a, const Clip* b) { return a->start < b->start; });
+    for (size_t i = 0; i + 1 < v.size(); ++i)
+    {
+        Clip& a = *v[i]; Clip& b = *v[i + 1];
+        Ticks gap = b.start - a.end();
+        if (gap <= 0) continue;
+        auto* ma = p.findMedia (a.mediaId);
+        Ticks roomA = (ma == nullptr || ma->kind == MediaKind::Image) ? gap
+                    : (Ticks) ((double) (ma->duration - a.srcAt (a.end())) / a.speed);
+        Ticks ext = std::min (gap, std::max<Ticks> (0, roomA));
+        if (! a.locked) { a.length += ext; gap -= ext; }
+        if (gap > 0 && ! b.locked)
+        {
+            Ticks e2 = std::min (gap, std::max<Ticks> (0, (Ticks) ((double) b.srcIn / b.speed)));
+            b.start -= e2; b.length += e2; b.srcIn -= (Ticks) ((double) e2 * b.speed);
+        }
+    }
+}
+
 bool moveClips (Sequence& s, const juce::StringArray& ids, Ticks delta, int trackDelta)
 {
     for (auto& c : s.clips)
@@ -203,7 +246,7 @@ juce::String paintClip (Sequence& s, const juce::String& tid, Ticks at, int trac
     return c.id;
 }
 
-juce::String addMediaClip (Project& p, const juce::String& mid, int track, Ticks at)
+juce::String addMediaClip (Project& p, const juce::String& mid, int track, Ticks at, Ticks maxLen)
 {
     auto* m = p.findMedia (mid);
     auto& s = p.seq();
@@ -217,7 +260,7 @@ juce::String addMediaClip (Project& p, const juce::String& mid, int track, Ticks
         if (track < 0) track = s.addTrack (audio ? TrackKind::Audio : TrackKind::Video, audio ? "A1" : "V1");
     }
     Clip c; c.id = newId(); c.mediaId = mid; c.track = track; c.start = std::max<Ticks> (0, at);
-    c.length = m->duration; c.volume = audio ? 1.0f : 0.0f;
+    c.length = maxLen > 0 ? std::min (m->duration, maxLen) : m->duration; c.volume = audio ? 1.0f : 0.0f;
     clearTrackRange (s, track, c.start, c.end());
     s.clips.push_back (c); s.sortClips();
     return c.id;

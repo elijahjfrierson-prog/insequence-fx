@@ -22,7 +22,9 @@ ImportResult decodeFiles (const juce::Array<juce::File>&, const juce::String& so
                           bool makeSong, ProgressCb, std::function<bool()> cancelled);
 SyncInfo syncTake (const juce::File& take, const std::vector<float>& songMono, juce::String& err);
 
-class MainComponent : public juce::Component, private juce::Timer, private juce::ScrollBar::Listener
+ISFXLookAndFeel& sharedLookAndFeel();
+
+class MainComponent : public juce::Component, public juce::FileDragAndDropTarget, private juce::Timer, private juce::ScrollBar::Listener
 {
 public:
     MainComponent();
@@ -42,7 +44,13 @@ private:
     void togglePlay();
     void setTool (Tool t);
     void runTask (const juce::String& title, std::function<void (ProgressCb, std::function<bool()>)> work, std::function<void()> done);
-    void importFiles (const juce::Array<juce::File>&);
+    void importFiles (const juce::Array<juce::File>&, std::function<void()> then = {});
+    bool isInterestedInFileDrag (const juce::StringArray&) override { return true; }
+    void filesDropped (const juce::StringArray& paths, int, int) override
+    {
+        juce::Array<juce::File> fs; for (auto& f : paths) fs.add (juce::File (f));
+        importFiles (fs);
+    }
     void applyImport (ImportResult&);
     void placeSongClip();
     void setSong (const juce::String& id);
@@ -64,7 +72,7 @@ private:
     void updateSeqBox();
     void showMsg (const juce::String& title, const juce::String& msg);
 
-    ISFXLookAndFeel lnf;
+    ISFXLookAndFeel& lnf = sharedLookAndFeel();   // outlives every window; App::shutdown clears the default
     AppState st;
     PluginRack rack;
     juce::AudioDeviceManager devices;

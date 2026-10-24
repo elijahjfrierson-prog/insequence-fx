@@ -128,6 +128,32 @@ static void testSync()
     CHECK (! r2.ok, "unrelated audio flagged uncertain (conf " << r2.confidence << ")");
 }
 
+static void testDropInBetween()
+{
+    Project p; p.fps = 30;
+    Sequence s = Project::makeDefaultSequence ("x");
+    auto mk = [] (const char* id, int track, double a, double b, double src) { Clip c; c.id = id; c.mediaId = "none"; c.track = track; c.start = secToTicks (a); c.length = secToTicks (b - a); c.srcIn = secToTicks (src); return c; };
+    s.clips = { mk ("a", 0, 0, 4, 0), mk ("b", 0, 4, 8, 4), mk ("c", 0, 3, 5, 0) };
+    Ticks bSongAt6 = s.findClip ("b")->srcAt (secToTicks (6));
+    settleClips (s, { "c" });
+    auto* a = s.findClip ("a"); auto* c = s.findClip ("c"); const Clip* b = nullptr;
+    for (auto& k : s.clips) if (k.track == 0 && k.start == secToTicks (5)) b = &k;   // trimmed remainder of "b"
+    CHECK (a && b && c && a->end() == secToTicks (3) && b->start == secToTicks (5) && c->start == secToTicks (3),
+           "drop in between covers only its spot");
+    CHECK (b && b->srcAt (secToTicks (6)) == bSongAt6, "neighbour stays in sync after a drop");
+    s.clips = { mk ("a", 0, 0, 3, 0), mk ("b", 0, 4, 8, 4) };
+    fillGaps (s, p, 0);
+    CHECK (s.findClip ("a")->end() == secToTicks (4) && s.findClip ("b")->start == secToTicks (4) && s.findClip ("b")->srcIn == secToTicks (4),
+           "magnet fills the gap without sliding synced clips");
+    int audioTrack = -1, videos = 0;
+    for (int i = 0; i < (int) s.tracks.size(); ++i) { if (s.tracks[(size_t) i].kind == TrackKind::Audio && audioTrack < 0) audioTrack = i; if (s.tracks[(size_t) i].kind == TrackKind::Video) ++videos; }
+    if (audioTrack >= 0) s.clips.push_back (mk ("song", audioTrack, 0, 8, 0));
+    int nt = insertVideoTrack (s);
+    int videos2 = 0; for (auto& t : s.tracks) if (t.kind == TrackKind::Video) ++videos2;
+    CHECK (videos2 == videos + 1 && s.tracks[(size_t) nt].kind == TrackKind::Video && (audioTrack < 0 || s.findClip ("song")->track == audioTrack + 1),
+           "dragging past the layers adds a video track and keeps audio clips on their track");
+}
+
 static Project syntheticProject()
 {
     Project p = Project::makeNew();
@@ -491,6 +517,7 @@ int main (int argc, char** argv)
     testAnalysis();
     testSync();
     testEditing();
+    testDropInBetween();
     testChopAndGenerate();
     testPersistence();
     testLut();
