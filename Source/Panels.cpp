@@ -320,8 +320,9 @@ void Preview::paint (juce::Graphics& g)
     g.drawText (info, getLocalBounds().removeFromBottom (20).reduced (10, 0), juce::Justification::centredLeft);
     {
         const int q = quality.load();
-        juce::String info = live ? juce::String (fps, 0) + " fps   " + juce::String (avgMs.load(), 0) + " ms   " + (q <= 1 ? juce::String ("Full") : "1/" + juce::String (q))
-                                 : juce::String (lastMs.load(), 0) + " ms";
+        // juce::String (double, 0) prints full precision, hence integer rounding
+        juce::String info = live ? juce::String (juce::roundToInt (fps)) + " fps   " + juce::String (juce::roundToInt (avgMs.load())) + " ms   " + (q <= 1 ? juce::String ("Full") : "1/" + juce::String (q))
+                                 : juce::String (juce::roundToInt (lastMs.load())) + " ms";
         g.drawText (info, getLocalBounds().removeFromBottom (20).reduced (10, 0), juce::Justification::centredRight);
     }
     if (st.project.seq().clips.empty())
