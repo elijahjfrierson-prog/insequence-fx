@@ -436,6 +436,21 @@ static double diff (const std::vector<juce::uint8>& a, const std::vector<juce::u
 }
 
 static constexpr int W = 192, H = 108;
+static void testTextClip()
+{
+    Project p = Project::makeNew();
+    auto& s = p.seq();
+    Clip c; c.id = "txt"; c.track = 0; c.start = 0; c.length = secToTicks (2); c.text = "HELLO"; c.name = "TEXT";
+    s.clips.push_back (c);
+    Renderer r; std::vector<juce::uint8> px;
+    r.render (p, s, secToTicks (1), 320, 180, px, 0);
+    int lit = 0;
+    for (size_t i = 0; i + 3 < px.size(); i += 4) if (px[i] > 180 && px[i + 1] > 180 && px[i + 2] > 180) ++lit;
+    CHECK (lit > 50, "text clip renders visible letters (" + juce::String (lit).toStdString() + " px)");
+    ClipGeom g;
+    CHECK (clipGeometry (p, c, 320, 180, g), "text clip has transform geometry (handles in the preview)");
+}
+
 static void testRender()
 {
     auto gradF = writePng ("isfx_grad.png", [] (int x, int y) { return juce::Colour ((juce::uint8) (x * 255 / 319), (juce::uint8) (y * 255 / 179), (juce::uint8) ((x + y) % 256)); });
@@ -1027,6 +1042,7 @@ int main (int argc, char** argv)
     testPersistence();
     testLut();
     testExport();
+    testTextClip();
     testRender();
     testAutoCutAndPresets();
     testLayoutsStacksAndLayers();

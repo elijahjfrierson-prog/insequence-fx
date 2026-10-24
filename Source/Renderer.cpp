@@ -364,11 +364,13 @@ void applyLayout (const Project& p, Clip& c, int slot)
 bool clipGeometry (const Project& p, const Clip& c, float W, float H, ClipGeom& g)
 {
     auto* m = p.findMedia (c.mediaId);
-    if (m == nullptr || m->kind == MediaKind::Audio || m->width <= 0 || m->height <= 0 || W <= 0 || H <= 0) return false;
+    const bool isText = c.text.isNotEmpty();   // text is rasterised at frame size: geometry as a full-frame layer
+    if (W <= 0 || H <= 0) return false;
+    if (! isText && (m == nullptr || m->kind == MediaKind::Audio || m->width <= 0 || m->height <= 0)) return false;
     const auto& CP = clipParams();
     auto cv = [&] (const char* id) { return fxValue (c.fx, CP, id); };
-    const bool sw = m->rotation == 90 || m->rotation == 270;
-    const float rw = (float) (sw ? m->height : m->width), rh = (float) (sw ? m->width : m->height);
+    const bool sw = ! isText && (m->rotation == 90 || m->rotation == 270);
+    const float rw = isText ? W : (float) (sw ? m->height : m->width), rh = isText ? H : (float) (sw ? m->width : m->height);
     const int reframe = (int) std::lround (cv ("reframe"));
     const float base = reframe == 0 ? std::max (W / rw, H / rh) : std::min (W / rw, H / rh);
     const float s = base * cv ("scale");

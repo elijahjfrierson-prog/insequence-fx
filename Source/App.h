@@ -173,6 +173,7 @@ public:
     void itemDropped (const SourceDetails&) override;
     void zoomBy (float f, int anchorX);
     void ensureVisible (Ticks t);
+    void revealClip (const juce::String& id);   // scroll so a new layer / text clip is on screen
     void clipMenu (const juce::String& id);
 public:
     void clipMenuSpeed (const juce::String& id);   // Ctrl+R Speed/Duration dialog

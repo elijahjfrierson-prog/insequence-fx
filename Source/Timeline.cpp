@@ -102,6 +102,9 @@ void Timeline::paint (juce::Graphics& g)
         auto base = audio ? juce::Colour (0xff1f6f5c) : juce::Colour (0xff3a3f7a);
         if (m && m->missing) base = bad.darker (0.6f);
         static const juce::uint32 labels[] { 0, 0xff8e6bd6, 0xff4f7fe0, 0xff2fb3a8, 0xffb38be0, 0xff3aa0d8, 0xff4c9a4c, 0xffd85c8a, 0xffe0963a };
+        const bool isText = c.text.isNotEmpty(), isLayer = ! isText && c.mediaId.isEmpty() && ! audio;
+        if (isText) base = juce::Colour (0xffc9962a);
+        else if (isLayer) base = juce::Colour (0xff7b4fd6);
         if (c.label > 0 && c.label < 9) base = juce::Colour (labels[c.label]).darker (0.35f);
         if (tr.hidden || tr.mute || ! c.enabled) base = base.withSaturation (0.1f).darker (0.4f);
         g.setColour (base); g.fillRoundedRectangle (r.toFloat(), 3);
@@ -143,8 +146,16 @@ void Timeline::paint (juce::Graphics& g)
             g.setColour (juce::Colours::white.withAlpha (0.13f)); g.fillRect (r.getX(), r.getY(), std::max (0, xe - r.getX()), r.getHeight());
             g.setColour (juce::Colours::white.withAlpha (0.7f)); g.fillRect (xe - 1, r.getY() + 2, 2, r.getHeight() - 4);
         }
+        if (isText || isLayer)
+        {   // solid block like a clip: bright outline + trim grips on both edges
+            g.setColour (base.brighter (0.6f)); g.drawRoundedRectangle (r.toFloat().reduced (0.5f), 3, 1.5f);
+            g.setColour (juce::Colours::white.withAlpha (0.55f));
+            g.fillRect (r.getX() + 2, r.getY() + 4, 3, r.getHeight() - 8);
+            g.fillRect (r.getRight() - 5, r.getY() + 4, 3, r.getHeight() - 8);
+        }
         g.setColour (text); g.setFont (11.0f);
-        juce::String label = c.name.isNotEmpty() ? c.name : (m ? m->name : juce::String ("(missing)"));
+        juce::String label = isText ? "T  " + c.text : isLayer ? "ADJ  " + (c.name.isNotEmpty() ? c.name : juce::String ("Adjustment Layer"))
+                           : c.name.isNotEmpty() ? c.name : (m ? m->name : juce::String ("(missing)"));
         if (! c.enabled) label = "[off] " + label;
         if (c.keep) label = "[keep] " + label;
         if (c.ramped()) label << "  ramp";
@@ -373,6 +384,21 @@ void Timeline::mouseMove (const juce::MouseEvent& e)
     else setTooltip ("E select/move/trim, P paint, D delete, C cut. Drag in the ruler to select a range. Ctrl+wheel zooms.");
 }
 
+void Timeline::revealClip (const juce::String& id)
+{
+    const auto& sq = st.project.seq();
+    auto* c = sq.findClip (id);
+    if (c == nullptr || c->track < 0 || c->track >= (int) sq.tracks.size()) return;
+    int top = 0, total = 0;
+    for (int k = 0; k < (int) sq.tracks.size(); ++k) { if (k == c->track) top = total; total += sq.tracks[(size_t) k].height; }
+    const int h = sq.tracks[(size_t) c->track].height, view = std::max (1, getHeight() - kRuler);
+    if (top < vScroll) vScroll = top;
+    else if (top + h > vScroll + view) vScroll = top + h - view + 10;
+    vScroll = juce::jlimit (0, std::max (0, total - view + 20), vScroll);
+    ensureVisible (c->start);
+    repaint();
+}
+
 void Timeline::addAdjustmentLayer (Ticks at)
 {
     const auto& song = st.project.song;
@@ -380,7 +406,7 @@ void Timeline::addAdjustmentLayer (Ticks at)
     st.edit ("New Adjustment Layer");
     FxStack fx;   // empty: a neutral layer must not override sequence settings until effects are added
     auto id = addEffectClip (st.project.seq(), fx, "Adjustment Layer", magnetSnap (at, 0), len);
-    if (id.isNotEmpty()) st.selected = { id };
+    if (id.isNotEmpty()) { st.selected = { id }; revealClip (id); }
     if (onEdited) onEdited();
     repaint();
 }
@@ -537,7 +563,7 @@ void Timeline::mouseDown (const juce::MouseEvent& e)
                 const Ticks len = song.valid ? secToTicks (song.beatSec() * song.beatsPerBar * 2) : secToTicks (4.0);
                 st.edit ("Add Text");
                 auto nid = addEffectClip (st.project.seq(), FxStack(), "TEXT", magnetSnap (t, 0), len);
-                if (auto* k = st.project.seq().findClip (nid)) { k->text = "TEXT"; st.selected = { nid }; }
+                if (auto* k = st.project.seq().findClip (nid)) { k->text = "TEXT"; st.selected = { nid }; revealClip (nid); }
                 if (onEdited) onEdited();
                 repaint();
                 return;
@@ -873,7 +899,7 @@ void Timeline::itemDropped (const SourceDetails& d)
                 Ticks len = under ? under->length : beat * st.project.song.beatsPerBar * 2;
                 st.edit ("Add effect");
                 auto id = addEffectClip (st.project.seq(), fx, l.name, at, len);
-                if (id.isNotEmpty()) st.selected = { id };
+                if (id.isNotEmpty()) { st.selected = { id }; revealClip (id); }
                 if (onEdited) onEdited();
                 break;
             }
@@ -894,7 +920,7 @@ void Timeline::itemDropped (const SourceDetails& d)
             Ticks at = under ? under->start : magnetSnap (secToTicks (std::max (0.0, xToSec (d.localPosition.x))), 0);
             Ticks len = under ? under->length : (up.length > 0 ? up.length : beat * st.project.song.beatsPerBar * 2);
             auto id = addEffectClip (st.project.seq(), up.fx, up.name.fromLastOccurrenceOf (" / ", false, false), at, len);
-            if (auto* c = st.project.seq().findClip (id)) { auto fx = c->fx; applyUserPreset (*c, up); c->fx = fx; for (auto& [k, v] : up.fx.p) c->fx.set (k, v); st.selected = { id }; }
+            if (auto* c = st.project.seq().findClip (id)) { auto fx = c->fx; applyUserPreset (*c, up); c->fx = fx; for (auto& [k, v] : up.fx.p) c->fx.set (k, v); st.selected = { id }; revealClip (id); }
         }
         if (onEdited) onEdited();
         return;
@@ -908,7 +934,7 @@ void Timeline::itemDropped (const SourceDetails& d)
         Ticks len = under ? under->length : beat * st.project.song.beatsPerBar * 2;
         st.edit ("Add LUT");
         auto id = addEffectClip (st.project.seq(), fx, "LUT " + f.getFileNameWithoutExtension(), at, len);
-        if (id.isNotEmpty()) st.selected = { id };
+        if (id.isNotEmpty()) { st.selected = { id }; revealClip (id); }
         if (onEdited) onEdited();
         return;
     }
@@ -937,7 +963,7 @@ void Timeline::itemDropped (const SourceDetails& d)
             maxLen = maxLen == 0 ? len : std::min (maxLen, len);
         }
     auto id = addMediaClip (st.project, desc.fromFirstOccurrenceOf ("media:", false, false), tr, at, maxLen);
-    if (id.isNotEmpty()) st.selected = { id };
+    if (id.isNotEmpty()) { st.selected = { id }; revealClip (id); }
     if (onEdited) onEdited();
 }
 
