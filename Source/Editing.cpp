@@ -918,6 +918,7 @@ bool setClipSpeed (Sequence& s, const Project& p, const juce::String& id, double
     for (auto& o : s.clips)
         if (o.track == c->track && &o != c && o.start >= c->end()) len = std::min (len, o.start - c->start);
     c->speed = speed; c->length = std::max<Ticks> (1, len);
+    if (speed < 1.0 && c->frameInterp == 1) c->frameInterp = 2;   // slow-mo defaults to optical flow (export + paused preview)
     return true;
 }
 }
