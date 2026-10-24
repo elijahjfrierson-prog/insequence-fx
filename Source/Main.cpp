@@ -1,5 +1,17 @@
 #include "MainComponent.h"
 #include "BinaryData.h"
+#include <iostream>
+
+namespace
+{
+    juce::File crashLog;
+    void writeCrashLog (void*)
+    {
+        auto trace = juce::SystemStats::getStackBacktrace();
+        std::cout << "CRASH\n" << trace << std::endl;
+        if (crashLog != juce::File()) crashLog.replaceWithText ("CRASH\n" + trace);
+    }
+}
 
 namespace isfx
 {
@@ -80,6 +92,10 @@ public:
             int i = args.indexOf ("--selftest");
             juce::File out = i + 1 < args.size() ? juce::File::getCurrentWorkingDirectory().getChildFile (args[i + 1].unquoted())
                                                  : juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("isfx-selftest");
+            out.createDirectory();
+            crashLog = out.getChildFile ("crash.txt");
+            crashLog.deleteFile();
+            juce::SystemStats::setApplicationCrashHandler (writeCrashLog);
             juce::MessageManager::callAsync ([this, out]
             {
                 int rc = window->mc->runSelfTest (out);

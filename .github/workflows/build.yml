@@ -141,7 +141,12 @@ jobs:
           foreach ($p in @("$app\InSequence FX.exe", "$app\LICENSE.txt")) {
             if (-not (Test-Path -LiteralPath $p)) { throw "missing $p" }
           }
-          $p = Start-Process -Wait -PassThru -FilePath "$app\InSequence FX.exe" -ArgumentList '--selftest'
+          $st = Join-Path $env:RUNNER_TEMP 'isfx-selftest'
+          $p = Start-Process -Wait -PassThru -FilePath "$app\InSequence FX.exe" -ArgumentList '--selftest', "`"$st`""
+          foreach ($f in @('selftest.log', 'crash.txt')) {
+            $fp = Join-Path $st $f
+            if (Test-Path $fp) { Write-Host "---- $f"; Get-Content $fp }
+          }
           if ($p.ExitCode -ne 0) { throw "selftest failed: $($p.ExitCode)" }
 
       - name: Stage artifacts (Linux)

@@ -924,7 +924,14 @@ int MainComponent::runSelfTest (const juce::File& outDir)
     selfTest = true;
     outDir.createDirectory();
     int fails = 0;
-    auto check = [&] (bool ok, const juce::String& what) { std::cout << (ok ? "PASS " : "FAIL ") << what << std::endl; fails += ok ? 0 : 1; };
+    auto logF = outDir.getChildFile ("selftest.log"); logF.replaceWithText ({});
+    auto check = [&] (bool ok, const juce::String& what)
+    {
+        juce::String line = (ok ? "PASS " : "FAIL ") + what;
+        std::cout << line << std::endl;
+        logF.appendText (line + "\n");
+        fails += ok ? 0 : 1;
+    };
     // 1. synthetic 20 s song at 120 BPM with kick / snare / hats and a varying melody (so sync has a unique answer)
     const int sr = kMixRate; const double dur = 20;
     std::vector<float> song ((size_t) (dur * sr));
