@@ -511,7 +511,23 @@ void Timeline::mouseDown (const juce::MouseEvent& e)
             if (onEdited) onEdited();
             break;
         case Tool::Paint:
-            if (! c && tr >= 0 && ! trackLocked)
+            if (st.selected.size() > 1 && ! c && tr >= 0 && ! trackLocked)
+            {   // stamp the whole selected pattern, its track layout kept relative to the clicked track
+                auto pat = copyClips (s, st.selected);
+                Ticks first = pat.front().start, last = 0; int top = pat.front().track;
+                for (auto& k : pat) { first = std::min (first, k.start); last = std::max (last, k.end()); top = std::min (top, k.track); }
+                const Ticks at = st.snapT (t);
+                if (e.mouseWasDraggedSinceMouseDown() && paintNext >= 0 && at < paintNext) break;
+                for (auto& k : pat) k.track += tr - top;
+                pat.erase (std::remove_if (pat.begin(), pat.end(), [&] (const Clip& k) { return k.track < 0 || k.track >= (int) s.tracks.size()
+                                               || s.tracks[(size_t) k.track].kind != s.tracks[(size_t) (k.track - (tr - top))].kind; }), pat.end());
+                if (pat.empty()) break;
+                st.edit ("Paint pattern");
+                pasteClips (s, pat, at);
+                paintNext = at + (last - first);
+                if (onEdited) onEdited();
+            }
+            else if (! c && tr >= 0 && ! trackLocked)
             {
                 juce::String tid = st.selected.isEmpty() ? juce::String() : st.selected[0];
                 if (tid.isNotEmpty())
@@ -522,7 +538,7 @@ void Timeline::mouseDown (const juce::MouseEvent& e)
                     if (onEdited) onEdited();
                 }
             }
-            else if (c) { st.selected = { c->id }; if (onEdited) onEdited(); }
+            else if (c && ! e.mouseWasDraggedSinceMouseDown()) { st.selected = { c->id }; if (onEdited) onEdited(); }
             break;
         case Tool::Delete:
             if (c && ! c->locked && ! trackLocked)

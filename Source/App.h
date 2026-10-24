@@ -193,7 +193,8 @@ private:
     AppState& st;
     enum class Drag { None, Move, TrimL, TrimR, Range, Scrub, Song, TransLen, Box } drag = Drag::None;
     juce::String dragClip;
-    juce::Rectangle<int> box; juce::StringArray boxBase;   // drag-box multi-select
+    juce::Rectangle<int> box; juce::StringArray boxBase;
+    Ticks paintNext = -1;   // paint-drag with a multi-clip selection: next free stamp time   // drag-box multi-select
     Ticks dragStart = 0, dragOrig = 0; int dragTrack = 0;
     Ticks snapGuide = -1;
     bool dragOut = false;   // a Move dragged off the tracks: release pulls the clips out
