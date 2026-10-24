@@ -1056,8 +1056,10 @@ public:
             int r = tplList.getSelectedRow();
             if (r < 0 || r >= tpls.files.size()) return;
             auto f = tpls.files[r];
-            juce::AlertWindow::showOkCancelBox (juce::MessageBoxIconType::WarningIcon, "Delete template", "Delete \"" + templateName (f) + "\"?", "Delete", "Cancel", this,
-                juce::ModalCallbackFunction::create ([sp = juce::Component::SafePointer<SavePage> (this), f] (int ok) { if (ok == 1) f.moveToTrash(); if (sp) sp->reload(); }));
+            juce::Component::SafePointer<SavePage> sp (this);
+            juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::WarningIcon).withTitle ("Delete template")
+                                              .withMessage ("Delete \"" + templateName (f) + "\"?").withButton ("Delete").withButton ("Cancel").withAssociatedComponent (this),
+                                          [sp, f] (int ok) { if (ok == 1) f.moveToTrash(); if (sp != nullptr) sp->reload(); });
         };
         folderB.onClick = [] { auto d = userDataDir().getChildFile ("Templates"); d.createDirectory(); d.revealToUser(); };
         reload();
