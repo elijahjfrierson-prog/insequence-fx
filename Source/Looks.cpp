@@ -214,7 +214,8 @@ void applyStyleMode (FxStack& s, const juce::String& mode)
     for (auto& l : lookLibrary()) if (l.name == it->second) applyLook (s, l, 1.0f);
 }
 
-juce::StringArray transitionNames() { return { "Cut", "Dissolve", "Dip Black", "Dip White", "Flash", "Zoom", "Whip", "Glitch" }; }
+juce::StringArray transitionNames() { return { "Cut", "Dissolve", "Dip Black", "Dip White", "White Flash", "Zoom Punch", "Whip Pan", "Glitch",
+                                               "Spin", "RGB Split", "Blur", "Luma Wipe", "Ink Burn", "Shake", "Stretch", "Mirror", "Prism", "Light Leak" }; }
 
 bool Lut3D::load (const juce::File& f, juce::String& error)
 {

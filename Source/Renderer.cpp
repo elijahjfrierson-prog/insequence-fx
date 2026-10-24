@@ -417,7 +417,10 @@ bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int 
     float shakeAmt = sv ("shake") * be.kick;
     float camX = (hash3 (be.kickIdx, 1, 3) - 0.5f) * 0.035f * W * shakeAmt;
     float camY = (hash3 (be.kickIdx, 2, 5) - 0.5f) * 0.035f * H * shakeAmt;
-    float transGlitch = 0;
+    float transGlitch = 0, transSplit = 0, transBlur = 0;
+    // per-layer transition state, set just before drawLayer and reset after
+    float trRot = 0, trStretch = 1, trShX = 0, trShY = 0, trMirror = 0, trAmt = 1, trPrism = 0, trLeak = 0;
+    int trWipe = 0, trDir = 0;
 
     // ---- composite video tracks (V1 bottom -> top)
     std::vector<const Clip*> active;
@@ -442,10 +445,11 @@ bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int 
         float sFill = std::max (W / rw, H / rh), sFit = std::min (W / rw, H / rh);
         float base = reframe == 0 ? sFill : sFit;
         float scale = base * cv ("scale") * camZoom * extraScale;
-        float rotRad = -cv ("rotation") * juce::MathConstants<float>::pi / 180.0f;
+        float rotRad = -cv ("rotation") * juce::MathConstants<float>::pi / 180.0f + trRot;
         float cr = std::cos (rotRad), sr = std::sin (rotRad);
         bool mirror = cv ("mirror") > 0.5f;
-        float offX = cv ("posX") * W * 0.5f + camX + whip * W, offY = cv ("posY") * H * 0.5f + camY;
+        float offX = cv ("posX") * W * 0.5f + camX + (trDir < 2 ? whip * W : 0.0f) + trShX * W;
+        float offY = cv ("posY") * H * 0.5f + camY + (trDir >= 2 ? whip * H : 0.0f) + trShY * H;
         float cExp = std::pow (2.0f, cv ("exposure")), cCon = cv ("contrast"), cSat = cv ("saturation");
         const float cBri = cv ("brightness"), cHi = cv ("highlights"), cSh = cv ("shadows"), cTemp = cv ("temperature"), cTint = cv ("tint");
         const ToneCurve cCurve = makeCurve (c.fx, CP);
@@ -485,8 +489,9 @@ bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int 
                 {
                     float px = x + 0.5f - W * 0.5f - offX - (taps > 1 ? tapLen * ((float) k / (taps - 1) - 0.5f) : 0.0f);
                     float py = y + 0.5f - H * 0.5f - offY;
-                    float ux = (px * cr - py * sr) / scale, uy = (px * sr + py * cr) / scale;
+                    float ux = (px * cr - py * sr) / scale / trStretch, uy = (px * sr + py * cr) / scale;
                     if (mirror) ux = -ux;
+                    if (trMirror > 0) { float f = trDir < 2 ? std::abs (ux) : ux; ux = mixf (ux, f, trMirror); if (trDir >= 2) uy = mixf (uy, std::abs (uy), trMirror); }
                     float o[4];
                     if (sampleFrame (*fr, rot, ux + rw * 0.5f, uy + rh * 0.5f, o)) { for (int q = 0; q < 4; ++q) acc[q] += o[q]; ++got; }
                 }
@@ -529,9 +534,45 @@ bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int 
                     float m = 1 - smooth (1 - mF, 1.0001f, d);
                     a *= mInv ? 1 - m : m;
                 }
+                if (trWipe == 1)
+                {
+                    float lv = luma (col); if (trDir % 2 == 1) lv = 1 - lv;
+                    float th = 1.15f - prog * 1.3f;
+                    a *= smooth (th - 0.12f, th + 0.12f, lv);
+                }
+                else if (trWipe == 2)
+                {
+                    // fractal value noise eats the incoming shot in, with a hot burning edge
+                    float n = 0, amp = 0.5f, sum = 0;
+                    for (int o = 0; o < 3; ++o)
+                    {
+                        float cell = minWH / (4.0f * (float) (1 << o));
+                        float gx = x / cell, gy = y / cell; int ix = (int) gx, iy = (int) gy; float fx = gx - ix, fy = gy - iy;
+                        fx = fx * fx * (3 - 2 * fx); fy = fy * fy * (3 - 2 * fy);
+                        float v = mixf (mixf (hash3 (ix, iy, 77 + o), hash3 (ix + 1, iy, 77 + o), fx), mixf (hash3 (ix, iy + 1, 77 + o), hash3 (ix + 1, iy + 1, 77 + o), fx), fy);
+                        n += v * amp; sum += amp; amp *= 0.5f;
+                    }
+                    n /= sum;
+                    float th = prog * 1.25f - 0.1f;
+                    a *= 1 - smooth (th - 0.025f, th + 0.025f, n);
+                    float e = clamp01 (1 - std::abs (n - th - 0.04f) / 0.05f) * std::min (1.0f, trAmt) * (prog < 1 ? 1.0f : 0.0f);
+                    col[0] = clamp01 (col[0] + e * 1.0f); col[1] = clamp01 (col[1] + e * 0.45f); col[2] = clamp01 (col[2] + e * 0.08f);
+                    if (e > 0) a = std::max (a, e);
+                }
+                if (trPrism > 0)
+                {
+                    float k = trPrism, g0 = col[0], g1 = col[1], g2 = col[2];
+                    col[0] = mixf (g0, g1, k); col[1] = mixf (g1, g2, k); col[2] = mixf (g2, g0, k);
+                }
+                if (trLeak > 0)
+                {
+                    float gx = trDir % 2 == 1 ? 1 - (x + 0.5f) / W : (x + 0.5f) / W;
+                    float w = trLeak * smooth (0.15f, 1.0f, gx + 0.25f * std::sin ((y + 0.5f) / H * 3.1f));
+                    col[0] = clamp01 (col[0] + w * 1.1f); col[1] = clamp01 (col[1] + w * 0.55f); col[2] = clamp01 (col[2] + w * 0.22f);
+                }
                 if (transKind == (int) TransitionType::DipBlack) for (int q = 0; q < 3; ++q) col[q] *= prog;
                 if (transKind == (int) TransitionType::DipWhite) for (int q = 0; q < 3; ++q) col[q] = mixf (1, col[q], prog);
-                if (transKind == (int) TransitionType::Flash) for (int q = 0; q < 3; ++q) col[q] = mixf (col[q], 1, (1 - prog) * (1 - prog));
+                if (transKind == (int) TransitionType::Flash) for (int q = 0; q < 3; ++q) col[q] = mixf (col[q], 1, std::min (1.0f, (1 - prog) * (1 - prog) * trAmt));
                 float* d = &img[((size_t) y * W + x) * 3];
                 float r[3]; blendPixel (blend, d, col, r);
                 a = clamp01 (a);
@@ -545,20 +586,55 @@ bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int 
         float prog = 1;
         if (c->transIn != TransitionType::Cut && c->transLen > 0 && t < c->start + c->transLen)
             prog = (float) juce::jlimit (0.0, 1.0, (double) (t - c->start) / (double) c->transLen);
-        int tk = (int) c->transIn;
-        if (prog < 1 && c->transIn == TransitionType::Dissolve)
+        const auto tt = c->transIn;
+        const bool inTrans = prog < 1;
+        trAmt = c->fx.get ("trAmt", 1.0f); trDir = juce::jlimit (0, 3, (int) std::lround (c->fx.get ("trDir", 0.0f)));
+        const float sgn = (trDir == 1 || trDir == 3) ? -1.0f : 1.0f;
+        const float inv = 1 - prog, inv2 = inv * inv;
+        const bool overPrev = inTrans && (tt == TransitionType::Dissolve || tt == TransitionType::LumaWipe || tt == TransitionType::InkBurn
+                                          || tt == TransitionType::Blur || tt == TransitionType::Prism);
+        if (overPrev)
         {
             const Clip* prev = nullptr;
             Ticks tol = secToTicks (1.5 / p.fps);
             for (auto& o : s.clips) if (o.track == c->track && &o != c && std::abs (o.end() - c->start) <= tol) prev = &o;
             if (prev != nullptr) drawLayer (*prev, 1.0f, 1.0f, 0, 0, 1);
-            drawLayer (*c, prog, 1.0f, 0, 0, 1);
-            continue;
         }
-        if (prog < 1 && c->transIn == TransitionType::Glitch) transGlitch = std::max (transGlitch, 1 - prog);
-        float zoom = (prog < 1 && c->transIn == TransitionType::Zoom) ? 1 + 0.3f * (1 - prog) * (1 - prog) : 1.0f;
-        float whip = (prog < 1 && c->transIn == TransitionType::Whip) ? -0.6f * (1 - prog) * (1 - prog) : 0.0f;
-        drawLayer (*c, 1.0f, zoom, whip, prog < 1 ? tk : 0, prog);
+        float alpha = 1.0f, zoom = 1.0f, whip = 0.0f;
+        if (inTrans)
+        {
+            switch (tt)
+            {
+                case TransitionType::Dissolve: alpha = prog; break;
+                case TransitionType::Blur:     alpha = smooth (0.0f, 0.6f, prog); transBlur = std::max (transBlur, inv2 * trAmt); break;
+                case TransitionType::Prism:    alpha = smooth (0.0f, 0.5f, prog); trPrism = inv * std::min (1.0f, trAmt); transSplit = std::max (transSplit, inv2 * trAmt); zoom = 1 + 0.12f * inv2 * trAmt; break;
+                case TransitionType::LumaWipe: trWipe = 1; break;
+                case TransitionType::InkBurn:  trWipe = 2; break;
+                case TransitionType::Glitch:   transGlitch = std::max (transGlitch, inv * trAmt); break;
+                case TransitionType::RgbSplit: transSplit = std::max (transSplit, inv2 * trAmt * 1.5f); zoom = 1 + 0.05f * inv2 * trAmt; break;
+                case TransitionType::Zoom:     zoom = 1 + 0.3f * inv2 * trAmt * (trDir == 1 ? -0.6f : 1.0f); break;
+                case TransitionType::Whip:     whip = -0.6f * inv2 * trAmt * sgn; break;
+                case TransitionType::Spin:     trRot = sgn * juce::MathConstants<float>::pi * inv2 * trAmt; zoom = 1 + 0.4f * inv2 * trAmt; break;
+                case TransitionType::Shake:
+                {
+                    int fi = (int) std::floor (ticksToSec (t) * 30.0);
+                    trShX = (hash3 (fi, 7, 1) - 0.5f) * 0.12f * inv * trAmt; trShY = (hash3 (fi, 9, 2) - 0.5f) * 0.12f * inv * trAmt;
+                    zoom = 1 + 0.08f * inv * trAmt; break;
+                }
+                case TransitionType::Stretch:  trStretch = 1 + 1.5f * inv2 * trAmt; break;
+                case TransitionType::Mirror:   trMirror = std::min (1.0f, inv * 1.4f * trAmt); break;
+                case TransitionType::LightLeak: trLeak = std::sin (juce::MathConstants<float>::pi * std::sqrt (prog)) * 0.9f * trAmt; break;
+                default: break;
+            }
+        }
+        int tk = inTrans ? (int) tt : 0;
+        drawLayer (*c, alpha, zoom, whip, tk, prog);
+        trRot = 0; trStretch = 1; trShX = trShY = 0; trMirror = 0; trPrism = 0; trLeak = 0; trWipe = 0;
+    }
+    if (transBlur > 0.001f)
+    {
+        int r = std::max (1, (int) std::lround (transBlur * minWH * 0.025f));
+        boxBlur (img, W, H, r, r, 3);
     }
 
     // ---- warps: kaleidoscope + liquid
@@ -596,7 +672,7 @@ bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int 
 
     // ---- glitch blocks, RGB split, VHS (horizontal resampling pass)
     float glitch = std::max (transGlitch, sv ("glitch") * (0.35f + be.snare) + sv ("beatGlitch") * be.snare);
-    float split = (sv ("rgbSplit") * 0.006f + sv ("beatGlitch") * be.snare * 0.012f + glitch * 0.01f) * W;
+    float split = (sv ("rgbSplit") * 0.006f + sv ("beatGlitch") * be.snare * 0.012f + glitch * 0.01f + transSplit * 0.02f) * W;
     float vhs = sv ("vhs");
     if (glitch > 0.01f || split > 0.25f || vhs > 0)
     {

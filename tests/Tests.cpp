@@ -406,6 +406,22 @@ static void testRender()
         auto rp = renderAt (redCut, t0);
         CHECK (at (rp, W / 2, H / 2, 0) < at (base, W / 2, H / 2, 0) - 40 && std::abs (at (rp, W / 2, H / 2, 1) - at (base, W / 2, H / 2, 1)) < 3,
                "red curve changes only red");
+    {
+        juce::StringArray dead;
+        for (int k = 1; k < transitionNames().size(); ++k)
+        {
+            Sequence tq = s; Clip* tc = nullptr;
+            for (auto& c : tq.clips) if (tq.tracks[(size_t) c.track].kind == TrackKind::Video && (tc == nullptr || c.start > tc->start)) tc = &c;
+            if (tc == nullptr) break;
+            tc->fx.set ("scale", 0.6f);
+            Sequence cutq = tq;
+            tc->transIn = (TransitionType) k; tc->transLen = secToTicks (1.0);
+            Ticks tm = tc->start + secToTicks (0.3);
+            double d = diff (renderAt (tq, tm), renderAt (cutq, tm));
+            if (d < 0.5) dead.add (transitionNames()[k] + " (" + juce::String (d, 2) + ")");
+        }
+        CHECK (dead.isEmpty(), "every transition visibly changes the frame " << dead.joinIntoString (", "));
+    }
     }
 
     {   // echo trails need motion: a cut from the green frame to the gradient must leave an echo

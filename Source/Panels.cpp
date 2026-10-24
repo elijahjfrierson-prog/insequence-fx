@@ -428,6 +428,11 @@ void Inspector::rebuild()
                       if (c.transLen == 0 && i > 0) c.transLen = secToTicks (st.project.song.valid ? st.project.song.beatSec() / 2 : 0.25); edited(); });
         mk ("Transition beats", "Transition length in beats.", 0, 4, st.project.song.valid ? ticksToSec (clip->transLen) / st.project.song.beatSec() : ticksToSec (clip->transLen) * 2,
             [this] (Clip& c, double v) { c.transLen = secToTicks (v * (st.project.song.valid ? st.project.song.beatSec() : 0.5)); });
+        mk ("Transition amount", "How hard the transition hits: distance, spin, blur, split, burn glow.", 0, 2, clip->fx.get ("trAmt", 1.0f),
+            [] (Clip& c, double v) { c.fx.set ("trAmt", (float) v); });
+        addCombo ("Transition direction", { "Left / In", "Right / Out", "Up", "Down" }, juce::jlimit (0, 3, (int) clip->fx.get ("trDir", 0.0f)),
+                  "Direction for whip, spin, wipe, mirror and light leak (Zoom: In or Out; Luma Wipe: bright-first or dark-first).",
+                  [this, clipRef, edited] (int i) { st.edit ("Transition direction"); clipRef().fx.set ("trDir", (float) i); edited(); });
         juce::StringArray cps { "(choose a preset)" }; std::vector<UserPreset> cpv;
         for (auto& u : loadUserPresets()) if (u.clip) { cpv.push_back (u); cps.add (u.name); }
         addCombo ("Clip preset", cps, 0, "Your saved clip effects (Presets > Save clip effects).",
