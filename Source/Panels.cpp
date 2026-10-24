@@ -148,7 +148,7 @@ void MediaPanel::paintListBoxItem (int row, juce::Graphics& g, int w, int h, boo
         juce::String sy; juce::Colour c = theme::dim;
         switch (m.sync.status)
         {
-            case SyncInfo::Synced:    sy = "synced " + juce::String (ticksToSec (m.sync.offset), 3) + " s  " + juce::String (m.sync.confidence * 100, 0) + "%"; c = theme::good; break;
+            case SyncInfo::Synced:    sy = "synced " + juce::String (ticksToSec (m.sync.offset), 3) + " s  " + juce::String (juce::roundToInt (m.sync.confidence * 100)) + "%"; c = theme::good; break;
             case SyncInfo::Manual:    sy = "placed manually"; c = theme::good; break;
             case SyncInfo::Uncertain: sy = "uncertain - check placement"; c = theme::warn; break;
             case SyncInfo::Failed:    sy = "not synced: " + m.sync.note; c = theme::bad; break;

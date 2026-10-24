@@ -938,6 +938,16 @@ int MainComponent::runSelfTest (const juce::File& outDir)
         float note = 220.0f * std::pow (2.0f, (float) rng.nextInt (12) / 12.0f);
         for (size_t i = 0; i < (size_t) (0.5 * sr) && at + i < song.size(); ++i) song[at + i] += 0.12f * std::sin (2 * juce::MathConstants<float>::pi * note * (float) i / sr);
     }
+    // a non-repeating lead line every 1/8 (random pitch, length and level) so the song has one unique alignment
+    for (int n = 0; n < (int) (dur * 4); ++n)
+    {
+        if (rng.nextFloat() < 0.3f) continue;
+        size_t at = (size_t) ((n * 0.25 + rng.nextFloat() * 0.05) * sr);
+        float note = 330.0f * std::pow (2.0f, (float) rng.nextInt (24) / 12.0f), amp = 0.1f + 0.25f * rng.nextFloat();
+        size_t len = (size_t) ((0.05 + 0.2 * rng.nextFloat()) * sr);
+        for (size_t i = 0; i < len && at + i < song.size(); ++i)
+            song[at + i] += amp * std::sin (2 * juce::MathConstants<float>::pi * note * (float) i / sr) * (1.0f - (float) i / (float) len);
+    }
     for (int h = 0; h < (int) (dur * 4); ++h)
     {
         size_t at = (size_t) (h * 0.25 * sr);
