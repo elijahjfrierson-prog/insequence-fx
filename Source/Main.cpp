@@ -66,6 +66,10 @@ public:
         centreWithSize (std::min (1600, juce::Desktop::getInstance().getDisplays().getPrimaryDisplay()->userArea.getWidth() - 40),
                         std::min (960, juce::Desktop::getInstance().getDisplays().getPrimaryDisplay()->userArea.getHeight() - 40));
         setVisible (true);
+       #if JUCE_WINDOWS
+        // JUCE 8's Direct2D peer crashes while tearing the window down on some GPUs/VMs; the software renderer is stable
+        if (auto* peer = getPeer()) peer->setCurrentRenderingEngine (0);
+       #endif
     }
     void closeButtonPressed() override { mc->tryQuit ([] { juce::JUCEApplication::getInstance()->systemRequestedQuit(); }); }
     MainComponent* mc = nullptr;
@@ -100,7 +104,7 @@ public:
             {
                 int rc = window->mc->runSelfTest (out);
                 setApplicationReturnValue (rc);
-                quit();
+                closeWindowThenQuit();
             });
             return;
         }
@@ -140,8 +144,25 @@ public:
         if (window && f.existsAsFile() && f.hasFileExtension ("isfx")) window->mc->openFile (f);
     }
 
-    void shutdown() override { window.reset(); settings.reset(); }
-    void systemRequestedQuit() override { quit(); }
+    void shutdown() override { window.reset(); juce::LookAndFeel::setDefaultLookAndFeel (nullptr); settings.reset(); }
+    void systemRequestedQuit() override { closeWindowThenQuit(); }
+
+    // tear the window down while the message loop is still running (Windows crashes destroying the peer during shutdown)
+    void closeWindowThenQuit()
+    {
+        if (window != nullptr) window->setVisible (false);
+        juce::MessageManager::callAsync ([this]
+        {
+           #if JUCE_WINDOWS
+            // JUCE 8's HWNDComponentPeer destructor faults on some Windows systems/VMs. Delete the editor (stops
+            // threads, audio, saves state) but leave the empty native window for the OS to reclaim at exit.
+            if (window != nullptr) { window->clearContentComponent(); window.release(); }
+           #else
+            window.reset();
+           #endif
+            juce::MessageManager::callAsync ([] { quit(); });
+        });
+    }
 private:
     std::unique_ptr<MainWindow> window;
     std::unique_ptr<juce::PropertiesFile> settings;

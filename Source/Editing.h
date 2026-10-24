@@ -27,8 +27,23 @@ void keepRange (Sequence& s, Ticks a, Ticks b);   // removes everything outside 
 bool moveClips (Sequence& s, const juce::StringArray& ids, Ticks delta, int trackDelta);
 bool trimClip (Sequence& s, const Project& p, const juce::String& id, bool leftEdge, Ticks newEdge);
 juce::String paintClip (Sequence& s, const juce::String& templateId, Ticks at, int track);
-juce::String addMediaClip (Project& p, const juce::String& mediaId, int track, Ticks at);
-void clearTrackRange (Sequence& s, int track, Ticks a, Ticks b);   // overwrite helper
+juce::String addMediaClip (Project& p, const juce::String& mediaId, int track, Ticks at, Ticks maxLen = 0);
+int insertVideoTrack (Sequence&);
+// effect layer: a clip with no media whose FX apply to everything under it while it plays (trim/move like any clip)
+juce::String addEffectClip (Sequence&, const FxStack& fx, const juce::String& name, Ticks at, Ticks len);
+// drops a transition on the cut nearest `at` on a track (it belongs to the incoming clip, so it stays locked to that cut)
+bool setTransitionAtCut (Sequence&, int track, Ticks at, TransitionType, Ticks len, Ticks maxDist);
+// moves the song; with `withSynced` every synced clip, the beat grid and drum events move with it (sync stays intact)
+bool shiftSong (Project&, Ticks delta, bool withSynced);                                    // new top video layer, returns its index
+void settleClips (Sequence&, const juce::StringArray& ids);          // dropped clips cover what is under them
+void fillGaps (Sequence&, const Project&, int track);                // sync-safe magnet: extend neighbours, never slide
+void clearTrackRange (Sequence& s, int track, Ticks a, Ticks b);
+std::vector<Clip> copyClips (const Sequence&, const juce::StringArray& ids);
+juce::StringArray pasteClips (Sequence&, const std::vector<Clip>&, Ticks at);       // overwrite paste, earliest clip lands at `at`
+juce::StringArray duplicateClips (Sequence&, const juce::StringArray& ids);         // copies placed right after the selection
+void pasteAttributes (Sequence&, const Clip& from, const juce::StringArray& ids);   // effects, opacity, volume, transition
+juce::String freezeFrame (Sequence&, const juce::String& id, Ticks at, Ticks len);  // frame hold segment, returns its id
+bool setClipSpeed (Sequence&, const Project&, const juce::String& id, double speed); // Speed/Duration: keeps the start, stops at the next clip   // overwrite helper
 
 // sync-preserving angle switch: replaces V1 content in [a,b) with cuts between synced takes
 int chopRange (Project& p, Ticks a, Ticks b, ChopMode m, juce::uint32 seed);

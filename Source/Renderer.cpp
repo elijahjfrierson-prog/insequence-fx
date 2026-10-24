@@ -1,4 +1,9 @@
 #include "Renderer.h"
+#include <cstdio>
+#include <array>
+#include <functional>
+#include <condition_variable>
+#include <mutex>
 #include <thread>
 #include <algorithm>
 
@@ -40,16 +45,83 @@ juce::StringArray blendModeNames()
 // ---------------------------------------------------------------- helpers
 namespace
 {
+class RowPool
+{
+public:
+    static RowPool& get() { static RowPool p; return p; }
+    void run (int H, const std::function<void (int)>& fn)
+    {
+        std::unique_lock<std::mutex> callLock (callMx);
+        {
+            std::lock_guard<std::mutex> g (mx);
+            job = &fn; rows = H; next = 0; done = 0; ++gen;
+        }
+        cv.notify_all();
+        work (gen);
+        std::unique_lock<std::mutex> g (mx);
+        doneCv.wait (g, [this] { return done >= rows; });
+        job = nullptr;
+    }
+    ~RowPool()
+    {
+        { std::lock_guard<std::mutex> g (mx); quit = true; ++gen; }
+        cv.notify_all();
+        for (auto& t : threads) t.join();
+    }
+private:
+    RowPool()
+    {
+        int n = (int) juce::jlimit (1u, 16u, std::thread::hardware_concurrency()) - 1;
+        for (int i = 0; i < n; ++i)
+            threads.emplace_back ([this]
+            {
+                juce::uint64 seen = 0;
+                for (;;)
+                {
+                    juce::uint64 g;
+                    {
+                        std::unique_lock<std::mutex> l (mx);
+                        cv.wait (l, [&] { return quit || gen != seen; });
+                        if (quit) return;
+                        seen = g = gen;
+                    }
+                    work (g);
+                }
+            });
+    }
+    void work (juce::uint64 g)
+    {
+        constexpr int band = 8;
+        for (;;)
+        {
+            const std::function<void (int)>* f; int y0, y1;
+            {
+                std::lock_guard<std::mutex> l (mx);
+                if (gen != g || job == nullptr || next >= rows) return;
+                f = job; y0 = next; y1 = std::min (rows, next + band); next = y1;
+            }
+            for (int y = y0; y < y1; ++y) (*f) (y);
+            {
+                std::lock_guard<std::mutex> l (mx);
+                done += y1 - y0;
+                if (done >= rows) doneCv.notify_all();
+            }
+        }
+    }
+    std::mutex callMx, mx;
+    std::condition_variable cv, doneCv;
+    std::vector<std::thread> threads;
+    const std::function<void (int)>* job = nullptr;
+    int rows = 0, next = 0, done = 0;
+    juce::uint64 gen = 0;
+    bool quit = false;
+};
+
 template <typename F> void parallelRows (int H, F&& fn)
 {
-    int n = (int) juce::jlimit (1u, 16u, std::thread::hardware_concurrency());
-    if (H < 32) n = 1;
-    if (n == 1) { for (int y = 0; y < H; ++y) fn (y); return; }
-    std::vector<std::thread> th;
-    int chunk = (H + n - 1) / n;
-    for (int i = 0; i < n; ++i)
-        th.emplace_back ([&, i] { for (int y = i * chunk; y < std::min (H, (i + 1) * chunk); ++y) fn (y); });
-    for (auto& t : th) t.join();
+    if (H < 32) { for (int y = 0; y < H; ++y) fn (y); return; }
+    std::function<void (int)> f = [&fn] (int y) { fn (y); };
+    RowPool::get().run (H, f);
 }
 
 inline float hash3 (int x, int y, int z)
@@ -201,18 +273,142 @@ void thermalColor (float l, float* o)
 }
 }
 
+namespace
+{
+struct ToneCurve
+{
+    bool active = false;
+    std::array<float, 4 * 257> t {};  // master, R, G, B
+};
+
+ToneCurve makeCurve (const FxStack& fx, const std::vector<ParamDef>& defs)
+{
+    ToneCurve tc;
+    const char chans[4] = { 'M', 'R', 'G', 'B' };
+    for (int c = 0; c < 4; ++c)
+    {
+        float y[5];
+        for (int i = 0; i < 5; ++i)
+        {
+            char id[8]; std::snprintf (id, sizeof (id), "crv%c%d", chans[c], i);
+            y[i] = fxValue (fx, defs, id);
+            if (std::abs (y[i] - i / 4.0f) > 1e-4f) tc.active = true;
+        }
+        for (int k = 0; k <= 256; ++k)
+        {
+            float x = k / 256.0f * 4.0f; int i = std::min (3, (int) x); float u = x - i;
+            float p1 = y[i], p2 = y[i + 1];
+            float p0 = i > 0 ? y[i - 1] : 2 * p1 - p2, p3 = i < 3 ? y[i + 2] : 2 * p2 - p1;
+            float v = 0.5f * (2 * p1 + (-p0 + p2) * u + (2 * p0 - 5 * p1 + 4 * p2 - p3) * u * u + (-p0 + 3 * p1 - 3 * p2 + p3) * u * u * u);
+            tc.t[(size_t) c * 257 + (size_t) k] = std::clamp (v, 0.0f, 1.0f);
+        }
+    }
+    return tc;
+}
+
+inline float curveAt (const float* t, float v)
+{
+    v = std::clamp (v, 0.0f, 1.0f) * 256.0f;
+    int i = std::min (255, (int) v); float u = v - i;
+    return t[i] + (t[i + 1] - t[i]) * u;
+}
+
+inline void applyCurve (const ToneCurve& tc, float* c)
+{
+    for (int q = 0; q < 3; ++q) c[q] = curveAt (tc.t.data(), curveAt (tc.t.data() + (q + 1) * 257, c[q]));
+}
+
+inline void adjustTones (float* c, float bright, float hi, float sh)
+{
+    if (bright != 0)
+    {
+        float g = std::exp (-bright * 0.9f);
+        for (int q = 0; q < 3; ++q) c[q] = std::pow (std::clamp (c[q], 0.0f, 1.0f), g);
+    }
+    if (hi != 0 || sh != 0)
+    {
+        float l = std::clamp (0.2126f * c[0] + 0.7152f * c[1] + 0.0722f * c[2], 0.0f, 1.0f);
+        float ws = 1 - std::clamp (l / 0.55f, 0.0f, 1.0f), wh = std::clamp ((l - 0.45f) / 0.55f, 0.0f, 1.0f);
+        float d = sh * 0.35f * ws * ws * (3 - 2 * ws) + hi * 0.35f * wh * wh * (3 - 2 * wh);
+        for (int q = 0; q < 3; ++q) c[q] += d;
+    }
+}
+}
+
 // ---------------------------------------------------------------- sources
+void applyLayout (const Project& p, Clip& c, int slot)
+{
+    static const float r[][4] { { 0, 0, 1, 1 }, { 0, 0, 1, .5f }, { 0, .5f, 1, .5f }, { 0, 0, .5f, 1 }, { .5f, 0, .5f, 1 },
+                                { 0, 0, 1, 1 / 3.f }, { 0, 1 / 3.f, 1, 1 / 3.f }, { 0, 2 / 3.f, 1, 1 / 3.f },
+                                { 0, 0, .5f, .5f }, { .5f, 0, .5f, .5f }, { 0, .5f, .5f, .5f }, { .5f, .5f, .5f, .5f } };
+    slot = juce::jlimit (0, 11, slot);
+    for (auto* id : { "scale", "scaleX", "scaleY", "posX", "posY", "rotation", "cropL", "cropR", "cropT", "cropB", "maskShape", "maskW", "maskH", "maskFeather", "maskInvert" })
+        c.fx.p.erase (id);
+    if (slot == 0) { c.fx.set ("reframe", 0); return; }
+    float x = r[slot][0], y = r[slot][1], w = r[slot][2], h = r[slot][3];
+    int W = 1920, H = 1080; outputSize (p, 1080, W, H);
+    float mw = 16, mh = 9;
+    if (auto* m = p.findMedia (c.mediaId); m != nullptr && m->width > 0 && m->height > 0)
+    {
+        bool sw = m->rotation == 90 || m->rotation == 270;
+        mw = (float) (sw ? m->height : m->width); mh = (float) (sw ? m->width : m->height);
+    }
+    // fill mode scales the source to cover the frame; shrink it so it just covers its slot, then mask to the slot
+    float base = std::max ((float) W / mw, (float) H / mh), need = std::max (w * W / mw, h * H / mh);
+    c.fx.set ("reframe", 0);
+    c.fx.set ("scale", juce::jlimit (0.1f, 4.0f, need / base));
+    c.fx.set ("posX", (x + w * 0.5f - 0.5f) * 2); c.fx.set ("posY", (y + h * 0.5f - 0.5f) * 2);
+    c.fx.set ("maskShape", 2); c.fx.set ("maskW", w); c.fx.set ("maskH", h); c.fx.set ("maskFeather", 0.0f);
+}
+
+bool clipGeometry (const Project& p, const Clip& c, float W, float H, ClipGeom& g)
+{
+    auto* m = p.findMedia (c.mediaId);
+    if (m == nullptr || m->kind == MediaKind::Audio || m->width <= 0 || m->height <= 0 || W <= 0 || H <= 0) return false;
+    const auto& CP = clipParams();
+    auto cv = [&] (const char* id) { return fxValue (c.fx, CP, id); };
+    const bool sw = m->rotation == 90 || m->rotation == 270;
+    const float rw = (float) (sw ? m->height : m->width), rh = (float) (sw ? m->width : m->height);
+    const int reframe = (int) std::lround (cv ("reframe"));
+    const float base = reframe == 0 ? std::max (W / rw, H / rh) : std::min (W / rw, H / rh);
+    const float s = base * cv ("scale");
+    const float rot = -cv ("rotation") * juce::MathConstants<float>::pi / 180.0f;
+    g.cr = std::cos (rot); g.sr = std::sin (rot);
+    g.cx = W * 0.5f + cv ("posX") * W * 0.5f; g.cy = H * 0.5f + cv ("posY") * H * 0.5f;
+    g.hx = rw * 0.5f * s * cv ("scaleX"); g.hy = rh * 0.5f * s * cv ("scaleY");
+    float cL = cv ("cropL"), cR = cv ("cropR");
+    if (cv ("mirror") > 0.5f) std::swap (cL, cR);
+    g.x0 = -g.hx + 2 * g.hx * cL; g.x1 = g.hx - 2 * g.hx * cR;
+    g.y0 = -g.hy + 2 * g.hy * cv ("cropT"); g.y1 = g.hy - 2 * g.hy * cv ("cropB");
+    return true;
+}
+
+juce::StringArray layoutNames()
+{
+    return { "Full frame", "Top half", "Bottom half", "Left half", "Right half", "Top third", "Middle third", "Bottom third",
+             "Grid top-left", "Grid top-right", "Grid bottom-left", "Grid bottom-right" };
+}
+
 void Renderer::clearSources() { sources.clear(); luts.clear(); trailT = -1; }
 
-const Frame* Renderer::frameFor (const Project& p, const juce::String& mediaId, Ticks srcT, int decodeH, int& rotation)
+const Frame* Renderer::frameFor (const Project& p, const juce::String& mediaId, Ticks srcT, int decodeH, int& rotation, bool* opaque)
 {
     auto* m = p.findMedia (mediaId);
     if (m == nullptr || m->missing || m->kind == MediaKind::Audio) return nullptr;
-    auto key = mediaId + "@" + juce::String (decodeH);
+    const bool useProxy = m->kind == MediaKind::Video && decodeH > 0 && decodeH <= kProxyHeight
+                          && m->proxyPath.isNotEmpty() && juce::File (m->proxyPath).existsAsFile();
+    auto key = mediaId + "@" + juce::String (decodeH) + (useProxy ? "p" : "");
+    if (sources.size() >= kMaxOpenSources && sources.find (key) == sources.end())
+    {
+        auto oldest = sources.begin();
+        for (auto it = sources.begin(); it != sources.end(); ++it) if (it->second->used < oldest->second->used) oldest = it;
+        sources.erase (oldest);
+    }
     auto& src = sources[key];
     if (src == nullptr)
     {
         src = std::make_unique<Source>();
+        src->used = ++useClock;
         juce::File f (m->path);
         if (m->kind == MediaKind::Image)
         {
@@ -239,16 +435,27 @@ const Frame* Renderer::frameFor (const Project& p, const juce::String& mediaId, 
         {
             src->dec = std::make_unique<VideoDecoder>();
             juce::String err;
-            if (! src->dec->open (f, decodeH, err)) src->failed = true;
+            if (useProxy && src->dec->open (juce::File (m->proxyPath), decodeH, err)) src->rotation = m->rotation;
+            else if (! src->dec->open (f, decodeH, err)) src->failed = true;
             else src->rotation = src->dec->rotation();
         }
     }
     if (src->failed) return nullptr;
+    src->used = ++useClock;
     rotation = src->rotation;
-    if (m->kind == MediaKind::Image) return &src->still;
-    Frame fr;
-    if (src->dec->frameAt (juce::jmax ((Ticks) 0, srcT), fr) && fr.valid()) src->last = std::move (fr);
-    return src->last.valid() ? &src->last : nullptr;
+    if (m->kind == MediaKind::Image)
+    {
+        if (src->opaque < 0)
+        {
+            src->opaque = 1;
+            for (size_t i = 3; i < src->still.rgba.size(); i += 4) if (src->still.rgba[i] < 255) { src->opaque = 0; break; }
+        }
+        if (opaque) *opaque = src->opaque == 1;
+        return &src->still;
+    }
+    if (opaque) *opaque = true;
+    if (auto* fr = src->dec->frameRef (juce::jmax ((Ticks) 0, srcT))) return fr;
+    return nullptr;
 }
 
 std::shared_ptr<Lut3D> Renderer::lutFor (const juce::String& path)
@@ -272,7 +479,21 @@ bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int 
     const double T = ticksToSec (t);
     const int frameIdx = (int) ticksToFrame (t, p.fps);
     const auto& SP = sequenceParams();
-    auto sv = [&] (const char* id) { return fxValue (s.fx, SP, id); };
+    // effect clips (no media) on visible layers blend their look into the sequence FX while the playhead is over them
+    FxStack postFx = s.fx;
+    for (auto& c : s.clips)
+        if (c.mediaId.isEmpty() && c.enabled && t >= c.start && t < c.end() && c.track >= 0 && c.track < (int) s.tracks.size()
+            && ! s.tracks[(size_t) c.track].hidden)
+        {
+            for (auto& [k, v] : c.fx.p)
+            {
+                auto* d = findParam (SP, k);
+                float base = postFx.get (k, d ? d->def : 0.0f);
+                postFx.set (k, base + (v - base) * c.opacity);
+            }
+            if (c.fx.lutPath.isNotEmpty()) postFx.lutPath = c.fx.lutPath;
+        }
+    auto sv = [&] (const char* id) { return fxValue (postFx, SP, id); };
     const BeatEnv be = beatEnvAt (p.song, t);
     const float minWH = (float) std::min (W, H);
 
@@ -281,7 +502,10 @@ bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int 
     float shakeAmt = sv ("shake") * be.kick;
     float camX = (hash3 (be.kickIdx, 1, 3) - 0.5f) * 0.035f * W * shakeAmt;
     float camY = (hash3 (be.kickIdx, 2, 5) - 0.5f) * 0.035f * H * shakeAmt;
-    float transGlitch = 0;
+    float transGlitch = 0, transSplit = 0, transBlur = 0;
+    // per-layer transition state, set just before drawLayer and reset after
+    float trRot = 0, trStretch = 1, trShX = 0, trShY = 0, trMirror = 0, trAmt = 1, trPrism = 0, trLeak = 0;
+    int trWipe = 0, trDir = 0;
 
     // ---- composite video tracks (V1 bottom -> top)
     std::vector<const Clip*> active;
@@ -289,10 +513,28 @@ bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int 
     {
         if (c.track < 0 || c.track >= (int) s.tracks.size()) continue;
         auto& tr = s.tracks[(size_t) c.track];
-        if (tr.kind != TrackKind::Video || tr.hidden) continue;
+        if (tr.kind != TrackKind::Video || tr.hidden || ! c.enabled) continue;
         if (t >= c.start && t < c.end()) active.push_back (&c);
     }
     std::stable_sort (active.begin(), active.end(), [] (const Clip* a, const Clip* b) { return a->track < b->track; });
+    {
+        // a full-frame opaque layer hides everything under it: skip decoding/drawing those (keeps deep stacks cheap)
+        const auto& CPo = clipParams();
+        auto covers = [&] (const Clip& c)
+        {
+            auto* m = p.findMedia (c.mediaId);
+            if (m == nullptr || m->missing || m->kind == MediaKind::Audio || c.opacity < 1.0f) return false;
+            if (c.transIn != TransitionType::Cut && c.transLen > 0 && t < c.start + c.transLen) return false;
+            auto v = [&] (const char* id) { return fxValue (c.fx, CPo, id); };
+            int rf = (int) std::lround (v ("reframe"));
+            return (rf == 0 || rf == 2) && v ("blend") < 0.5f && v ("chromaKey") <= 0 && v ("lumaKey") <= 0 && v ("maskShape") < 0.5f
+                && v ("scale") >= 1 && v ("scaleX") >= 1 && v ("scaleY") >= 1 && v ("posX") == 0 && v ("posY") == 0 && v ("rotation") == 0
+                && v ("cropL") <= 0 && v ("cropR") <= 0 && v ("cropT") <= 0 && v ("cropB") <= 0
+                && [&] { int rr = 0; bool op = false; return frameFor (p, c.mediaId, c.srcAt (t), decodeH, rr, &op) != nullptr && op; }();
+        };
+        for (int i = (int) active.size() - 1; i > 0; --i)
+            if (covers (*active[(size_t) i])) { active.erase (active.begin(), active.begin() + i); break; }
+    }
 
     auto drawLayer = [&] (const Clip& c, float alphaMul, float extraScale, float whip, int transKind, float prog)
     {
@@ -306,11 +548,17 @@ bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int 
         float sFill = std::max (W / rw, H / rh), sFit = std::min (W / rw, H / rh);
         float base = reframe == 0 ? sFill : sFit;
         float scale = base * cv ("scale") * camZoom * extraScale;
-        float rotRad = -cv ("rotation") * juce::MathConstants<float>::pi / 180.0f;
+        const float sclX = scale * cv ("scaleX"), sclY = scale * cv ("scaleY");
+        const float cL = cv ("cropL"), cR = cv ("cropR"), cT = cv ("cropT"), cB = cv ("cropB");
+        const bool cropped = cL > 0 || cR > 0 || cT > 0 || cB > 0;
+        float rotRad = -cv ("rotation") * juce::MathConstants<float>::pi / 180.0f + trRot;
         float cr = std::cos (rotRad), sr = std::sin (rotRad);
         bool mirror = cv ("mirror") > 0.5f;
-        float offX = cv ("posX") * W * 0.5f + camX + whip * W, offY = cv ("posY") * H * 0.5f + camY;
+        float offX = cv ("posX") * W * 0.5f + camX + (trDir < 2 ? whip * W : 0.0f) + trShX * W;
+        float offY = cv ("posY") * H * 0.5f + camY + (trDir >= 2 ? whip * H : 0.0f) + trShY * H;
         float cExp = std::pow (2.0f, cv ("exposure")), cCon = cv ("contrast"), cSat = cv ("saturation");
+        const float cBri = cv ("brightness"), cHi = cv ("highlights"), cSh = cv ("shadows"), cTemp = cv ("temperature"), cTint = cv ("tint");
+        const ToneCurve cCurve = makeCurve (c.fx, CP);
         int blend = juce::jlimit (0, 11, (int) std::lround (cv ("blend")));
         float chroma = cv ("chromaKey"), keyHue = cv ("keyHue"), keyTol = cv ("keyTol");
         float lumaK = cv ("lumaKey"), lumaT = cv ("lumaThresh");
@@ -347,8 +595,14 @@ bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int 
                 {
                     float px = x + 0.5f - W * 0.5f - offX - (taps > 1 ? tapLen * ((float) k / (taps - 1) - 0.5f) : 0.0f);
                     float py = y + 0.5f - H * 0.5f - offY;
-                    float ux = (px * cr - py * sr) / scale, uy = (px * sr + py * cr) / scale;
+                    float ux = (px * cr - py * sr) / sclX / trStretch, uy = (px * sr + py * cr) / sclY;
                     if (mirror) ux = -ux;
+                    if (trMirror > 0) { float f = trDir < 2 ? std::abs (ux) : ux; ux = mixf (ux, f, trMirror); if (trDir >= 2) uy = mixf (uy, std::abs (uy), trMirror); }
+                    if (cropped)
+                    {
+                        float cx = ux + rw * 0.5f, cy = uy + rh * 0.5f;
+                        if (cx < cL * rw || cx > (1 - cR) * rw || cy < cT * rh || cy > (1 - cB) * rh) continue;
+                    }
                     float o[4];
                     if (sampleFrame (*fr, rot, ux + rw * 0.5f, uy + rh * 0.5f, o)) { for (int q = 0; q < 4; ++q) acc[q] += o[q]; ++got; }
                 }
@@ -365,6 +619,13 @@ bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int 
                 for (int q = 0; q < 3; ++q) col[q] = (col[q] * cExp - 0.45f) * cCon + 0.45f;
                 float l = luma (col);
                 for (int q = 0; q < 3; ++q) col[q] = clamp01 (l + (col[q] - l) * cSat);
+                if (cTemp != 0 || cTint != 0)
+                {
+                    col[0] += cTemp * 0.08f + cTint * 0.03f; col[2] += -cTemp * 0.08f + cTint * 0.03f; col[1] -= cTint * 0.06f;
+                }
+                adjustTones (col, cBri, cHi, cSh);
+                if (cCurve.active) applyCurve (cCurve, col);
+                for (int q = 0; q < 3; ++q) col[q] = clamp01 (col[q]);
                 if (chroma > 0)
                 {
                     float h, sat, v; rgbToHsv (col, h, sat, v);
@@ -384,9 +645,45 @@ bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int 
                     float m = 1 - smooth (1 - mF, 1.0001f, d);
                     a *= mInv ? 1 - m : m;
                 }
+                if (trWipe == 1)
+                {
+                    float lv = luma (col); if (trDir % 2 == 1) lv = 1 - lv;
+                    float th = 1.15f - prog * 1.3f;
+                    a *= smooth (th - 0.12f, th + 0.12f, lv);
+                }
+                else if (trWipe == 2)
+                {
+                    // fractal value noise eats the incoming shot in, with a hot burning edge
+                    float n = 0, amp = 0.5f, sum = 0;
+                    for (int o = 0; o < 3; ++o)
+                    {
+                        float cell = minWH / (4.0f * (float) (1 << o));
+                        float gx = x / cell, gy = y / cell; int ix = (int) gx, iy = (int) gy; float fx = gx - ix, fy = gy - iy;
+                        fx = fx * fx * (3 - 2 * fx); fy = fy * fy * (3 - 2 * fy);
+                        float v = mixf (mixf (hash3 (ix, iy, 77 + o), hash3 (ix + 1, iy, 77 + o), fx), mixf (hash3 (ix, iy + 1, 77 + o), hash3 (ix + 1, iy + 1, 77 + o), fx), fy);
+                        n += v * amp; sum += amp; amp *= 0.5f;
+                    }
+                    n /= sum;
+                    float th = prog * 1.25f - 0.1f;
+                    a *= 1 - smooth (th - 0.025f, th + 0.025f, n);
+                    float e = clamp01 (1 - std::abs (n - th - 0.04f) / 0.05f) * std::min (1.0f, trAmt) * (prog < 1 ? 1.0f : 0.0f);
+                    col[0] = clamp01 (col[0] + e * 1.0f); col[1] = clamp01 (col[1] + e * 0.45f); col[2] = clamp01 (col[2] + e * 0.08f);
+                    if (e > 0) a = std::max (a, e);
+                }
+                if (trPrism > 0)
+                {
+                    float k = trPrism, g0 = col[0], g1 = col[1], g2 = col[2];
+                    col[0] = mixf (g0, g1, k); col[1] = mixf (g1, g2, k); col[2] = mixf (g2, g0, k);
+                }
+                if (trLeak > 0)
+                {
+                    float gx = trDir % 2 == 1 ? 1 - (x + 0.5f) / W : (x + 0.5f) / W;
+                    float w = trLeak * smooth (0.15f, 1.0f, gx + 0.25f * std::sin ((y + 0.5f) / H * 3.1f));
+                    col[0] = clamp01 (col[0] + w * 1.1f); col[1] = clamp01 (col[1] + w * 0.55f); col[2] = clamp01 (col[2] + w * 0.22f);
+                }
                 if (transKind == (int) TransitionType::DipBlack) for (int q = 0; q < 3; ++q) col[q] *= prog;
                 if (transKind == (int) TransitionType::DipWhite) for (int q = 0; q < 3; ++q) col[q] = mixf (1, col[q], prog);
-                if (transKind == (int) TransitionType::Flash) for (int q = 0; q < 3; ++q) col[q] = mixf (col[q], 1, (1 - prog) * (1 - prog));
+                if (transKind == (int) TransitionType::Flash) for (int q = 0; q < 3; ++q) col[q] = mixf (col[q], 1, std::min (1.0f, (1 - prog) * (1 - prog) * trAmt));
                 float* d = &img[((size_t) y * W + x) * 3];
                 float r[3]; blendPixel (blend, d, col, r);
                 a = clamp01 (a);
@@ -400,20 +697,55 @@ bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int 
         float prog = 1;
         if (c->transIn != TransitionType::Cut && c->transLen > 0 && t < c->start + c->transLen)
             prog = (float) juce::jlimit (0.0, 1.0, (double) (t - c->start) / (double) c->transLen);
-        int tk = (int) c->transIn;
-        if (prog < 1 && c->transIn == TransitionType::Dissolve)
+        const auto tt = c->transIn;
+        const bool inTrans = prog < 1;
+        trAmt = c->fx.get ("trAmt", 1.0f); trDir = juce::jlimit (0, 3, (int) std::lround (c->fx.get ("trDir", 0.0f)));
+        const float sgn = (trDir == 1 || trDir == 3) ? -1.0f : 1.0f;
+        const float inv = 1 - prog, inv2 = inv * inv;
+        const bool overPrev = inTrans && (tt == TransitionType::Dissolve || tt == TransitionType::LumaWipe || tt == TransitionType::InkBurn
+                                          || tt == TransitionType::Blur || tt == TransitionType::Prism);
+        if (overPrev)
         {
             const Clip* prev = nullptr;
             Ticks tol = secToTicks (1.5 / p.fps);
             for (auto& o : s.clips) if (o.track == c->track && &o != c && std::abs (o.end() - c->start) <= tol) prev = &o;
             if (prev != nullptr) drawLayer (*prev, 1.0f, 1.0f, 0, 0, 1);
-            drawLayer (*c, prog, 1.0f, 0, 0, 1);
-            continue;
         }
-        if (prog < 1 && c->transIn == TransitionType::Glitch) transGlitch = std::max (transGlitch, 1 - prog);
-        float zoom = (prog < 1 && c->transIn == TransitionType::Zoom) ? 1 + 0.3f * (1 - prog) * (1 - prog) : 1.0f;
-        float whip = (prog < 1 && c->transIn == TransitionType::Whip) ? -0.6f * (1 - prog) * (1 - prog) : 0.0f;
-        drawLayer (*c, 1.0f, zoom, whip, prog < 1 ? tk : 0, prog);
+        float alpha = 1.0f, zoom = 1.0f, whip = 0.0f;
+        if (inTrans)
+        {
+            switch (tt)
+            {
+                case TransitionType::Dissolve: alpha = prog; break;
+                case TransitionType::Blur:     alpha = smooth (0.0f, 0.6f, prog); transBlur = std::max (transBlur, inv2 * trAmt); break;
+                case TransitionType::Prism:    alpha = smooth (0.0f, 0.5f, prog); trPrism = inv * std::min (1.0f, trAmt); transSplit = std::max (transSplit, inv2 * trAmt); zoom = 1 + 0.12f * inv2 * trAmt; break;
+                case TransitionType::LumaWipe: trWipe = 1; break;
+                case TransitionType::InkBurn:  trWipe = 2; break;
+                case TransitionType::Glitch:   transGlitch = std::max (transGlitch, inv * trAmt); break;
+                case TransitionType::RgbSplit: transSplit = std::max (transSplit, inv2 * trAmt * 1.5f); zoom = 1 + 0.05f * inv2 * trAmt; break;
+                case TransitionType::Zoom:     zoom = 1 + 0.3f * inv2 * trAmt * (trDir == 1 ? -0.6f : 1.0f); break;
+                case TransitionType::Whip:     whip = -0.6f * inv2 * trAmt * sgn; break;
+                case TransitionType::Spin:     trRot = sgn * juce::MathConstants<float>::pi * inv2 * trAmt; zoom = 1 + 0.4f * inv2 * trAmt; break;
+                case TransitionType::Shake:
+                {
+                    int fi = (int) std::floor (ticksToSec (t) * 30.0);
+                    trShX = (hash3 (fi, 7, 1) - 0.5f) * 0.12f * inv * trAmt; trShY = (hash3 (fi, 9, 2) - 0.5f) * 0.12f * inv * trAmt;
+                    zoom = 1 + 0.08f * inv * trAmt; break;
+                }
+                case TransitionType::Stretch:  trStretch = 1 + 1.5f * inv2 * trAmt; break;
+                case TransitionType::Mirror:   trMirror = std::min (1.0f, inv * 1.4f * trAmt); break;
+                case TransitionType::LightLeak: trLeak = std::sin (juce::MathConstants<float>::pi * std::sqrt (prog)) * 0.9f * trAmt; break;
+                default: break;
+            }
+        }
+        int tk = inTrans ? (int) tt : 0;
+        drawLayer (*c, alpha, zoom, whip, tk, prog);
+        trRot = 0; trStretch = 1; trShX = trShY = 0; trMirror = 0; trPrism = 0; trLeak = 0; trWipe = 0;
+    }
+    if (transBlur > 0.001f)
+    {
+        int r = std::max (1, (int) std::lround (transBlur * minWH * 0.025f));
+        boxBlur (img, W, H, r, r, 3);
     }
 
     // ---- warps: kaleidoscope + liquid
@@ -451,7 +783,7 @@ bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int 
 
     // ---- glitch blocks, RGB split, VHS (horizontal resampling pass)
     float glitch = std::max (transGlitch, sv ("glitch") * (0.35f + be.snare) + sv ("beatGlitch") * be.snare);
-    float split = (sv ("rgbSplit") * 0.006f + sv ("beatGlitch") * be.snare * 0.012f + glitch * 0.01f) * W;
+    float split = (sv ("rgbSplit") * 0.006f + sv ("beatGlitch") * be.snare * 0.012f + glitch * 0.01f + transSplit * 0.02f) * W;
     float vhs = sv ("vhs");
     if (glitch > 0.01f || split > 0.25f || vhs > 0)
     {
@@ -496,13 +828,15 @@ bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int 
     }
 
     // ---- grade + LUT + acid color
-    auto lut = lutFor (s.fx.lutPath);
+    auto lut = lutFor (postFx.lutPath);
     const float gExp = std::pow (2.0f, sv ("exposure")) * (1 - sv ("hatStrobe") * 0.35f * be.hat);
     const float temp = sv ("temperature"), tint = sv ("tint"), con = sv ("contrast"), sat = sv ("saturation");
     const float fade = sv ("fade"), splitT = sv ("splitTone"), crush = sv ("crush"), lutMix = sv ("lutMix");
     const float hueC = sv ("hueCycle"), post = sv ("posterize"), sol = sv ("solarize"), therm = sv ("thermal");
     bool invert = sv ("invertHits") > 0 && be.snareIdx >= 0 && be.sinceSnare < 2.0 / p.fps && hash3 (be.snareIdx, 77, 1) < sv ("invertHits");
     float hueAng = hueC * ((float) T * 1.4f + be.kickIdx * 0.6f);
+    const float gBri = sv ("brightness"), gHi = sv ("highlights"), gSh = sv ("shadows");
+    const ToneCurve gCurve = makeCurve (postFx, SP);
     float ch = std::cos (hueAng), shh = std::sin (hueAng);
     parallelRows (H, [&] (int y) {
         for (int x = 0; x < W; ++x)
@@ -514,6 +848,7 @@ bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int 
             for (int q = 0; q < 3; ++q) c[q] = (c[q] - 0.45f) * con + 0.45f;
             float l = luma (c);
             for (int q = 0; q < 3; ++q) c[q] = l + (c[q] - l) * sat;
+            adjustTones (c, gBri, gHi, gSh);
             if (splitT > 0)
             {
                 float lw = clamp01 (l);
@@ -525,6 +860,7 @@ bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int 
                 for (int q = 0; q < 3; ++q) { float v = std::max (0.0f, (c[q] - crush * 0.1f) / (1 - crush * 0.1f)); c[q] = std::pow (v, 1 + crush * 0.5f); }
             if (fade > 0) for (int q = 0; q < 3; ++q) c[q] = fade * 0.14f + c[q] * (1 - fade * 0.2f);
             for (int q = 0; q < 3; ++q) c[q] = clamp01 (c[q]);
+            if (gCurve.active) applyCurve (gCurve, c);
             if (lut != nullptr && lutMix > 0)
             {
                 int n = lut->size; float fx = c[0] * (n - 1), fy = c[1] * (n - 1), fz = c[2] * (n - 1);
@@ -702,6 +1038,25 @@ bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int 
         }
     }
 
+    // ---- sharpen (unsharp mask against a 4-neighbour blur)
+    if (float shp = sv ("sharpen"); shp > 0)
+    {
+        auto src = img;
+        parallelRows (H, [&] (int y) {
+            const size_t ya = (size_t) std::max (0, y - 1) * W, yb = (size_t) std::min (H - 1, y + 1) * W, yc = (size_t) y * W;
+            for (int x = 0; x < W; ++x)
+            {
+                const size_t xa = (size_t) std::max (0, x - 1), xb = (size_t) std::min (W - 1, x + 1);
+                for (int q = 0; q < 3; ++q)
+                {
+                    float b = (src[(ya + x) * 3 + q] + src[(yb + x) * 3 + q] + src[(yc + xa) * 3 + q] + src[(yc + xb) * 3 + q]) * 0.25f;
+                    float& d = img[(yc + x) * 3 + q];
+                    d += (d - b) * shp * 1.6f;
+                }
+            }
+        });
+    }
+
     // ---- vignette, grain, letterbox, output
     float vig = sv ("vignette"), grain = sv ("grain"), gSize = sv ("grainSize"), lbox = sv ("letterbox");
     int cell = std::max (1, (int) std::lround ((1 + gSize * 1.2f) * H / 1080.0f));
@@ -731,7 +1086,7 @@ bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int 
             }
             if (y < bar || y >= H - bar) c[0] = c[1] = c[2] = 0;
             auto* o = &rgba[((size_t) y * W + x) * 4];
-            for (int q = 0; q < 3; ++q) o[q] = (juce::uint8) std::lround (clamp01 (c[q]) * 255.0f);
+            for (int q = 0; q < 3; ++q) o[q] = (juce::uint8) (clamp01 (c[q]) * 255.0f + 0.5f);
             o[3] = 255;
         }
     });

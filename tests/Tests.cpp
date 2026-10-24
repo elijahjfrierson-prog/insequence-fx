@@ -128,6 +128,63 @@ static void testSync()
     CHECK (! r2.ok, "unrelated audio flagged uncertain (conf " << r2.confidence << ")");
 }
 
+static void testPremiereCommands()
+{
+    Project p; p.fps = 30;
+    Sequence s = Project::makeDefaultSequence ("x");
+    auto mk = [] (const char* id, double a, double b, double src) { Clip c; c.id = id; c.mediaId = "none"; c.track = 0; c.start = secToTicks (a); c.length = secToTicks (b - a); c.srcIn = secToTicks (src); return c; };
+    s.clips = { mk ("a", 0, 4, 0), mk ("b", 4, 8, 4) };
+    s.findClip ("a")->fx.set ("exposure", 0.7f);
+    auto cb = copyClips (s, { "a" });
+    auto pasted = pasteClips (s, cb, secToTicks (6));
+    const Clip* pc = pasted.size() == 1 ? s.findClip (pasted[0]) : nullptr;
+    const Clip* bl = s.findClip ("b");
+    CHECK (pc && pc->start == secToTicks (6) && pc->id != "a" && bl && bl->end() == secToTicks (6) && bl->srcAt (secToTicks (5)) == secToTicks (5),
+           "overwrite paste at the playhead keeps the clip under it in sync");
+    pasteAttributes (s, cb.front(), { "b" });
+    CHECK (s.findClip ("b")->fx.get ("exposure", 0) == 0.7f, "paste attributes copies effects");
+    auto dup = duplicateClips (s, { "a" });
+    CHECK (dup.size() == 1 && s.findClip (dup[0])->start == secToTicks (4), "duplicate lands right after the selection");
+    s.clips = { mk ("a", 0, 4, 0), mk ("b", 4, 8, 4) };
+    auto h = freezeFrame (s, "a", secToTicks (1), secToTicks (1));
+    const Clip* hc = h.isNotEmpty() ? s.findClip (h) : nullptr;
+    const Clip* tail = nullptr; for (auto& c : s.clips) if (c.start == secToTicks (2)) tail = &c;
+    CHECK (hc && hc->speed == 0.0 && hc->srcAt (secToTicks (1.9)) == secToTicks (1) && tail && tail->srcAt (secToTicks (3)) == secToTicks (3),
+           "frame hold freezes one segment and the rest stays in sync");
+    s.clips = { mk ("a", 0, 4, 0), mk ("b", 4, 8, 4) };
+    CHECK (setClipSpeed (s, p, "a", 0.5) && s.findClip ("a")->length == secToTicks (4) && setClipSpeed (s, p, "a", 2.0) && s.findClip ("a")->length == secToTicks (1),
+           "speed/duration keeps the start and never runs into the next clip");
+    s.findClip ("a")->enabled = false;
+    auto j = s.findClip ("a");
+    CHECK (! j->enabled, "clips can be disabled");
+}
+
+static void testDropInBetween()
+{
+    Project p; p.fps = 30;
+    Sequence s = Project::makeDefaultSequence ("x");
+    auto mk = [] (const char* id, int track, double a, double b, double src) { Clip c; c.id = id; c.mediaId = "none"; c.track = track; c.start = secToTicks (a); c.length = secToTicks (b - a); c.srcIn = secToTicks (src); return c; };
+    s.clips = { mk ("a", 0, 0, 4, 0), mk ("b", 0, 4, 8, 4), mk ("c", 0, 3, 5, 0) };
+    Ticks bSongAt6 = s.findClip ("b")->srcAt (secToTicks (6));
+    settleClips (s, { "c" });
+    auto* a = s.findClip ("a"); auto* c = s.findClip ("c"); const Clip* b = nullptr;
+    for (auto& k : s.clips) if (k.track == 0 && k.start == secToTicks (5)) b = &k;   // trimmed remainder of "b"
+    CHECK (a && b && c && a->end() == secToTicks (3) && b->start == secToTicks (5) && c->start == secToTicks (3),
+           "drop in between covers only its spot");
+    CHECK (b && b->srcAt (secToTicks (6)) == bSongAt6, "neighbour stays in sync after a drop");
+    s.clips = { mk ("a", 0, 0, 3, 0), mk ("b", 0, 4, 8, 4) };
+    fillGaps (s, p, 0);
+    CHECK (s.findClip ("a")->end() == secToTicks (4) && s.findClip ("b")->start == secToTicks (4) && s.findClip ("b")->srcIn == secToTicks (4),
+           "magnet fills the gap without sliding synced clips");
+    int audioTrack = -1, videos = 0;
+    for (int i = 0; i < (int) s.tracks.size(); ++i) { if (s.tracks[(size_t) i].kind == TrackKind::Audio && audioTrack < 0) audioTrack = i; if (s.tracks[(size_t) i].kind == TrackKind::Video) ++videos; }
+    if (audioTrack >= 0) s.clips.push_back (mk ("song", audioTrack, 0, 8, 0));
+    int nt = insertVideoTrack (s);
+    int videos2 = 0; for (auto& t : s.tracks) if (t.kind == TrackKind::Video) ++videos2;
+    CHECK (videos2 == videos + 1 && s.tracks[(size_t) nt].kind == TrackKind::Video && (audioTrack < 0 || s.findClip ("song")->track == audioTrack + 1),
+           "dragging past the layers adds a video track and keeps audio clips on their track");
+}
+
 static Project syntheticProject()
 {
     Project p = Project::makeNew();
@@ -291,6 +348,23 @@ static void testExport()
     std::vector<float> back;
     CHECK (decodeAudio (job.output, kMixRate, 2, back, err) && std::abs ((double) back.size() / 2 / kMixRate - 3.0) < 0.06, "export audio length matches video (A/V sync)");
     job.output.deleteFile();
+
+    // edit proxy: 720p source -> 540p MJPEG, frame-accurate and decodes back at the same time
+    ExportJob hd; hd.width = 1280; hd.height = 720; hd.fps = 24; hd.mbps = 4;
+    hd.output = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("isfx_hd.mp4");
+    ok = runExport (s, cache, hd, [&] (Ticks t, std::vector<juce::uint8>& px)
+    {
+        auto f = ticksToFrame (t, 24);
+        for (size_t i = 0; i < px.size(); i += 4) { px[i] = (juce::uint8) (f * 10); px[i + 1] = 80; px[i + 2] = 160; px[i + 3] = 255; }
+        return true;
+    }, nullptr, cancel, err, &codec);
+    auto pf = proxyFileFor (hd.output, kProxyHeight); pf.deleteFile();
+    CHECK (ok && makeProxy (hd.output, pf, kProxyHeight, 3.0, nullptr, err), "build 540p edit proxy " << err);
+    VideoDecoder pd; Frame pfr;
+    CHECK (pd.open (pf, kProxyHeight, err) && pd.height() == 540 && pd.width() == 960 && pd.frameAt (secToTicks (1.0), pfr)
+           && std::abs ((int) pfr.rgba[0] - 240) < 30, "proxy decodes 960x540 with the right frame at 1 s (" << pd.width() << "x" << pd.height() << ")");
+    CHECK (pd.frameAt (secToTicks (0.5), pfr) && std::abs ((int) pfr.rgba[0] - 120) < 30, "proxy seeks back frame-accurately");
+    pf.deleteFile(); hd.output.deleteFile();
 }
 
 
@@ -339,8 +413,8 @@ static void testRender()
     for (auto& d : sequenceParams())
     {
         juce::String id (d.id);
-        if (id == "lutMix" || id == "grainSize" || id == "trails") continue;   // modifiers / need motion (tested below)
-        Sequence sq = s; float v = d.max;
+        if (id == "lutMix" || id == "grainSize" || id == "trails" || id == "sharpen") continue;   // modifiers / need motion or texture (tested below)
+        Sequence sq = s; float v = d.def > 0.5f * (d.min + d.max) ? d.min : d.max;
         if (id == "contrast" || id == "saturation") v = d.max;
         sq.fx.set (id, v);
         if (id == "letterbox") sq.fx.set (id, 1.0f);
@@ -350,6 +424,41 @@ static void testRender()
         juce::ignoreUnused (finite);
     }
     CHECK (dead == 0, "every sequence FX visibly changes the frame " << deadList);
+    {
+        Sequence boxed = s; for (auto& c : boxed.clips) c.fx.set ("scale", 0.5f);
+        Sequence sharp = boxed; sharp.fx.set ("sharpen", 1.0f);
+        auto bp = renderAt (boxed, t0), sp = renderAt (sharp, t0);
+        double sd = diff (sp, bp);
+        CHECK (sd > 0.1, "sharpen boosts edge detail (diff " << sd << ")");
+        Sequence lifted = s; lifted.fx.set ("crvM2", 0.8f);
+        auto lp = renderAt (lifted, t0);
+        CHECK (at (lp, W / 2, H / 2, 0) > at (base, W / 2, H / 2, 0) + 40, "RGB curve lifts the midtones (" << at (lp, W / 2, H / 2, 0) << ")");
+        Sequence redCut = s; redCut.fx.set ("crvR2", 0.2f);
+        auto rp = renderAt (redCut, t0);
+        CHECK (at (rp, W / 2, H / 2, 0) < at (base, W / 2, H / 2, 0) - 40 && std::abs (at (rp, W / 2, H / 2, 1) - at (base, W / 2, H / 2, 1)) < 3,
+               "red curve changes only red");
+    {
+        juce::StringArray dead;
+        for (int k = 1; k < transitionNames().size(); ++k)
+        {
+            Sequence tq = s; Clip* tc = nullptr;
+            for (auto& c : tq.clips) if (tq.tracks[(size_t) c.track].kind == TrackKind::Video && (tc == nullptr || c.start > tc->start)) tc = &c;
+            if (tc == nullptr) break;
+            tc->fx.set ("scale", 0.6f);
+            Sequence cutq = tq;
+            tc->transIn = (TransitionType) k; tc->transLen = secToTicks (1.0);
+            Ticks tm = tc->start + secToTicks (0.3);
+            double d = diff (renderAt (tq, tm), renderAt (cutq, tm));
+            if (d < 0.5) dead.add (transitionNames()[k] + " (" + juce::String (d, 2) + ")");
+        }
+        CHECK (dead.isEmpty(), "every transition visibly changes the frame " << dead.joinIntoString (", "));
+    }
+    {
+        Sequence off = s;
+        for (auto& c : off.clips) c.enabled = false;
+        CHECK (diff (renderAt (off, t0), base) > 0.5, "disabled clips are not rendered");
+    }
+    }
 
     {   // echo trails need motion: a cut from the green frame to the gradient must leave an echo
         Sequence sq = s; sq.clips[0].mediaId = gr;
@@ -407,6 +516,102 @@ static void testRender()
     gradF.deleteFile(); greenF.deleteFile();
 }
 
+static void testLayoutsStacksAndLayers()
+{
+    auto redF = writePng ("isfx_red.png", [] (int, int) { return juce::Colour (230, 20, 20); });
+    auto blueF = writePng ("isfx_blue.png", [] (int, int) { return juce::Colour (20, 20, 230); });
+    Project p = Project::makeNew(); p.aspectW = 9; p.aspectH = 16;
+    auto addImg = [&] (const juce::File& f) { MediaItem m; m.id = newId(); m.path = f.getFullPathName(); m.kind = MediaKind::Image; m.width = 320; m.height = 180; m.duration = secToTicks (10); p.media.push_back (m); return m.id; };
+    auto red = addImg (redF), blue = addImg (blueF);
+    auto& s = p.seq();
+    int v2 = insertVideoTrack (s);
+    Clip a; a.id = "a"; a.mediaId = red; a.track = 0; a.start = 0; a.length = secToTicks (2);
+    Clip b = a; b.id = "b"; b.mediaId = blue; b.track = v2;
+    applyLayout (p, a, 1); applyLayout (p, b, 2);
+    s.clips.push_back (a); s.clips.push_back (b); s.sortClips();
+    const int w = 108, h = 192;
+    auto px = [&] (const Sequence& sq, Ticks t) { Renderer r; std::vector<juce::uint8> o; r.render (p, sq, t, w, h, o, 0); return o; };
+    auto at = [&] (const std::vector<juce::uint8>& o, int x, int y, int ch) { return (int) o[((size_t) y * w + x) * 4 + (size_t) ch]; };
+    auto split = px (s, secToTicks (0.5));
+    CHECK (at (split, 54, 40, 0) > 120 && at (split, 54, 40, 2) < 100 && at (split, 54, 150, 2) > 120 && at (split, 54, 150, 0) < 100,
+           "9:16 split screen: one clip on top, another underneath");
+    {
+        Sequence sq = s; sq.clips.clear();
+        Clip c = a; c.fx = {}; c.fx.set ("scaleY", 0.5f); sq.clips.push_back (c);
+        auto o = px (sq, secToTicks (0.5));
+        CHECK (at (o, 54, 3, 0) < 30 && at (o, 54, 96, 0) > 120, "non-uniform Scale Y squashes the clip");
+        sq.clips[0].fx = {}; sq.clips[0].fx.set ("cropT", 0.5f);
+        o = px (sq, secToTicks (0.5));
+        CHECK (at (o, 54, 20, 0) < 30 && at (o, 54, 170, 0) > 120, "crop top removes the upper half");
+        // effect layer above darkens everything under it while the playhead is over it
+        FxStack dark; dark.set ("exposure", -2.0f);
+        auto plain = px (sq, secToTicks (0.5));
+        auto fxId = addEffectClip (sq, dark, "Dark", 0, secToTicks (1));
+        auto withFx = px (sq, secToTicks (0.5)), after = px (sq, secToTicks (1.5));
+        CHECK (fxId.isNotEmpty() && at (withFx, 54, 170, 0) < at (plain, 54, 170, 0) - 40 && at (after, 54, 170, 0) == at (plain, 54, 170, 0),
+               "effect layer applies only while it plays");
+    }
+    // on-video transform handles use the renderer's exact geometry (position, scale, rotation)
+    {
+        Sequence sq = s; sq.clips.clear();
+        Project q = p; q.aspectW = 16; q.aspectH = 9;
+        if (auto im = juce::ImageFileFormat::loadFrom (redF); im.isValid())
+            for (auto& m : q.media) { m.width = im.getWidth(); m.height = im.getHeight(); }
+        Clip c = a; c.fx = {}; c.fx.set ("posX", 0.4f); c.fx.set ("scale", 0.5f); c.fx.set ("rotation", 30.0f); c.fx.set ("cropR", 0.25f);
+        sq.clips.push_back (c);
+        Renderer r; std::vector<juce::uint8> o; const int W = 320, H = 180;
+        r.render (q, sq, secToTicks (0.5), W, H, o, 0);
+        ClipGeom g; bool ok = clipGeometry (q, c, (float) W, (float) H, g);
+        auto red = [&] (juce::Point<float> pt) { int x = (int) pt.x, y = (int) pt.y;
+            return x >= 0 && y >= 0 && x < W && y < H && o[((size_t) y * W + x) * 4] > 120 && o[((size_t) y * W + x) * 4 + 2] < 100; };
+        CHECK (ok && red (g.toScreen (0, 0)) && red (g.toScreen (g.x0 * 0.85f, g.y0 * 0.85f)) && red (g.toScreen (g.x1 - 4, g.y1 * 0.85f))
+               && ! red (g.toScreen (g.x0 * 1.2f, g.y0 * 1.2f)) && ! red (g.toScreen (g.x1 + 6, 0)),
+               "transform handle box matches the rendered clip (move/scale/rotate/crop)");
+    }
+    // 1000 stacked clips: a full-frame opaque top layer hides the rest, so the frame costs about one layer
+    {
+        Sequence one = s; one.clips.clear();
+        Clip c = a; c.fx = {}; one.clips.push_back (c);
+        Sequence big = one;
+        for (int i = 0; i < 999; ++i) { Clip k = c; k.id = newId(); k.mediaId = i % 2 ? red : blue; k.track = insertVideoTrack (big); big.clips.push_back (k); }
+        big.sortClips();
+        Renderer r; std::vector<juce::uint8> o;
+        auto time = [&] (const Sequence& sq) { r.render (p, sq, 0, 540, 960, o, 0);
+            auto t0 = std::chrono::steady_clock::now(); for (int i = 0; i < 3; ++i) r.render (p, sq, secToTicks (i / 30.0), 540, 960, o, 0);
+            return std::chrono::duration<double, std::milli> (std::chrono::steady_clock::now() - t0).count() / 3; };
+        double ms1 = time (one), ms1000 = time (big);
+        CHECK (big.tracks.size() > 1000 && ms1000 < ms1 * 3 + 20, "1000 stacked clips render in " << ms1000 << " ms (1 clip: " << ms1 << " ms)");
+    }
+    // drag the song: synced takes, grid and hits follow; free slow-mo stays
+    {
+        Project q = Project::makeNew();
+        MediaItem song; song.id = "song"; song.kind = MediaKind::Audio; song.duration = secToTicks (60); q.media.push_back (song); q.songId = "song";
+        MediaItem take; take.id = "take"; take.kind = MediaKind::Video; take.duration = secToTicks (60); take.sync.status = SyncInfo::Synced; q.media.push_back (take);
+        MediaItem broll; broll.id = "broll"; broll.kind = MediaKind::Video; broll.duration = secToTicks (60); q.media.push_back (broll);
+        q.song.valid = true; q.song.gridOffset = secToTicks (0.3); q.song.events.push_back ({ secToTicks (1), EventType::Kick, 1, 1 });
+        auto& sq = q.seq();
+        int at0 = -1; for (int i = 0; i < (int) sq.tracks.size(); ++i) if (sq.tracks[(size_t) i].kind == TrackKind::Audio) { at0 = i; break; }
+        if (at0 < 0) at0 = sq.addTrack (TrackKind::Audio, "SONG");
+        Clip sc; sc.id = "s"; sc.mediaId = "song"; sc.track = at0; sc.length = secToTicks (60); sc.locked = true; sq.clips.push_back (sc);
+        Clip tc; tc.id = "t"; tc.mediaId = "take"; tc.track = 0; tc.start = secToTicks (4); tc.length = secToTicks (2); tc.srcIn = secToTicks (4); sq.clips.push_back (tc);
+        Clip fc; fc.id = "f"; fc.mediaId = "broll"; fc.track = 0; fc.start = secToTicks (10); fc.length = secToTicks (2); fc.speed = 0.5; sq.clips.push_back (fc);
+        CHECK (shiftSong (q, secToTicks (8), true) && sq.findClip ("s")->start == secToTicks (8) && sq.findClip ("t")->start == secToTicks (12)
+               && sq.findClip ("f")->start == secToTicks (10) && q.song.gridOffset == secToTicks (8.3) && q.song.events[0].time == secToTicks (9),
+               "dragging the song moves synced clips, grid and hits; free slow-mo stays");
+        CHECK (shiftSong (q, -secToTicks (100), false) && sq.findClip ("s")->start == 0 && sq.findClip ("t")->start == secToTicks (12),
+               "Alt-drag moves only the song and stops at 0");
+    }
+    // transitions dropped near a cut lock onto the incoming clip
+    {
+        Sequence sq = s; sq.clips.clear();
+        Clip x = a; x.fx = {}; x.length = secToTicks (1); Clip y = x; y.id = "y"; y.start = secToTicks (1);
+        sq.clips.push_back (x); sq.clips.push_back (y);
+        CHECK (setTransitionAtCut (sq, 0, secToTicks (1.08), TransitionType::Flash, secToTicks (0.25), secToTicks (0.3))
+               && sq.findClip ("y")->transIn == TransitionType::Flash && sq.findClip ("y")->transLen == secToTicks (0.25), "drag-drop transition locks to the cut");
+    }
+    redF.deleteFile(); blueF.deleteFile();
+}
+
 static void testAutoCutAndPresets()
 {
     Project p = Project::makeNew();
@@ -460,12 +665,15 @@ int main (int argc, char** argv)
     testAnalysis();
     testSync();
     testEditing();
+    testDropInBetween();
+    testPremiereCommands();
     testChopAndGenerate();
     testPersistence();
     testLut();
     testExport();
     testRender();
     testAutoCutAndPresets();
+    testLayoutsStacksAndLayers();
     std::cout << (failures == 0 ? "ALL TESTS PASSED" : "FAILURES: ") << (failures ? juce::String (failures) : juce::String()) << "\n";
     return failures;
 }

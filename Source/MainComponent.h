@@ -9,6 +9,7 @@ struct ImportResult
     std::map<juce::String, juce::Image> thumbs;
     std::map<juce::String, Waveform> waves;
     std::map<juce::String, std::shared_ptr<const std::vector<float>>> stereo;
+    std::map<juce::String, juce::String> proxies;
     juce::String newSongId;
     SongAnalysis song;
     std::shared_ptr<std::vector<float>> songMono;
@@ -21,7 +22,9 @@ ImportResult decodeFiles (const juce::Array<juce::File>&, const juce::String& so
                           bool makeSong, ProgressCb, std::function<bool()> cancelled);
 SyncInfo syncTake (const juce::File& take, const std::vector<float>& songMono, juce::String& err);
 
-class MainComponent : public juce::Component, private juce::Timer, private juce::ScrollBar::Listener
+ISFXLookAndFeel& sharedLookAndFeel();
+
+class MainComponent : public juce::Component, public juce::FileDragAndDropTarget, private juce::Timer, private juce::ScrollBar::Listener
 {
 public:
     MainComponent();
@@ -41,7 +44,13 @@ private:
     void togglePlay();
     void setTool (Tool t);
     void runTask (const juce::String& title, std::function<void (ProgressCb, std::function<bool()>)> work, std::function<void()> done);
-    void importFiles (const juce::Array<juce::File>&);
+    void importFiles (const juce::Array<juce::File>&, std::function<void()> then = {});
+    bool isInterestedInFileDrag (const juce::StringArray&) override { return true; }
+    void filesDropped (const juce::StringArray& paths, int, int) override
+    {
+        juce::Array<juce::File> fs; for (auto& f : paths) fs.add (juce::File (f));
+        importFiles (fs);
+    }
     void applyImport (ImportResult&);
     void placeSongClip();
     void setSong (const juce::String& id);
@@ -63,7 +72,7 @@ private:
     void updateSeqBox();
     void showMsg (const juce::String& title, const juce::String& msg);
 
-    ISFXLookAndFeel lnf;
+    ISFXLookAndFeel& lnf = sharedLookAndFeel();   // outlives every window; App::shutdown clears the default
     AppState st;
     PluginRack rack;
     juce::AudioDeviceManager devices;
@@ -71,13 +80,14 @@ private:
     Preview preview { st };
     Timeline timeline { st };
     MediaPanel media { st };
+    FxLibrary fxlib { st };
     Inspector inspector { st };
     juce::TooltipWindow tips { this, 450 };
     juce::ScrollBar hscroll { false };
     juce::TextButton fileBtn { "File" }, undoBtn { "Undo" }, redoBtn { "Redo" }, importBtn { "Import" }, presetsBtn { "Presets" },
         pluginsBtn { "Plug-ins" }, playBtn { "Play" }, exportBtn { "EXPORT" },
         toolBtn[4] { juce::TextButton ("E Select"), juce::TextButton ("P Paint"), juce::TextButton ("D Delete"), juce::TextButton ("C Cut") },
-        snapBtn { "S Snap" }, rippleBtn { "R Ripple" }, gridBtn { "B Grid" }, chopBtn { "CHOP" }, genBtn { "GENERATE 3 EDITS" },
+        snapBtn { "S Snap" }, rippleBtn { "R Ripple" }, magnetBtn { "Magnet" }, gridBtn { "B Grid" }, chopBtn { "CHOP" }, genBtn { "GENERATE 3 EDITS" },
         keepBtn { "Keep range" }, delRangeBtn { "Delete range" }, zoomIn { "+" }, zoomOut { "-" };
     juce::ComboBox seqBox, aspectBox, snapBox, chopBox, styleBox;
     juce::Label status;
@@ -86,6 +96,15 @@ private:
     std::unique_ptr<juce::FileChooser> chooser;
     std::unique_ptr<juce::AlertWindow> dialog;
     bool selfTest = false;
+    bool showMedia = true, showInspector = true, maxPreview = false, maxTimeline = false;
+    float timelineFrac = 0.38f;
+    int splitY = 0; bool draggingSplit = false;
+    void mouseMove (const juce::MouseEvent&) override;
+    void mouseDown (const juce::MouseEvent&) override;
+    void mouseDrag (const juce::MouseEvent&) override;
+    void mouseUp (const juce::MouseEvent&) override { draggingSplit = false; }
+    juce::TextButton mediaTgl { "Media" }, inspTgl { "Inspector" }, maxPrevBtn { "Max Preview" }, maxTlBtn { "Max Timeline" };
+    juce::VBlankAttachment vblank { this, [this] { if (player.isPlaying()) timerCallback(); } };
     juce::uint32 genSeed = 1;
 };
 }

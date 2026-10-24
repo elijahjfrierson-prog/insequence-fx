@@ -12,9 +12,25 @@ const std::vector<AspectPreset>& aspectPresets();
 void outputSize (const Project& p, int shortSide, int& W, int& H);
 
 juce::StringArray blendModeNames();
+// split-screen slots (e.g. 9:16 with one clip on top and another underneath): sets scale/position and a slot mask
+juce::StringArray layoutNames();
+
+// where a clip lands in a W x H output frame (same maths as the renderer): centre, rotation and the cropped box in
+// clip-local pixels. Used by the preview's on-video transform handles.
+struct ClipGeom
+{
+    float cx = 0, cy = 0, cr = 1, sr = 0, hx = 0, hy = 0, x0 = 0, x1 = 0, y0 = 0, y1 = 0;
+    juce::Point<float> toScreen (float lx, float ly) const { return { cx + lx * cr + ly * sr, cy - lx * sr + ly * cr }; }
+    juce::Point<float> toLocal (juce::Point<float> p) const { float px = p.x - cx, py = p.y - cy; return { px * cr - py * sr, px * sr + py * cr }; }
+    bool contains (juce::Point<float> p) const { auto l = toLocal (p); return l.x >= x0 && l.x <= x1 && l.y >= y0 && l.y <= y1; }
+};
+bool clipGeometry (const Project&, const Clip&, float W, float H, ClipGeom&);
+void applyLayout (const Project& p, Clip& c, int slot);
 
 // Composites a sequence frame: tracks + transforms + keys/masks + blend modes, then grade, LUT, film,
 // beat-reactive, acid and generated overlay FX. Preview and export use this same code path.
+constexpr int kProxyHeight = 540;
+
 class Renderer
 {
 public:
@@ -28,8 +44,12 @@ private:
         Frame still, last;
         bool failed = false;
         int rotation = 0;
+        juce::uint32 used = 0;
+        int opaque = -1;    // stills: -1 unknown, 0 has transparency, 1 opaque
     };
-    const Frame* frameFor (const Project& p, const juce::String& mediaId, Ticks srcT, int decodeH, int& rotation);
+    static constexpr size_t kMaxOpenSources = 24;
+    juce::uint32 useClock = 0;
+    const Frame* frameFor (const Project& p, const juce::String& mediaId, Ticks srcT, int decodeH, int& rotation, bool* opaque = nullptr);
     std::shared_ptr<Lut3D> lutFor (const juce::String& path);
 
     std::map<juce::String, std::unique_ptr<Source>> sources;

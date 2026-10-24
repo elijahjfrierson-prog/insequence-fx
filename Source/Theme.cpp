@@ -1,4 +1,5 @@
 #include "App.h"
+#include "BinaryData.h"
 
 namespace isfx
 {
@@ -50,5 +51,21 @@ void ISFXLookAndFeel::drawButtonBackground (juce::Graphics& g, juce::Button& b, 
     g.fillRoundedRectangle (r, 4.0f);
     g.setColour (b.getToggleState() ? theme::accent.brighter (0.3f) : theme::line);
     g.drawRoundedRectangle (r, 4.0f, 1.0f);
+}
+
+void drawLogo (juce::Graphics& g, juce::Rectangle<float> r)
+{
+    static const juce::Image logo = juce::ImageCache::getFromMemory (BinaryData::insequencelogo_png, BinaryData::insequencelogo_pngSize);
+    if (! logo.isValid()) return;
+    float h = std::min (r.getHeight() * 0.78f, r.getWidth() * (float) logo.getHeight() / (float) logo.getWidth());
+    float w = h * (float) logo.getWidth() / (float) logo.getHeight();
+    g.setImageResamplingQuality (juce::Graphics::highResamplingQuality);
+    g.drawImage (logo, { r.getX(), r.getCentreY() - h * 0.5f, w, h });
+}
+
+juce::Font headerFont (float height)
+{
+    static const juce::Typeface::Ptr face = juce::Typeface::createSystemTypefaceFor (BinaryData::MichromaRegular_ttf, BinaryData::MichromaRegular_ttfSize);
+    return face != nullptr ? juce::Font (juce::FontOptions (face).withHeight (height)) : juce::Font (juce::FontOptions (height, juce::Font::bold));
 }
 }

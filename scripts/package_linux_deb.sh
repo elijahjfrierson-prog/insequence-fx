@@ -2,7 +2,7 @@
 # Builds InSequence-FX-Linux.deb (Ubuntu 22.04+/Debian; uses the system FFmpeg libraries)
 set -euo pipefail
 BUILD="${1:-build}"; OUT="${2:-artifacts}"
-VERSION="1.0.0"; app="InSequence FX"; pkg=insequence-fx
+VERSION="${VERSION:-1.0.0}"; app="InSequence FX"; pkg=insequence-fx
 mkdir -p "$OUT"
 root="$(mktemp -d)"; chmod 755 "$root"
 mkdir -p "$root/DEBIAN" "$root/opt/$pkg" "$root/usr/bin" "$root/usr/share/applications" "$root/usr/share/doc/$pkg"

@@ -124,7 +124,7 @@ juce::var toVar (const Project& p)
         o->setProperty ("id", m.id); o->setProperty ("path", m.path); o->setProperty ("name", m.name);
         o->setProperty ("kind", (int) m.kind); o->setProperty ("duration", t2s (m.duration));
         o->setProperty ("fps", m.fps); o->setProperty ("w", m.width); o->setProperty ("h", m.height);
-        o->setProperty ("rot", m.rotation); o->setProperty ("audio", m.hasAudio); o->setProperty ("fav", m.favorite);
+        o->setProperty ("rot", m.rotation); o->setProperty ("proxy", m.proxyPath); o->setProperty ("audio", m.hasAudio); o->setProperty ("fav", m.favorite);
         o->setProperty ("quality", m.quality);
         o->setProperty ("syncStatus", (int) m.sync.status); o->setProperty ("syncOffset", t2s (m.sync.offset));
         o->setProperty ("syncConf", m.sync.confidence); o->setProperty ("syncNote", m.sync.note);
@@ -174,6 +174,9 @@ juce::var toVar (const Project& p)
             co->setProperty ("opacity", c.opacity); co->setProperty ("volume", c.volume);
             co->setProperty ("trans", (int) c.transIn); co->setProperty ("transLen", t2s (c.transLen));
             co->setProperty ("fx", fxToVar (c.fx));
+            if (c.name.isNotEmpty()) co->setProperty ("name", c.name);
+            if (! c.enabled) co->setProperty ("enabled", false);
+            if (c.label != 0) co->setProperty ("label", c.label);
             cl.add (juce::var (co));
         }
         o->setProperty ("clips", cl);
@@ -205,7 +208,7 @@ bool fromVar (const juce::var& v, Project& p, juce::String& error)
             MediaItem mi;
             mi.id = m["id"].toString(); mi.path = m["path"].toString(); mi.name = m["name"].toString();
             mi.kind = (MediaKind) (int) m["kind"]; mi.duration = s2t (m["duration"]); mi.fps = (double) m["fps"];
-            mi.width = (int) m["w"]; mi.height = (int) m["h"]; mi.rotation = (int) m["rot"]; mi.hasAudio = (bool) m["audio"];
+            mi.width = (int) m["w"]; mi.height = (int) m["h"]; mi.rotation = (int) m["rot"]; mi.proxyPath = m["proxy"].toString(); mi.hasAudio = (bool) m["audio"];
             mi.favorite = (bool) m["fav"]; mi.quality = (float) (double) m["quality"];
             mi.sync.status = (SyncInfo::Status) (int) m["syncStatus"]; mi.sync.offset = s2t (m["syncOffset"]);
             mi.sync.confidence = (float) (double) m["syncConf"]; mi.sync.note = m["syncNote"].toString();
@@ -245,6 +248,7 @@ bool fromVar (const juce::var& v, Project& p, juce::String& error)
                     c.volume = cv.hasProperty ("volume") ? (float) (double) cv["volume"] : 1.0f;
                     c.transIn = (TransitionType) (int) cv["trans"]; c.transLen = s2t (cv["transLen"]);
                     fxFromVar (cv["fx"], c.fx);
+                    c.name = cv["name"].toString(); c.enabled = cv.hasProperty ("enabled") ? (bool) cv["enabled"] : true; c.label = (int) cv["label"];
                     if (c.track >= 0 && c.track < (int) s.tracks.size()) s.clips.push_back (c);
                 }
             r.sequences.push_back (s);

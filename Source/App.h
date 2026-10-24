@@ -17,10 +17,14 @@ namespace isfx
 // ---- theme
 namespace theme
 {
-    const juce::Colour bg { 0xff0e0f13 }, panel { 0xff16181e }, panel2 { 0xff1d2028 }, line { 0xff2a2e38 },
-                       text { 0xffe8e9ee }, dim { 0xff8a8f9c }, accent { 0xffff3d6e }, accent2 { 0xff38d6ff },
+    // chrome + electric blue, matching the InSequence FX logo
+    const juce::Colour bg { 0xff060709 }, panel { 0xff0d0f14 }, panel2 { 0xff141821 }, line { 0xff232a38 },
+                       text { 0xffe4e9f2 }, dim { 0xff8890a2 }, accent { 0xff3d7bff }, accent2 { 0xff9cc0ff },
                        good { 0xff3ddc84 }, warn { 0xffffb020 }, bad { 0xffff4d4d };
 }
+void drawLogo (juce::Graphics&, juce::Rectangle<float> area);  // chrome InSequence FX mark + wordmark
+juce::Font headerFont (float height);                            // wide logo-style face (Michroma) for titles
+
 class ISFXLookAndFeel : public juce::LookAndFeel_V4
 {
 public:
@@ -42,7 +46,8 @@ struct AppState
     juce::StringArray selected;
     Ticks playhead = 0, rangeA = 0, rangeB = 0;
     SnapMode snap = SnapMode::Sixteenth;
-    bool snapOn = true, ripple = false, showGrid = true;
+    bool snapOn = true, ripple = false, showGrid = true, magnetic = true;
+    std::vector<Clip> clipboard;
     juce::ChangeBroadcaster changed;   // project edited -> repaint everything
 
     void edit (const juce::String& what) { history.push (project, what); dirty = true; }
@@ -91,7 +96,27 @@ public:
     void sourcesChanged() { clearReq = true; requestFrame (lastReq); }
     void setProject (const Project& p);
     double renderMs() const { return lastMs; }
+    void setLive (bool b) { if (live.exchange (b) && ! b) requestFrame (lastReq); }
+    // on-video transform: drag inside = move, corners = scale (Shift = free X/Y), edges = crop, knob = rotate (Shift = 15 deg)
+    std::function<void()> onEdited, onSelect;
+    void mouseDown (const juce::MouseEvent&) override;
+    void mouseDrag (const juce::MouseEvent&) override;
+    void mouseUp (const juce::MouseEvent&) override;
+    void mouseMove (const juce::MouseEvent&) override;
+    bool keyPressed (const juce::KeyPress&) override;
 private:
+    enum class Handle { None, Move, Corner, Edge, Rotate };
+    Handle hitHandle (const ClipGeom&, juce::Point<float>, int& idx) const;
+    bool geomFor (const Clip&, ClipGeom&) const;
+    const Clip* shownClip (const juce::String& id) const;
+    Handle handle = Handle::None;
+    int handleIdx = 0;
+    bool movedHandle = false;
+    juce::String editId;
+    Project before;
+    FxStack fx0;
+    ClipGeom g0;
+    juce::Point<float> down;
     void run() override;
     void handleAsyncUpdate() override { repaint(); }
     AppState& st;
@@ -101,17 +126,22 @@ private:
     Ticks want = -1, lastReq = 0;
     std::shared_ptr<const Project> snap;
     int wantW = 0, wantH = 0;
-    std::atomic<bool> clearReq { false };
+    std::atomic<bool> clearReq { false }, live { false };
+    int wantDecodeH = 0;
     juce::Image shown;
     double lastMs = 0;
 };
 
 // ---- timeline
 enum class Tool { Select, Paint, Delete, Cut };
-class Timeline : public juce::Component, public juce::DragAndDropTarget, public juce::SettableTooltipClient
+class Timeline : public juce::Component, public juce::DragAndDropTarget, public juce::FileDragAndDropTarget, public juce::SettableTooltipClient
 {
 public:
     explicit Timeline (AppState& s);
+    std::function<void (const juce::Array<juce::File>&, int track, Ticks at)> onFilesDropped;   // from Finder/Explorer
+    std::function<void (const juce::String& title, const juce::String& def, std::function<void (juce::String)>)> onAskText;
+    bool isInterestedInFileDrag (const juce::StringArray&) override { return true; }
+    void filesDropped (const juce::StringArray&, int x, int y) override;
     std::function<void()> onEdited;          // after any edit
     std::function<void (Ticks)> onSeek;
     Tool tool = Tool::Select;
@@ -127,9 +157,12 @@ public:
     void zoomBy (float f, int anchorX);
     void ensureVisible (Ticks t);
     void clipMenu (const juce::String& id);
+public:
+    void clipMenuSpeed (const juce::String& id);   // Ctrl+R Speed/Duration dialog
     bool switchAngles = true;
     double pxPerSec = 60;   // zoom
     double scrollSec = 0;
+    int vScroll = 0;        // track rows scrolled up (deep layer stacks)
 private:
     static constexpr int kRuler = 28, kHeader = 70;
     int trackY (int i) const;
@@ -138,9 +171,11 @@ private:
     int secToX (double s) const { return kHeader + (int) std::lround ((s - scrollSec) * pxPerSec); }
     const Clip* clipAt (juce::Point<int> p, int& edge) const;
     AppState& st;
-    enum class Drag { None, Move, TrimL, TrimR, Range, Scrub } drag = Drag::None;
+    enum class Drag { None, Move, TrimL, TrimR, Range, Scrub, Song } drag = Drag::None;
     juce::String dragClip;
     Ticks dragStart = 0, dragOrig = 0; int dragTrack = 0;
+    Ticks snapGuide = -1;
+    Ticks magnetSnap (Ticks t, Ticks len);
     Project beforeDrag;
 };
 
@@ -164,6 +199,24 @@ private:
     AppState& st;
     juce::ListBox list;
     juce::TextButton importBtn { "Import" }, syncBtn { "Auto Sync" };
+};
+
+// drag source for transitions (drop on a cut) and effects/looks (drop on a clip or empty space = effect layer)
+class FxLibrary : public juce::Component, public juce::DragAndDropContainer, private juce::ListBoxModel
+{
+public:
+    explicit FxLibrary (AppState& s);
+    void resized() override { list.setBounds (getLocalBounds().reduced (6).withTrimmedTop (20)); }
+    void paint (juce::Graphics&) override;
+private:
+    struct Row { juce::String label, desc, help; bool header = false; };
+    std::vector<Row> rows;
+    int getNumRows() override { return (int) rows.size(); }
+    void paintListBoxItem (int, juce::Graphics&, int, int, bool) override;
+    juce::var getDragSourceDescription (const juce::SparseSet<int>&) override;
+    juce::String getTooltipForRow (int) override;
+    AppState& st;
+    juce::ListBox list;
 };
 
 class Inspector : public juce::Component

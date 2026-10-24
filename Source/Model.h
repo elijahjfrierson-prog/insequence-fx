@@ -57,7 +57,8 @@ struct FxStack
     void set (const juce::String& id, float v) { p[id] = v; }
 };
 
-enum class TransitionType { Cut = 0, Dissolve, DipBlack, DipWhite, Flash, Zoom, Whip, Glitch };
+enum class TransitionType { Cut = 0, Dissolve, DipBlack, DipWhite, Flash, Zoom, Whip, Glitch,
+                            Spin, RgbSplit, Blur, LumaWipe, InkBurn, Shake, Stretch, Mirror, Prism, LightLeak };
 
 // ---- media ------------------------------------------------------------------------
 enum class MediaKind { Video = 0, Audio, Image };
@@ -74,6 +75,7 @@ struct SyncInfo
 struct MediaItem
 {
     juce::String id, path, name;
+    juce::String proxyPath;    // light intra-only copy used for preview playback (export always uses path)
     MediaKind kind = MediaKind::Video;
     Ticks duration = 0;
     double fps = 30.0;
@@ -98,6 +100,9 @@ struct Clip
     float volume = 1.0f;
     TransitionType transIn = TransitionType::Cut;
     Ticks transLen = 0;
+    juce::String name;       // display name override (Rename)
+    bool enabled = true;     // Enable/Disable: a disabled clip stays on the timeline but is not seen or heard
+    int label = 0;           // label colour index (0 = default)
     FxStack fx;              // per-clip: exposure, contrast, saturation, scale, posX, posY, rotation, flash
     Ticks end() const { return start + length; }
     Ticks srcAt (Ticks t) const { return srcIn + (Ticks) std::llround ((double) (t - start) * speed); }

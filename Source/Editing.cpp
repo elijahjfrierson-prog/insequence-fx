@@ -152,6 +152,103 @@ void keepRange (Sequence& s, Ticks a, Ticks b)
     }
 }
 
+int insertVideoTrack (Sequence& s)
+{
+    int at = 0, n = 0;
+    for (int i = 0; i < (int) s.tracks.size(); ++i) if (s.tracks[(size_t) i].kind == TrackKind::Video) { at = i + 1; ++n; }
+    Track t; t.name = "V" + juce::String (n + 1); t.kind = TrackKind::Video;
+    s.tracks.insert (s.tracks.begin() + at, t);
+    for (auto& c : s.clips) if (c.track >= at) ++c.track;
+    return at;
+}
+
+juce::String addEffectClip (Sequence& s, const FxStack& fx, const juce::String& name, Ticks at, Ticks len)
+{
+    if (len <= 0) return {};
+    int tr = insertVideoTrack (s);
+    Clip c; c.id = newId(); c.track = tr; c.start = std::max<Ticks> (0, at); c.length = len; c.fx = fx; c.name = name;
+    s.clips.push_back (c); s.sortClips();
+    return c.id;
+}
+
+bool setTransitionAtCut (Sequence& s, int track, Ticks at, TransitionType ty, Ticks len, Ticks maxDist)
+{
+    if (track < 0 || track >= (int) s.tracks.size() || s.tracks[(size_t) track].locked) return false;
+    Clip* best = nullptr; Ticks bestD = maxDist + 1;
+    for (auto& c : s.clips)
+        if (c.track == track && ! c.locked)
+        {
+            Ticks d = std::abs (c.start - at);
+            if (d < bestD) { bestD = d; best = &c; }
+        }
+    if (best == nullptr) return false;
+    best->transIn = ty;
+    if (ty == TransitionType::Cut) best->transLen = 0;
+    else best->transLen = juce::jlimit<Ticks> (1, std::max<Ticks> (1, best->length), len);
+    return true;
+}
+
+bool shiftSong (Project& p, Ticks delta, bool withSynced)
+{
+    if (p.songId.isEmpty() || delta == 0) return false;
+    Ticks minStart = std::numeric_limits<Ticks>::max();
+    for (auto& sq : p.sequences) for (auto& c : sq.clips) if (c.mediaId == p.songId) minStart = std::min (minStart, c.start);
+    if (minStart == std::numeric_limits<Ticks>::max()) return false;
+    delta = std::max (delta, -minStart);
+    if (delta == 0) return false;
+    auto synced = [&] (const Clip& c)
+    {
+        auto* m = p.findMedia (c.mediaId);
+        return m != nullptr && c.speed == 1.0 && (m->sync.status == SyncInfo::Synced || m->sync.status == SyncInfo::Manual);
+    };
+    for (auto& sq : p.sequences)
+    {
+        for (auto& c : sq.clips)
+            if (c.mediaId == p.songId || (withSynced && synced (c))) c.start = std::max<Ticks> (0, c.start + delta);
+        sq.sortClips();
+    }
+    if (withSynced)
+    {
+        for (auto& m : p.media) if (m.sync.status == SyncInfo::Synced || m.sync.status == SyncInfo::Manual) m.sync.offset += delta;
+        p.song.gridOffset += delta;
+        for (auto& e : p.song.events) e.time += delta;
+    }
+    return true;
+}
+
+void settleClips (Sequence& s, const juce::StringArray& ids)
+{
+    std::vector<Clip> moved;
+    for (auto& c : s.clips) if (ids.contains (c.id)) moved.push_back (c);
+    s.clips.erase (std::remove_if (s.clips.begin(), s.clips.end(), [&] (const Clip& c) { return ids.contains (c.id); }), s.clips.end());
+    for (auto& m : moved) clearTrackRange (s, m.track, m.start, m.end());
+    for (auto& m : moved) s.clips.push_back (m);
+    s.sortClips();
+}
+
+void fillGaps (Sequence& s, const Project& p, int track)
+{
+    std::vector<Clip*> v;
+    for (auto& c : s.clips) if (c.track == track) v.push_back (&c);
+    std::sort (v.begin(), v.end(), [] (const Clip* a, const Clip* b) { return a->start < b->start; });
+    for (size_t i = 0; i + 1 < v.size(); ++i)
+    {
+        Clip& a = *v[i]; Clip& b = *v[i + 1];
+        Ticks gap = b.start - a.end();
+        if (gap <= 0) continue;
+        auto* ma = p.findMedia (a.mediaId);
+        Ticks roomA = (ma == nullptr || ma->kind == MediaKind::Image) ? gap
+                    : (a.speed <= 0 ? gap : (Ticks) ((double) (ma->duration - a.srcAt (a.end())) / a.speed));
+        Ticks ext = std::min (gap, std::max<Ticks> (0, roomA));
+        if (! a.locked) { a.length += ext; gap -= ext; }
+        if (gap > 0 && ! b.locked)
+        {
+            Ticks e2 = b.speed <= 0 ? gap : std::min (gap, std::max<Ticks> (0, (Ticks) ((double) b.srcIn / b.speed)));
+            b.start -= e2; b.length += e2; b.srcIn -= (Ticks) ((double) e2 * b.speed);
+        }
+    }
+}
+
 bool moveClips (Sequence& s, const juce::StringArray& ids, Ticks delta, int trackDelta)
 {
     for (auto& c : s.clips)
@@ -203,7 +300,7 @@ juce::String paintClip (Sequence& s, const juce::String& tid, Ticks at, int trac
     return c.id;
 }
 
-juce::String addMediaClip (Project& p, const juce::String& mid, int track, Ticks at)
+juce::String addMediaClip (Project& p, const juce::String& mid, int track, Ticks at, Ticks maxLen)
 {
     auto* m = p.findMedia (mid);
     auto& s = p.seq();
@@ -217,7 +314,7 @@ juce::String addMediaClip (Project& p, const juce::String& mid, int track, Ticks
         if (track < 0) track = s.addTrack (audio ? TrackKind::Audio : TrackKind::Video, audio ? "A1" : "V1");
     }
     Clip c; c.id = newId(); c.mediaId = mid; c.track = track; c.start = std::max<Ticks> (0, at);
-    c.length = m->duration; c.volume = audio ? 1.0f : 0.0f;
+    c.length = maxLen > 0 ? std::min (m->duration, maxLen) : m->duration; c.volume = audio ? 1.0f : 0.0f;
     clearTrackRange (s, track, c.start, c.end());
     s.clips.push_back (c); s.sortClips();
     return c.id;
@@ -520,5 +617,76 @@ int autoCutClip (Project& p, const juce::String& clipId, AutoCut mode, bool swit
     }
     s.sortClips();
     return made;
+}
+// ------------------------------------------------------------------ Premiere-style clip commands
+std::vector<Clip> copyClips (const Sequence& s, const juce::StringArray& ids)
+{
+    std::vector<Clip> out;
+    for (auto& c : s.clips) if (ids.contains (c.id)) out.push_back (c);
+    return out;
+}
+
+juce::StringArray pasteClips (Sequence& s, const std::vector<Clip>& clips, Ticks at)
+{
+    juce::StringArray ids;
+    if (clips.empty()) return ids;
+    Ticks first = clips.front().start;
+    for (auto& c : clips) first = std::min (first, c.start);
+    for (auto c : clips)
+    {
+        if (c.track < 0 || c.track >= (int) s.tracks.size() || s.tracks[(size_t) c.track].locked) continue;
+        c.id = newId(); c.start = at + (c.start - first); c.locked = false; c.group = 0;
+        s.clips.push_back (c); ids.add (c.id);
+    }
+    settleClips (s, ids);   // overwrite paste: only covers the pasted span
+    return ids;
+}
+
+juce::StringArray duplicateClips (Sequence& s, const juce::StringArray& ids)
+{
+    auto src = copyClips (s, ids);
+    if (src.empty()) return {};
+    Ticks end = 0;
+    for (auto& c : src) end = std::max (end, c.end());
+    return pasteClips (s, src, end);
+}
+
+void pasteAttributes (Sequence& s, const Clip& from, const juce::StringArray& ids)
+{
+    for (auto& c : s.clips)
+        if (ids.contains (c.id) && ! c.locked)
+        {
+            c.fx = from.fx; c.opacity = from.opacity; c.volume = from.volume;
+            c.transIn = from.transIn; c.transLen = from.transLen;
+        }
+}
+
+juce::String freezeFrame (Sequence& s, const juce::String& id, Ticks at, Ticks len)
+{
+    auto* c = s.findClip (id);
+    if (c == nullptr || at <= c->start || at >= c->end() || len <= 0) return {};
+    const int track = c->track;
+    if (! splitAt (s, at, { id })) return {};
+    Clip* mid = nullptr;
+    for (auto& k : s.clips) if (k.track == track && k.start == at) mid = &k;
+    if (mid == nullptr) return {};
+    juce::String mid_id = mid->id;
+    if (mid->length > len) splitAt (s, at + len, { mid_id });
+    mid = s.findClip (mid_id);
+    mid->speed = 0.0;   // srcIn already points at the frame under the playhead; the rest of the clip keeps its song position
+    return mid_id;
+}
+
+bool setClipSpeed (Sequence& s, const Project& p, const juce::String& id, double speed)
+{
+    auto* c = s.findClip (id);
+    if (c == nullptr || c->locked || speed <= 0) return false;
+    Ticks len = (Ticks) std::llround ((double) c->length * (c->speed > 0 ? c->speed : 1.0) / speed);
+    if (auto* m = p.findMedia (c->mediaId); m != nullptr && m->kind != MediaKind::Image)
+        len = std::min (len, (Ticks) ((double) (m->duration - c->srcIn) / speed));
+    for (auto& o : s.clips)
+        if (o.track == c->track && &o != c && o.start >= c->end()) len = std::min (len, o.start - c->start);
+    c->speed = speed; c->length = std::max<Ticks> (1, len);
+    return true;
 }
 }

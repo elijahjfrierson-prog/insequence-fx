@@ -1,7 +1,11 @@
 ; Produces InSequence-FX-Windows-Setup.exe: shows the EULA (must be accepted), then installs
 ; InSequence FX (with its FFmpeg DLLs) into Program Files with Start-menu and optional desktop shortcuts.
 #define MyAppName "InSequence FX"
-#define MyAppVersion "1.0.0"
+#define MyAppVersion GetEnv("VERSION")
+#if MyAppVersion == ""
+  #undef MyAppVersion
+  #define MyAppVersion "1.0.0"
+#endif
 #define MyAppPublisher "HumHouse"
 #define MyAppURL "https://github.com/elijahjfrierson-prog/insequence-fx"
 #define MyAppExeName MyAppName + ".exe"

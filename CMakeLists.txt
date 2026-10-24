@@ -1,6 +1,11 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(InSequenceFX VERSION 1.0.0 LANGUAGES C CXX)
+if(DEFINED ENV{VERSION} AND NOT "$ENV{VERSION}" STREQUAL "")
+    set(ISFX_VERSION "$ENV{VERSION}")
+else()
+    set(ISFX_VERSION "1.0.0")
+endif()
+project(InSequenceFX VERSION ${ISFX_VERSION} LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -90,7 +95,7 @@ if(NOT ISFX_TESTS_ONLY)
         Source/MainComponent.cpp
         Source/Main.cpp
     )
-    juce_add_binary_data(ISFXData SOURCES installer/LICENSE.txt assets/insequence-icon.png)
+    juce_add_binary_data(ISFXData SOURCES installer/LICENSE.txt assets/insequence-icon.png assets/insequence-logo.png assets/Michroma-Regular.ttf)
     target_compile_definitions(InSequenceFX PRIVATE ${ISFX_DEFS} JUCE_PLUGINHOST_VST3=1 JUCE_PLUGINHOST_AU=1 JUCE_PLUGINHOST_LADSPA=0)
     if(MSVC)
         target_compile_options(InSequenceFX PRIVATE /Zi)

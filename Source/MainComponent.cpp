@@ -131,8 +131,8 @@ MainComponent::MainComponent()
 {
     setLookAndFeel (&lnf);
     juce::LookAndFeel::setDefaultLookAndFeel (&lnf);
-    for (auto* c : std::initializer_list<juce::Component*> { &preview, &timeline, &media, &inspector, &hscroll, &fileBtn, &undoBtn, &redoBtn, &importBtn,
-            &presetsBtn, &pluginsBtn, &playBtn, &exportBtn, &snapBtn, &rippleBtn, &gridBtn, &chopBtn, &genBtn, &keepBtn, &delRangeBtn, &zoomIn, &zoomOut,
+    for (auto* c : std::initializer_list<juce::Component*> { &preview, &timeline, &media, &fxlib, &inspector, &mediaTgl, &inspTgl, &maxPrevBtn, &maxTlBtn, &hscroll, &fileBtn, &undoBtn, &redoBtn, &importBtn,
+            &presetsBtn, &pluginsBtn, &playBtn, &exportBtn, &snapBtn, &rippleBtn, &magnetBtn, &gridBtn, &chopBtn, &genBtn, &keepBtn, &delRangeBtn, &zoomIn, &zoomOut,
             &seqBox, &aspectBox, &snapBox, &chopBox, &styleBox, &status })
         addAndMakeVisible (c);
     const char* toolHelp[4] = { "E: select, move (drag) and trim (drag clip edges). Drag in the ruler to select a range.",
@@ -165,6 +165,9 @@ MainComponent::MainComponent()
     rippleBtn.setClickingTogglesState (true); gridBtn.setClickingTogglesState (true); gridBtn.setToggleState (true, juce::dontSendNotification);
     snapBtn.onClick = [this] { st.snapOn = snapBtn.getToggleState(); };
     rippleBtn.onClick = [this] { st.ripple = rippleBtn.getToggleState(); };
+    magnetBtn.setClickingTogglesState (true); magnetBtn.setToggleState (st.magnetic, juce::dontSendNotification);
+    magnetBtn.onClick = [this] { st.magnetic = magnetBtn.getToggleState(); };
+    magnetBtn.setTooltip ("Magnetic main track (CapCut style): V1 clips close up with no gaps; clips snap to edges, the playhead and beats.");
     gridBtn.onClick = [this] { st.showGrid = gridBtn.getToggleState(); timeline.repaint(); };
     snapBox.addItemList (snapModeNames(), 1); snapBox.setSelectedItemIndex ((int) st.snap, juce::dontSendNotification);
     snapBox.onChange = [this] { st.snap = (SnapMode) snapBox.getSelectedItemIndex(); };
@@ -209,7 +212,37 @@ MainComponent::MainComponent()
     hscroll.addListener (this); hscroll.setAutoHide (false);
     timeline.onEdited = [this] { refresh (true); };
     timeline.onSeek = [this] (Ticks t) { seek (t); };
+    timeline.onAskText = [this] (const juce::String& t, const juce::String& d, std::function<void (juce::String)> cb) { askText (t, d, cb); };
+    timeline.onFilesDropped = [this] (const juce::Array<juce::File>& files, int tr, Ticks at)
+    {
+        importFiles (files, [this, files, tr, at]
+        {
+            st.edit ("Add clip");
+            Ticks t = at; juce::StringArray added;
+            for (auto& f : files)
+                for (auto& m : st.project.media)
+                    if (m.path == f.getFullPathName() && m.id != st.project.songId)
+                    {
+                        auto id = addMediaClip (st.project, m.id, tr, t);
+                        if (auto* c = st.project.seq().findClip (id)) { t = c->end(); added.add (id); }
+                        break;
+                    }
+            if (! added.isEmpty()) st.selected = added;
+            refresh (true);
+        });
+    };
     inspector.onEdited = [this] { refresh (false); };
+    preview.onEdited = [this] { refresh (false); timeline.repaint(); };
+    preview.onSelect = [this] { refresh (true); };
+    mediaTgl.setTooltip ("Show or collapse the Media + Effects column."); inspTgl.setTooltip ("Show or collapse the Inspector.");
+    maxPrevBtn.setTooltip ("Maximize the preview (hides the side panels and timeline). Click again to restore.");
+    maxTlBtn.setTooltip ("Maximize the timeline. Drag the bar above the timeline tools to resize it freely.");
+    for (auto* b : { &mediaTgl, &inspTgl, &maxPrevBtn, &maxTlBtn }) b->setClickingTogglesState (true);
+    mediaTgl.setToggleState (true, juce::dontSendNotification); inspTgl.setToggleState (true, juce::dontSendNotification);
+    mediaTgl.onClick = [this] { showMedia = mediaTgl.getToggleState(); resized(); };
+    inspTgl.onClick = [this] { showInspector = inspTgl.getToggleState(); resized(); };
+    maxPrevBtn.onClick = [this] { maxPreview = maxPrevBtn.getToggleState(); if (maxPreview) { maxTimeline = false; maxTlBtn.setToggleState (false, juce::dontSendNotification); } resized(); };
+    maxTlBtn.onClick = [this] { maxTimeline = maxTlBtn.getToggleState(); if (maxTimeline) { maxPreview = false; maxPrevBtn.setToggleState (false, juce::dontSendNotification); } resized(); };
     media.onImport = [this]
     {
         chooser = std::make_unique<juce::FileChooser> ("Import media", juce::File(), "*.mp3;*.wav;*.flac;*.aif;*.aiff;*.m4a;*.mp4;*.mov;*.m4v;*.mkv;*.avi;*.mxf;*.webm;*.png;*.jpg;*.jpeg;*.cube;*.isfxpreset;*.isfxtemplate");
@@ -240,36 +273,46 @@ MainComponent::~MainComponent()
     stopTimer();
     devices.removeAudioCallback (&player);
     pluginWindows.clear();
-    juce::LookAndFeel::setDefaultLookAndFeel (nullptr);
     setLookAndFeel (nullptr);
 }
+
+ISFXLookAndFeel& sharedLookAndFeel() { static ISFXLookAndFeel l; return l; }
 
 void MainComponent::paint (juce::Graphics& g)
 {
     g.fillAll (theme::bg);
-    g.setColour (theme::panel2); g.fillRect (0, 0, getWidth(), 44);
-    g.setColour (theme::accent); g.setFont (juce::Font (18.0f, juce::Font::bold));
-    g.drawText ("InSequence FX", 10, 0, 150, 44, juce::Justification::centredLeft);
+    g.setGradientFill (juce::ColourGradient (juce::Colours::black, 0, 0, theme::panel, 0, 44, false)); g.fillRect (0, 0, getWidth(), 44);
+    g.setColour (theme::line); g.fillRect (0, 43, getWidth(), 1);
+    drawLogo (g, { 12.0f, 0.0f, 232.0f, 44.0f });
 }
 
 void MainComponent::resized()
 {
     auto r = getLocalBounds();
     auto top = r.removeFromTop (44).reduced (6, 7);
-    top.removeFromLeft (150);
+    top.removeFromLeft (246);
     auto place = [] (juce::Rectangle<int>& row, juce::Component& c, int w) { c.setBounds (row.removeFromLeft (w)); row.removeFromLeft (5); };
     place (top, fileBtn, 56); place (top, undoBtn, 56); place (top, redoBtn, 56); place (top, importBtn, 70); place (top, presetsBtn, 76); place (top, pluginsBtn, 80);
+    top.removeFromLeft (6); place (top, mediaTgl, 58); place (top, inspTgl, 72); place (top, maxPrevBtn, 92); place (top, maxTlBtn, 98);
     exportBtn.setBounds (top.removeFromRight (110)); top.removeFromRight (6);
     playBtn.setBounds (top.removeFromRight (70)); top.removeFromRight (10);
     aspectBox.setBounds (top.removeFromRight (230)); top.removeFromRight (6);
     seqBox.setBounds (top.removeFromRight (240)); top.removeFromRight (6);
     status.setBounds (top);
 
-    auto bottom = r.removeFromBottom (juce::jmax (300, (int) (getHeight() * 0.38)));
+    const bool showBottom = ! maxPreview;
+    int bh = maxTimeline ? r.getHeight() - 120 : juce::jlimit (200, std::max (200, r.getHeight() - 160), (int) (r.getHeight() * timelineFrac));
+    auto bottom = r.removeFromBottom (showBottom ? bh : 0);
+    if (showBottom) r.removeFromBottom (6);   // drag bar
+    splitY = bottom.getY() - 3;
+    for (auto* c : std::initializer_list<juce::Component*> { &timeline, &hscroll, &zoomIn, &zoomOut, &snapBox, &snapBtn, &rippleBtn, &magnetBtn, &gridBtn,
+                                                           &chopBox, &chopBtn, &styleBox, &genBtn, &keepBtn, &delRangeBtn })
+        c->setVisible (showBottom);
+    for (auto& b : toolBtn) b.setVisible (showBottom);
     auto bar = bottom.removeFromTop (36).reduced (6, 5);
     for (int i = 0; i < 4; ++i) place (bar, toolBtn[i], 76);
     bar.removeFromLeft (8);
-    place (bar, snapBox, 80); place (bar, snapBtn, 64); place (bar, rippleBtn, 76); place (bar, gridBtn, 64);
+    place (bar, snapBox, 80); place (bar, snapBtn, 64); place (bar, rippleBtn, 76); place (bar, magnetBtn, 70); place (bar, gridBtn, 64);
     bar.removeFromLeft (8);
     place (bar, chopBox, 104); place (bar, chopBtn, 64);
     bar.removeFromLeft (8);
@@ -279,8 +322,15 @@ void MainComponent::resized()
     zoomIn.setBounds (bar.removeFromRight (30)); bar.removeFromRight (4); zoomOut.setBounds (bar.removeFromRight (30));
     hscroll.setBounds (bottom.removeFromBottom (14));
     timeline.setBounds (bottom);
-    media.setBounds (r.removeFromLeft (290));
-    inspector.setBounds (r.removeFromRight (340));
+    const bool side = ! maxPreview;
+    media.setVisible (side && showMedia); fxlib.setVisible (side && showMedia); inspector.setVisible (side && showInspector);
+    if (side && showMedia)
+    {
+        auto left = r.removeFromLeft (290);
+        fxlib.setBounds (left.removeFromBottom ((int) (left.getHeight() * 0.42f)));
+        media.setBounds (left);
+    }
+    if (side && showInspector) inspector.setBounds (r.removeFromRight (340));
     preview.setBounds (r);
     preview.requestFrame (st.playhead);
 }
@@ -322,7 +372,8 @@ void MainComponent::seek (Ticks t)
 
 void MainComponent::togglePlay()
 {
-    if (player.isPlaying()) { player.stop(); playBtn.setButtonText ("Play"); return; }
+    if (player.isPlaying()) { player.stop(); playBtn.setButtonText ("Play"); preview.setLive (false); return; }
+    preview.setLive (true);
     player.setSequence (st.project.seq());
     player.play (st.playhead);
     playBtn.setButtonText ("Pause");
@@ -330,7 +381,7 @@ void MainComponent::togglePlay()
 
 void MainComponent::timerCallback()
 {
-    if (! player.isPlaying()) return;
+    if (! player.isPlaying()) { preview.setLive (false); return; }
     auto t = player.position();
     auto dur = st.project.seq().duration();
     if (t >= dur) { player.stop(); playBtn.setButtonText ("Play"); t = dur; }
@@ -339,6 +390,22 @@ void MainComponent::timerCallback()
     timeline.ensureVisible (t);
     hscroll.setCurrentRange (timeline.scrollSec, (timeline.getWidth() - 70) / timeline.pxPerSec, juce::dontSendNotification);
     timeline.repaint(); preview.repaint();
+}
+
+void MainComponent::mouseMove (const juce::MouseEvent& e)
+{
+    setMouseCursor (! maxPreview && std::abs (e.y - splitY) <= 4 ? juce::MouseCursor::UpDownResizeCursor : juce::MouseCursor::NormalCursor);
+}
+
+void MainComponent::mouseDown (const juce::MouseEvent& e) { draggingSplit = ! maxPreview && std::abs (e.y - splitY) <= 4; }
+
+void MainComponent::mouseDrag (const juce::MouseEvent& e)
+{
+    if (! draggingSplit) return;
+    float avail = (float) std::max (1, getHeight() - 44);
+    timelineFrac = juce::jlimit (0.15f, 0.85f, (float) (getHeight() - e.y) / avail);
+    maxTimeline = false; maxTlBtn.setToggleState (false, juce::dontSendNotification);
+    resized();
 }
 
 void MainComponent::scrollBarMoved (juce::ScrollBar*, double start) { timeline.scrollSec = start; timeline.repaint(); }
@@ -365,9 +432,29 @@ bool MainComponent::keyPressed (const juce::KeyPress& k)
         if (c == 'E') { exportDialog(); return true; }
         if (c == 'N') { newProject(); return true; }
         if (c == 'K') { st.edit ("Split"); splitAt (s, st.playhead, st.selected); refresh (true); return true; }
+        if (c == 'C') { st.clipboard = copyClips (s, st.selected); return true; }
+        if (c == 'X' && ! st.selected.isEmpty()) { st.clipboard = copyClips (s, st.selected); st.edit ("Cut"); deleteClips (s, st.selected, false); st.selected.clear(); refresh (true); return true; }
+        if (c == 'V' && k.getModifiers().isAltDown())
+        {
+            if (st.clipboard.size() == 1 && ! st.selected.isEmpty()) { st.edit ("Paste Attributes"); pasteAttributes (s, st.clipboard.front(), st.selected); refresh (true); }
+            return true;
+        }
+        if (c == 'V' && ! st.clipboard.empty()) { st.edit ("Paste"); st.selected = pasteClips (s, st.clipboard, st.playhead); refresh (true); return true; }
+        if (c == 'R' && st.selected.size() == 1) { timeline.clipMenuSpeed (st.selected[0]); return true; }
         return false;
     }
     auto ch = juce::CharacterFunctions::toLowerCase (k.getTextCharacter());
+    if (ch == 'e' && shift)
+    {
+        if (! st.selected.isEmpty())
+        {
+            st.edit ("Enable"); bool on = true;
+            if (auto* f = s.findClip (st.selected[0])) on = ! f->enabled;
+            for (auto& id : st.selected) if (auto* cl = s.findClip (id)) cl->enabled = on;
+            refresh (true);
+        }
+        return true;
+    }
     if (ch == 'e') { setTool (Tool::Select); return true; }
     if (ch == 'p') { setTool (Tool::Paint); return true; }
     if (ch == 'd') { setTool (Tool::Delete); return true; }
@@ -400,7 +487,7 @@ bool MainComponent::keyPressed (const juce::KeyPress& k)
     }
     if (c == juce::KeyPress::deleteKey || c == juce::KeyPress::backspaceKey)
     {
-        if (! st.selected.isEmpty()) { st.edit ("Delete"); deleteClips (s, st.selected, st.ripple); st.selected.clear(); refresh (true); }
+        if (! st.selected.isEmpty()) { st.edit (shift ? "Ripple Delete" : "Delete"); deleteClips (s, st.selected, st.ripple || shift); st.selected.clear(); refresh (true); }
         else if (st.rangeB > st.rangeA) delRangeBtn.onClick();
         return true;
     }
@@ -429,14 +516,14 @@ void MainComponent::askText (const juce::String& title, const juce::String& def,
 }
 
 // ============================================================ media
-void MainComponent::importFiles (const juce::Array<juce::File>& files)
+void MainComponent::importFiles (const juce::Array<juce::File>& files, std::function<void()> then)
 {
     auto res = std::make_shared<ImportResult>();
     auto songId = st.project.songId; auto mono = songMono;
     bool makeSong = st.project.songId.isEmpty();
     runTask ("Importing media", [res, files, songId, mono, makeSong] (ProgressCb p, std::function<bool()> c)
              { *res = decodeFiles (files, songId, mono, makeSong, p, c); },
-             [this, res] { applyImport (*res); });
+             [this, res, then] { applyImport (*res); if (then) then(); });
 }
 
 void MainComponent::placeSongClip()
@@ -570,10 +657,22 @@ void MainComponent::loadMediaCaches()
                 res->thumbs[m.id] = makeThumbnail (f, m.kind == MediaKind::Video ? secToTicks (std::min (1.0, ticksToSec (m.duration) / 2)) : 0, 72);
                 std::vector<float> mono;
                 if (m.kind == MediaKind::Video && m.hasAudio && decodeAudio (f, kAnalysisRate, 1, mono, e)) res->waves[m.id] = buildWaveform (mono, kAnalysisRate);
+                if (m.kind == MediaKind::Video && std::min (m.width, m.height) > kProxyHeight)
+                {
+                    auto pf = proxyFileFor (f, kProxyHeight);
+                    if (! pf.existsAsFile())
+                        makeProxy (f, pf, kProxyHeight, ticksToSec (m.duration), [&] (double x)
+                        {
+                            p ((i + juce::jlimit (0.0, 1.0, x)) / items.size(), "Optimizing " + m.name + " for smooth playback");
+                            return ! cancel();
+                        }, e);
+                    if (pf.existsAsFile()) res->proxies[m.id] = pf.getFullPathName();
+                }
             }
         }
     }, [this, res]
     {
+        for (auto& [k, v] : res->proxies) if (auto* mi = st.project.findMedia (k)) mi->proxyPath = v;
         for (auto& [k, v] : res->thumbs) st.thumbs[k] = v;
         for (auto& [k, v] : res->waves) st.waves[k] = v;
         for (auto& [k, v] : res->stereo) st.audio.put (k, v);
@@ -1020,6 +1119,11 @@ int MainComponent::runSelfTest (const juce::File& outDir)
         bool ok = r.render (st.project, st.project.seq(), st.playhead, W, H, px, 360);
         double sum = 0; for (size_t i = 0; i < px.size(); i += 4) sum += px[i] + px[i + 1] + px[i + 2];
         check (ok && sum / (px.size() / 4) > 30, "preview frame renders synced footage (mean " + juce::String (sum / (px.size() / 4) / 3, 1) + ")");
+        int PW, PH; outputSize (st.project, 540, PW, PH);
+        auto b0 = juce::Time::getMillisecondCounterHiRes();
+        for (int k = 0; k < 24; ++k) r.render (st.project, st.project.seq(), st.playhead + secToTicks (k / 24.0), PW, PH, px, 540);
+        double ms = (juce::Time::getMillisecondCounterHiRes() - b0) / 24.0;
+        check (ms < 1000, "preview playback render " + juce::String (PW) + "x" + juce::String (PH) + " " + juce::String (ms, 1) + " ms/frame");
     }
     preview.requestFrame (st.playhead);
     juce::Thread::sleep (800);

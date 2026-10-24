@@ -6,7 +6,7 @@ Timeline::Timeline (AppState& s) : st (s) { setWantsKeyboardFocus (false); }
 
 int Timeline::trackY (int i) const
 {
-    int y = kRuler;
+    int y = kRuler - vScroll;
     const auto& tr = st.project.seq().tracks;
     for (int k = 0; k < i && k < (int) tr.size(); ++k) y += tr[(size_t) k].height;
     return y;
@@ -15,7 +15,8 @@ int Timeline::trackY (int i) const
 int Timeline::trackAt (int y) const
 {
     const auto& tr = st.project.seq().tracks;
-    int yy = kRuler;
+    if (y < kRuler) return -1;
+    int yy = kRuler - vScroll;
     for (int k = 0; k < (int) tr.size(); ++k) { if (y >= yy && y < yy + tr[(size_t) k].height) return k; yy += tr[(size_t) k].height; }
     return y < kRuler ? -1 : (int) tr.size() - 1;
 }
@@ -94,11 +95,14 @@ void Timeline::paint (juce::Graphics& g)
         int x0 = secToX (ticksToSec (c.start)), x1 = secToX (ticksToSec (c.end()));
         if (x1 < kHeader || x0 > W) continue;
         juce::Rectangle<int> r (x0, trackY (c.track) + 2, std::max (2, x1 - x0), tr.height - 5);
+        if (r.getBottom() < 0 || r.getY() > getHeight()) continue;
         const MediaItem* m = p.findMedia (c.mediaId);
         bool audio = tr.kind == TrackKind::Audio, sel = st.selected.contains (c.id);
         auto base = audio ? juce::Colour (0xff1f6f5c) : juce::Colour (0xff3a3f7a);
         if (m && m->missing) base = bad.darker (0.6f);
-        if (tr.hidden || tr.mute) base = base.withSaturation (0.1f).darker (0.4f);
+        static const juce::uint32 labels[] { 0, 0xff8e6bd6, 0xff4f7fe0, 0xff2fb3a8, 0xffb38be0, 0xff3aa0d8, 0xff4c9a4c, 0xffd85c8a, 0xffe0963a };
+        if (c.label > 0 && c.label < 9) base = juce::Colour (labels[c.label]).darker (0.35f);
+        if (tr.hidden || tr.mute || ! c.enabled) base = base.withSaturation (0.1f).darker (0.4f);
         g.setColour (base); g.fillRoundedRectangle (r.toFloat(), 3);
         juce::Graphics::ScopedSaveState ss (g);
         g.reduceClipRegion (r);
@@ -133,8 +137,10 @@ void Timeline::paint (juce::Graphics& g)
             }
         }
         g.setColour (text); g.setFont (11.0f);
-        juce::String label = m ? m->name : juce::String ("(missing)");
-        if (c.speed != 1.0) label << "  " << juce::String (c.speed * 100, 0) << "%";
+        juce::String label = c.name.isNotEmpty() ? c.name : (m ? m->name : juce::String ("(missing)"));
+        if (! c.enabled) label = "[off] " + label;
+        if (c.speed == 0.0) label << "  hold";
+        else if (c.speed != 1.0) label << "  " << juce::String (c.speed * 100, 0) << "%";
         if (! c.fx.p.empty()) label << "  fx";
         g.drawText (label, r.reduced (4, 2), juce::Justification::topLeft, true);
         if (m && m->kind == MediaKind::Video && m->sync.status != SyncInfo::None)
@@ -207,13 +213,43 @@ void Timeline::paint (juce::Graphics& g)
     g.setColour (dim); g.setFont (10.0f);
     g.drawText (p.song.valid ? juce::String (p.song.bpm, 2) + " BPM" : juce::String ("no song"), 4, 0, kHeader - 6, kRuler, juce::Justification::centredLeft);
 
+    if (snapGuide >= 0 && drag != Drag::None)
+    {
+        int gx = secToX (ticksToSec (snapGuide));
+        g.setColour (accent2); g.drawVerticalLine (gx, (float) kRuler, (float) H);
+        g.fillEllipse ((float) gx - 3, (float) kRuler - 3, 6, 6);
+    }
+
     // playhead
     int px = secToX (ticksToSec (st.playhead));
     if (px >= kHeader)
     {
         g.setColour (accent); g.drawVerticalLine (px, 0, (float) H);
-        juce::Path tri; tri.addTriangle ((float) px - 5, 0, (float) px + 5, 0, (float) px, 8); g.fillPath (tri);
+        juce::Path tri;   // grab handle: drag to scrub
+        tri.addRoundedRectangle ((float) px - 6, 1, 12, 12, 2.5f);
+        tri.addTriangle ((float) px - 6, 12, (float) px + 6, 12, (float) px, 19);
+        g.fillPath (tri);
     }
+}
+
+Ticks Timeline::magnetSnap (Ticks t, Ticks len)
+{
+    snapGuide = -1;
+    if (! st.snapOn) return t;
+    const Ticks thr = secToTicks (10.0 / pxPerSec);
+    std::vector<Ticks> cands { 0, st.playhead };
+    for (auto& c : st.project.seq().clips)
+        if (c.id != dragClip && ! st.selected.contains (c.id)) { cands.push_back (c.start); cands.push_back (c.end()); }
+    Ticks best = -1, bestD = thr + 1, guide = -1;
+    for (auto cand : cands)
+    {
+        if (std::abs (cand - t) < bestD) { bestD = std::abs (cand - t); best = cand; guide = cand; }
+        if (len > 0 && std::abs (cand - (t + len)) < bestD) { bestD = std::abs (cand - (t + len)); best = cand - len; guide = cand; }
+    }
+    if (best >= 0 && bestD <= thr) { snapGuide = guide; return best; }
+    Ticks g = st.snapT (t);
+    snapGuide = g;
+    return g;
 }
 
 void Timeline::mouseMove (const juce::MouseEvent& e)
@@ -256,6 +292,14 @@ void Timeline::mouseDown (const juce::MouseEvent& e)
         }
         return;
     }
+    if (pos.x >= kHeader && std::abs (pos.x - secToX (ticksToSec (st.playhead))) <= 6 && ! e.mods.isPopupMenu())
+    {
+        int ed = 0;
+        if (pos.y < kRuler || clipAt (pos, ed) == nullptr || ed == 0)
+        {
+            drag = Drag::Scrub; repaint(); return;   // grabbed the playhead
+        }
+    }
     if (pos.y < kRuler)
     {
         drag = Drag::Range;
@@ -272,6 +316,13 @@ void Timeline::mouseDown (const juce::MouseEvent& e)
     switch (tool)
     {
         case Tool::Select:
+            if (c && st.project.songId.isNotEmpty() && c->mediaId == st.project.songId && edge == 0 && ! trackLocked)
+            {
+                // drag the song: synced footage, grid and drum hits follow it (Alt = move the song alone)
+                st.selected = { c->id }; dragClip = c->id; dragOrig = c->start; dragTrack = c->track; drag = Drag::Song;
+                if (onEdited) onEdited();
+                break;
+            }
             if (c)
             {
                 if (e.mods.isShiftDown() || e.mods.isCommandDown()) { if (st.selected.contains (c->id)) st.selected.removeString (c->id); else st.selected.add (c->id); }
@@ -335,21 +386,41 @@ void Timeline::mouseDrag (const juce::MouseEvent& e)
             st.rangeA = std::min (a, b); st.rangeB = std::max (a, b);
             repaint(); break;
         }
-        case Drag::Scrub: if (onSeek) onSeek (t); break;
+        case Drag::Scrub: if (onSeek) onSeek (e.mods.isAltDown() ? t : st.snapT (t)); break;
+        case Drag::Song:
+        {
+            st.project = beforeDrag;
+            Ticks delta = magnetSnap (dragOrig + (t - dragStart), 0) - dragOrig;
+            shiftSong (st.project, delta, ! e.mods.isAltDown());
+            if (onEdited) onEdited();
+            break;
+        }
         case Drag::Move:
         {
             st.project = beforeDrag;
-            Ticks delta = st.snapT (dragOrig + (t - dragStart)) - dragOrig;
+            const auto* dc = beforeDrag.seq().findClip (dragClip);
+            Ticks delta = magnetSnap (dragOrig + (t - dragStart), dc != nullptr ? dc->length : 0) - dragOrig;
             if (dragOrig + delta < 0) delta = -dragOrig;
             int td = trackAt (pos.y) - dragTrack;
-            if (! moveClips (st.project.seq(), st.selected, delta, td)) moveClips (st.project.seq(), st.selected, delta, 0);
+            auto& sq = st.project.seq();
+            int target = trackAt (pos.y);
+            if (! moveClips (sq, st.selected, delta, td))
+            {
+                bool videoClip = dragTrack >= 0 && dragTrack < (int) sq.tracks.size() && sq.tracks[(size_t) dragTrack].kind == TrackKind::Video;
+                if (videoClip && target >= 0 && target < (int) sq.tracks.size() && sq.tracks[(size_t) target].kind == TrackKind::Audio)
+                {
+                    int nt = insertVideoTrack (sq);       // dragged past the video layers: new layer on top
+                    if (! moveClips (sq, st.selected, delta, nt - dragTrack)) moveClips (sq, st.selected, delta, 0);
+                }
+                else moveClips (sq, st.selected, delta, 0);
+            }
             if (onEdited) onEdited();
             break;
         }
         case Drag::TrimL: case Drag::TrimR:
         {
             st.project = beforeDrag;
-            trimClip (st.project.seq(), st.project, dragClip, drag == Drag::TrimL, st.snapT (dragOrig + (t - dragStart)));
+            trimClip (st.project.seq(), st.project, dragClip, drag == Drag::TrimL, magnetSnap (dragOrig + (t - dragStart), 0));
             if (onEdited) onEdited();
             break;
         }
@@ -360,11 +431,19 @@ void Timeline::mouseDrag (const juce::MouseEvent& e)
 
 void Timeline::mouseUp (const juce::MouseEvent&)
 {
-    if (drag == Drag::Move || drag == Drag::TrimL || drag == Drag::TrimR)
+    snapGuide = -1;
+    if (drag == Drag::Move)
+    {
+        // dropped clips cover only the spot they land on; neighbours keep their song position (sync safe)
+        settleClips (st.project.seq(), st.selected);
+        if (st.magnetic) fillGaps (st.project.seq(), st.project, 0);
+        if (onEdited) onEdited();
+    }
+    if (drag == Drag::Move || drag == Drag::TrimL || drag == Drag::TrimR || drag == Drag::Song)
     {
         if (toVar (beforeDrag).toString() != toVar (st.project).toString())
         {
-            st.history.push (beforeDrag, drag == Drag::Move ? "Move" : "Trim");
+            st.history.push (beforeDrag, drag == Drag::Move ? "Move" : drag == Drag::Song ? "Move song" : "Trim");
             st.dirty = true;
         }
     }
@@ -383,7 +462,13 @@ void Timeline::zoomBy (float f, int anchorX)
 
 void Timeline::mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& w)
 {
-    if (e.mods.isCommandDown() || e.mods.isCtrlDown()) { zoomBy (std::pow (1.15f, w.deltaY * 6), e.x); return; }
+    if (e.mods.isCommandDown() || e.mods.isCtrlDown() || e.mods.isAltDown()) { zoomBy (std::pow (1.15f, w.deltaY * 6), e.x); return; }
+    if (e.mods.isShiftDown() || e.x < kHeader)
+    {
+        int total = 0; for (auto& tk : st.project.seq().tracks) total += tk.height;
+        vScroll = juce::jlimit (0, std::max (0, total - (getHeight() - kRuler) + 20), vScroll - (int) std::lround (w.deltaY * 240));
+        repaint(); return;
+    }
     float d = std::abs (w.deltaX) > std::abs (w.deltaY) ? w.deltaX : w.deltaY;
     scrollSec = std::max (0.0, scrollSec - d * 300 / pxPerSec);
     repaint();
@@ -400,12 +485,70 @@ void Timeline::ensureVisible (Ticks t)
 void Timeline::itemDropped (const SourceDetails& d)
 {
     auto desc = d.description.toString();
+    const Ticks beat = st.project.song.valid ? secToTicks (st.project.song.beatSec()) : secToTicks (0.5);
+    if (desc.startsWith ("transition:"))
+    {
+        auto ty = (TransitionType) desc.fromFirstOccurrenceOf (":", false, false).getIntValue();
+        int tr = trackAt (d.localPosition.y);
+        Ticks at = secToTicks (std::max (0.0, xToSec (d.localPosition.x)));
+        Ticks reach = secToTicks (40.0 / pxPerSec) + beat;
+        Sequence probe = st.project.seq();
+        if (setTransitionAtCut (probe, tr, at, ty, beat / 2, reach))
+        {
+            st.edit ("Add transition");
+            setTransitionAtCut (st.project.seq(), tr, at, ty, beat / 2, reach);
+            if (onEdited) onEdited();
+        }
+        return;
+    }
+    if (desc.startsWith ("look:"))
+    {
+        auto name = desc.fromFirstOccurrenceOf (":", false, false);
+        for (auto& l : lookLibrary())
+            if (l.name == name)
+            {
+                FxStack fx; applyLook (fx, l, 1.0f);
+                int edge = 0; const Clip* under = clipAt (d.localPosition, edge);
+                Ticks at = under ? under->start : magnetSnap (secToTicks (std::max (0.0, xToSec (d.localPosition.x))), 0);
+                Ticks len = under ? under->length : beat * st.project.song.beatsPerBar * 2;
+                st.edit ("Add effect");
+                auto id = addEffectClip (st.project.seq(), fx, l.name, at, len);
+                if (id.isNotEmpty()) st.selected = { id };
+                if (onEdited) onEdited();
+                break;
+            }
+        return;
+    }
     if (! desc.startsWith ("media:")) return;
     int tr = trackAt (d.localPosition.y);
     st.edit ("Add clip");
-    auto id = addMediaClip (st.project, desc.fromFirstOccurrenceOf ("media:", false, false), tr, st.snapT (secToTicks (std::max (0.0, xToSec (d.localPosition.x)))));
+    dragClip = {};
+    Ticks at = magnetSnap (secToTicks (std::max (0.0, xToSec (d.localPosition.x))), 0);
+    snapGuide = -1;
+    // dropped in between existing clips: fill one bar (or up to the next edit) instead of wiping the rest of the track
+    Ticks maxLen = 0;
+    const auto& sq = st.project.seq();
+    for (auto& c : sq.clips)
+        if (c.track == tr && c.end() > at)
+        {
+            Ticks room = c.start > at ? c.start - at : 0;
+            Ticks bar = st.project.song.valid ? secToTicks (st.project.song.beatSec() * st.project.song.beatsPerBar) : secToTicks (2.0);
+            Ticks len = room > secToTicks (1.0 / st.project.fps) ? room : bar;
+            maxLen = maxLen == 0 ? len : std::min (maxLen, len);
+        }
+    auto id = addMediaClip (st.project, desc.fromFirstOccurrenceOf ("media:", false, false), tr, at, maxLen);
     if (id.isNotEmpty()) st.selected = { id };
     if (onEdited) onEdited();
+}
+
+void Timeline::filesDropped (const juce::StringArray& paths, int x, int y)
+{
+    juce::Array<juce::File> files;
+    for (auto& f : paths) files.add (juce::File (f));
+    dragClip = {};
+    Ticks at = magnetSnap (secToTicks (std::max (0.0, xToSec (x))), 0);
+    snapGuide = -1;
+    if (onFilesDropped) onFilesDropped (files, trackAt (y), at);
 }
 
 void Timeline::clipMenu (const juce::String& id)
@@ -420,28 +563,129 @@ void Timeline::clipMenu (const juce::String& id)
     for (int i = 0; i < names.size(); ++i) cut.addItem (100 + i, names[i]);
     cut.addSeparator();
     cut.addItem (99, "Switch camera angles on each cut", video, switchAngles && video);
-    juce::PopupMenu m;
-    m.addSubMenu ("Auto Cut", cut, ! c->locked);
-    m.addItem (2, "Split at playhead  (Ctrl+K)", st.playhead > c->start && st.playhead < c->end());
-    m.addItem (3, "Reverse speed to 100%", c->speed != 1.0);
-    m.addItem (4, c->locked ? "Unlock clip" : "Lock clip");
-    m.addItem (5, "Delete" + juce::String (st.ripple ? " (ripple)" : ""), ! c->locked);
+    const bool lk = c->locked;
+    const bool many = st.selected.size() > 1;
+    juce::PopupMenu m, trans, scale, labelM;
+    auto tn = transitionNames();
+    for (int i = 1; i < tn.size(); ++i) trans.addItem (300 + i, tn[i], ! lk, (int) c->transIn == i);
+    trans.addSeparator(); trans.addItem (300, "Remove transition", ! lk && c->transIn != TransitionType::Cut);
+    int rf = (int) std::lround (c->fx.get ("reframe", 0.0f));
+    scale.addItem (40, "Set to Frame Size (fill)", video && ! lk, rf == 0);
+    scale.addItem (41, "Scale to Frame Size (fit)", video && ! lk, rf == 1);
+    scale.addItem (42, "Fit with blurred background", video && ! lk, rf == 2);
+    const char* ln[] { "None", "Violet", "Iris", "Caribbean", "Lavender", "Cerulean", "Forest", "Rose", "Mango" };
+    for (int i = 0; i < 9; ++i) labelM.addItem (200 + i, ln[i], true, c->label == i);
+    m.addItem (10, "Cut  (Ctrl+X)", ! lk);
+    m.addItem (11, "Copy  (Ctrl+C)");
+    m.addItem (12, "Paste at playhead  (Ctrl+V)", ! st.clipboard.empty());
+    m.addItem (13, "Paste Attributes  (Ctrl+Alt+V)", st.clipboard.size() == 1 && ! lk);
+    m.addItem (14, "Duplicate", ! lk);
+    m.addSeparator();
+    m.addItem (5, "Delete", ! lk);
+    m.addItem (6, "Ripple Delete  (Shift+Del)", ! lk);
+    m.addItem (2, "Split at playhead  (Ctrl+K)", ! lk && st.playhead > c->start && st.playhead < c->end());
+    m.addSubMenu ("Auto Cut", cut, ! lk);
+    m.addSeparator();
+    m.addItem (20, juce::String (c->enabled ? "Disable" : "Enable") + "  (Shift+E)", ! lk);
+    m.addItem (21, "Group  (G)", many && ! lk);
+    m.addItem (22, "Ungroup", c->group != 0);
+    m.addSeparator();
+    m.addItem (30, "Speed/Duration...  (Ctrl+R)", ! lk);
+    m.addItem (3, "Reset speed to 100%", ! lk && c->speed != 1.0);
+    m.addItem (31, "Add Frame Hold Segment (1 beat)", ! lk && video && st.playhead > c->start && st.playhead < c->end());
+    m.addSubMenu ("Transition in", trans, ! lk);
+    m.addSubMenu ("Scale / Reframe", scale, video && ! lk);
+    juce::PopupMenu lay; auto lns = layoutNames();
+    for (int i = 0; i < lns.size(); ++i) lay.addItem (400 + i, lns[i], video && ! lk);
+    lay.addSeparator(); lay.addItem (420, "Stack selected clips (top to bottom)", video && ! lk && many);
+    m.addSubMenu ("Layout / Split screen", lay, video && ! lk);
+    m.addItem (32, "Remove Effects", ! lk && (! c->fx.p.empty() || c->opacity != 1.0f || c->transIn != TransitionType::Cut));
+    m.addSeparator();
+    m.addItem (33, "Rename...");
+    m.addSubMenu ("Label", labelM);
+    m.addItem (4, c->locked ? "Unlock clip  (L)" : "Lock clip  (L)");
     m.showMenuAsync (juce::PopupMenu::Options(), [this, id] (int r)
     {
-        auto* cl = st.project.seq().findClip (id);
+        auto& sq = st.project.seq();
+        auto* cl = sq.findClip (id);
         if (cl == nullptr || r == 0) return;
         if (r == 99) { switchAngles = ! switchAngles; juce::MessageManager::callAsync ([this, id] { clipMenu (id); }); return; }
-        if (r >= 100)
+        auto sel = st.selected.contains (id) ? st.selected : juce::StringArray { id };
+        const Ticks beat = secToTicks (st.project.song.valid ? st.project.song.beatSec() : 0.5);
+        if (r >= 100 && r < 200)
         {
             st.edit ("Auto Cut");
             int n = autoCutClip (st.project, id, (AutoCut) (r - 100), switchAngles, (juce::uint32) juce::Time::currentTimeMillis());
             if (n == 0) st.history.undo (st.project);
             st.selected.clear();
         }
-        if (r == 2) { st.edit ("Split"); splitAt (st.project.seq(), st.playhead, { id }); }
-        if (r == 3) { st.edit ("Speed"); cl->speed = 1.0; }
+        if (r >= 200 && r < 209) { st.edit ("Label"); for (auto& i : sel) if (auto* k = sq.findClip (i)) k->label = r - 200; }
+        if (r >= 300 && r < 400)
+        {
+            st.edit ("Transition");
+            for (auto& i : sel) if (auto* k = sq.findClip (i); k && ! k->locked)
+            {
+                k->transIn = (TransitionType) (r - 300);
+                if (k->transLen == 0 && r > 300) k->transLen = beat / 2;
+            }
+        }
+        if (r >= 400 && r < 412) { st.edit ("Layout"); for (auto& i : sel) if (auto* k = sq.findClip (i)) applyLayout (st.project, *k, r - 400); }
+        if (r == 420)
+        {
+            st.edit ("Stack layout");
+            std::vector<Clip*> v; for (auto& i : sel) if (auto* k = sq.findClip (i)) v.push_back (k);
+            std::sort (v.begin(), v.end(), [] (const Clip* a, const Clip* b) { return a->track > b->track; });
+            static const int two[] { 1, 2 }, three[] { 5, 6, 7 }, four[] { 8, 9, 10, 11 };
+            const int* slots = v.size() == 2 ? two : v.size() == 3 ? three : four;
+            for (size_t k = 0; k < v.size() && k < 4; ++k) applyLayout (st.project, *v[k], slots[k]);
+        }
+        if (r >= 40 && r <= 42) { st.edit ("Scale to frame"); for (auto& i : sel) if (auto* k = sq.findClip (i)) k->fx.set ("reframe", (float) (r - 40)); }
+        if (r == 10) { st.clipboard = copyClips (sq, sel); st.edit ("Cut"); deleteClips (sq, sel, false); st.selected.clear(); }
+        if (r == 11) st.clipboard = copyClips (sq, sel);
+        if (r == 12) { st.edit ("Paste"); st.selected = pasteClips (sq, st.clipboard, st.playhead); }
+        if (r == 13) { st.edit ("Paste Attributes"); pasteAttributes (sq, st.clipboard.front(), sel); }
+        if (r == 14) { st.edit ("Duplicate"); st.selected = duplicateClips (sq, sel); }
+        if (r == 2) { st.edit ("Split"); splitAt (sq, st.playhead, { id }); }
+        if (r == 3) { st.edit ("Speed"); setClipSpeed (sq, st.project, id, 1.0); }
         if (r == 4) { st.edit ("Lock"); cl->locked = ! cl->locked; }
-        if (r == 5) { st.edit ("Delete"); deleteClips (st.project.seq(), { id }, st.ripple); st.selected.clear(); }
+        if (r == 5) { st.edit ("Delete"); deleteClips (sq, sel, false); st.selected.clear(); }
+        if (r == 6) { st.edit ("Ripple Delete"); deleteClips (sq, sel, true); st.selected.clear(); }
+        if (r == 20) { st.edit ("Enable"); bool on = ! cl->enabled; for (auto& i : sel) if (auto* k = sq.findClip (i)) k->enabled = on; }
+        if (r == 21 || r == 22)
+        {
+            st.edit (r == 21 ? "Group" : "Ungroup");
+            int ng = 1; for (auto& k : sq.clips) ng = std::max (ng, k.group + 1);
+            int g0 = cl->group;
+            for (auto& k : sq.clips) if (r == 21 ? sel.contains (k.id) : (k.group == g0)) k.group = r == 21 ? ng : 0;
+        }
+        if (r == 30 && onAskText)
+            onAskText ("Speed / Duration (%)", juce::String (cl->speed * 100, 0), [this, id] (juce::String v)
+            {
+                double pc = v.retainCharacters ("0123456789.").getDoubleValue();
+                if (pc <= 0) return;
+                st.edit ("Speed/Duration"); setClipSpeed (st.project.seq(), st.project, id, pc / 100.0);
+                if (onEdited) onEdited();
+            });
+        if (r == 31) { st.edit ("Frame Hold"); auto h = freezeFrame (sq, id, st.playhead, beat); if (h.isNotEmpty()) st.selected = { h }; }
+        if (r == 32) { st.edit ("Remove Effects"); for (auto& i : sel) if (auto* k = sq.findClip (i)) { k->fx = {}; k->opacity = 1; k->transIn = TransitionType::Cut; k->transLen = 0; } }
+        if (r == 33 && onAskText)
+            onAskText ("Rename clip", cl->name, [this, id] (juce::String v)
+            {
+                if (auto* k = st.project.seq().findClip (id)) { st.edit ("Rename"); k->name = v; }
+                if (onEdited) onEdited();
+            });
+        if (onEdited) onEdited();
+    });
+}
+void Timeline::clipMenuSpeed (const juce::String& id)
+{
+    auto* cl = st.project.seq().findClip (id);
+    if (cl == nullptr || cl->locked || ! onAskText) return;
+    onAskText ("Speed / Duration (%)", juce::String (cl->speed * 100, 0), [this, id] (juce::String v)
+    {
+        double pc = v.retainCharacters ("0123456789.").getDoubleValue();
+        if (pc <= 0) return;
+        st.edit ("Speed/Duration"); setClipSpeed (st.project.seq(), st.project, id, pc / 100.0);
         if (onEdited) onEdited();
     });
 }
