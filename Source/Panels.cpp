@@ -1,4 +1,6 @@
 #include "App.h"
+#include "Editing.h"
+#include <cstring>
 
 namespace isfx
 {
@@ -408,80 +410,337 @@ juce::var MediaPanel::getDragSourceDescription (const juce::SparseSet<int>& rows
     return "media:" + st.project.media[(size_t) rows[0]].id;
 }
 
-FxLibrary::FxLibrary (AppState& s) : st (s)
+FxLibrary::FxLibrary (AppState& s) : juce::Thread ("ISFX fx examples"), st (s)
 {
+    open = { "T", "E", "S" };
     reload();
     list.setModel (this); list.setRowHeight (22);
     list.setColour (juce::ListBox::backgroundColourId, theme::panel);
     addAndMakeVisible (list);
+    startThread (juce::Thread::Priority::low);
+}
+
+FxLibrary::~FxLibrary()
+{
+    signalThreadShouldExit(); exWake.signal(); stopThread (4000);
+    cancelPendingUpdate();
+}
+
+void FxLibrary::resized()
+{
+    auto r = getLocalBounds().reduced (6).withTrimmedTop (20);
+    exArea = r.getHeight() > 240 ? r.removeFromBottom (juce::jmin (150, r.getHeight() / 3)) : juce::Rectangle<int>();
+    list.setBounds (r);
 }
 
 void FxLibrary::reload()
 {
-    rows.clear();
-    rows.push_back ({ "TRANSITIONS  (drag onto a cut)", {}, {}, true });
+    all.clear();
+    auto folder = [&] (int level, const juce::String& key, const juce::String& label)
+    {
+        Row r; r.label = label; r.header = true; r.level = level; r.folder = key;
+        r.parent = key.containsChar ('/') ? key.upToLastOccurrenceOf ("/", false, false) : juce::String();
+        all.push_back (r);
+    };
+    auto item = [&] (const juce::String& parent, const juce::String& label, const juce::String& desc, const juce::String& help)
+    {
+        Row r; r.label = label; r.desc = desc; r.help = help; r.parent = parent;
+        r.level = parent.containsChar ('/') ? 2 : 1;
+        all.push_back (r);
+    };
+    const auto cd = contentDir();
+    juce::Array<juce::File> packs;
+    if (cd.isDirectory()) { packs = cd.getChildFile ("Presets").findChildFiles (juce::File::findDirectories, false); packs.sort(); }
+    auto isTransPack = [] (const juce::File& d) { return d.getFileName().containsIgnoreCase ("transition"); };
+    auto addPack = [&] (const juce::File& d, const juce::String& top)
+    {
+        auto ps = loadUserPresets (d);
+        if (ps.empty()) return;
+        const auto key = top + "/pack:" + d.getFileName();
+        folder (1, key, d.getFileName());
+        for (auto& u : ps)
+            item (key, u.name, "preset:" + u.file.getFullPathName(), "Stock preset from " + d.getFileName()
+                  + ".\nDrop on a clip: applies its effects with their keyframes (IN/OUT presets line up with the clip start/end). Everything stays editable in the Inspector.");
+    };
+
+    folder (0, "T", "VIDEO TRANSITIONS");
+    folder (1, "T/builtin", "Built-in (drag onto a cut)");
     auto tn = transitionNames();
     for (int i = 1; i < tn.size(); ++i)
-        rows.push_back ({ tn[i], "transition:" + juce::String (i), "Drag onto the cut between two clips. It locks to that cut and moves with it. Set length, amount and direction in the Inspector.", false });
-    rows.push_back ({ "EFFECTS & LOOKS  (drag onto clips)", {}, {}, true });
-    for (auto& l : lookLibrary())
-        rows.push_back ({ l.name, "look:" + l.name, l.help + "\nDrop on a clip for an effect layer over it, or on empty space for a 2-bar layer. Trim, move, fade (opacity) or disable it like any clip.", false });
-    if (auto cd = contentDir(); cd.isDirectory())
+        item ("T/builtin", tn[i], "transition:" + juce::String (i), "Drag onto the cut between two clips. It locks to that cut and moves with it. Set length, amount and direction in the Inspector.");
+    for (auto& d : packs) if (isTransPack (d)) addPack (d, "T");
+
+    folder (0, "E", "VIDEO EFFECTS");
+    juce::StringArray cats;
+    for (auto& l : lookLibrary()) cats.addIfNotAlreadyThere (l.category.isEmpty() ? juce::String ("Looks") : l.category);
+    for (auto& cat : cats)
+    {
+        folder (1, "E/look:" + cat, cat);
+        for (auto& l : lookLibrary())
+            if ((l.category.isEmpty() ? juce::String ("Looks") : l.category) == cat)
+                item ("E/look:" + cat, l.name, "look:" + l.name, l.help + "\nDrop on a clip for an effect layer over it, or on empty space for a 2-bar layer. Trim, move, fade (opacity) or disable it like any clip.");
+    }
+    for (auto& d : packs) if (! isTransPack (d)) addPack (d, "E");
+    if (cd.isDirectory())
     {
         auto luts = cd.getChildFile ("LUTs").findChildFiles (juce::File::findFiles, true, "*.cube");
         luts.sort();
-        if (! luts.isEmpty()) rows.push_back ({ "LUTS  (drag onto clips)", {}, {}, true });
+        if (! luts.isEmpty()) folder (1, "E/luts", "LUTs");
         for (auto& f : luts)
-            rows.push_back ({ f.getFileNameWithoutExtension(), "lut:" + f.getFullPathName(),
-                              f.getParentDirectory().getFileName() + "\nDrop on a clip for a LUT layer over it, or on empty space for a 2-bar LUT layer. Fade it with opacity.", false });
-        auto sfx = cd.getChildFile ("SFX").findChildFiles (juce::File::findFiles, true, "*.mp3;*.wav;*.aif;*.aiff");
-        sfx.sort();
-        if (! sfx.isEmpty()) rows.push_back ({ "SOUND FX  (drag onto a track)", {}, {}, true });
-        for (auto& f : sfx)
-            rows.push_back ({ f.getFileNameWithoutExtension(), "sfx:" + f.getFullPathName(), "Drop on the timeline to add this sound at that spot.", false });
-    }
-    if (auto cd = contentDir(); cd.isDirectory())   // bundled Premiere packs, rebuilt natively
-    {
-        auto packs = cd.getChildFile ("Presets").findChildFiles (juce::File::findDirectories, false);
-        packs.sort();
-        for (auto& d : packs)
-        {
-            auto ps = loadUserPresets (d);
-            if (ps.empty()) continue;
-            rows.push_back ({ "STOCK FX: " + d.getFileName() + "  (" + juce::String ((int) ps.size()) + ")", {}, {}, true });
-            for (auto& u : ps)
-                rows.push_back ({ u.name, "preset:" + u.file.getFullPathName(), "Stock preset from " + d.getFileName()
-                                  + ".\nDrop on a clip: applies its effects with their keyframes (IN/OUT presets line up with the clip start/end). Everything stays editable in the Inspector.", false });
-        }
+            item ("E/luts", f.getFileNameWithoutExtension(), "lut:" + f.getFullPathName(),
+                  f.getParentDirectory().getFileName() + "\nDrop on a clip for a LUT layer over it, or on empty space for a 2-bar LUT layer. Fade it with opacity.");
     }
     bool head = false;
     for (auto& u : loadUserPresets())
         if (u.clip)
         {
-            if (! head) { rows.push_back ({ "MY PRESETS  (drag onto clips)", {}, {}, true }); head = true; }
-            rows.push_back ({ u.name, "preset:" + u.file.getFullPathName(), "Drop on a clip: applies these effects with their keyframes. Everything stays editable in the Inspector.", false });
+            if (! head) { folder (1, "E/mine", "My Presets"); head = true; }
+            item ("E/mine", u.name, "preset:" + u.file.getFullPathName(), "Drop on a clip: applies these effects with their keyframes. Everything stays editable in the Inspector.");
         }
     auto mine = userDataDir().getChildFile ("LUTs").findChildFiles (juce::File::findFiles, true, "*.cube");
     mine.sort();
-    if (! mine.isEmpty()) rows.push_back ({ "MY LUTS  (drag onto clips)", {}, {}, true });
-    for (auto& f : mine) rows.push_back ({ f.getFileNameWithoutExtension(), "lut:" + f.getFullPathName(), "Imported LUT. Drop on a clip for a LUT layer over it.", false });
+    if (! mine.isEmpty()) folder (1, "E/myluts", "My LUTs");
+    for (auto& f : mine) item ("E/myluts", f.getFileNameWithoutExtension(), "lut:" + f.getFullPathName(), "Imported LUT. Drop on a clip for a LUT layer over it.");
+
+    if (cd.isDirectory())
+    {
+        auto sfx = cd.getChildFile ("SFX").findChildFiles (juce::File::findFiles, true, "*.mp3;*.wav;*.aif;*.aiff");
+        sfx.sort();
+        if (! sfx.isEmpty()) folder (0, "S", "SOUND FX");
+        for (auto& f : sfx)
+            item ("S", f.getFileNameWithoutExtension(), "sfx:" + f.getFullPathName(), "Drop on the timeline to add this sound at that spot.");
+    }
+    for (auto& r : all)   // item counts on folder rows
+        if (r.header)
+            for (auto& o : all)
+                if (! o.header && (o.parent == r.folder || o.parent.startsWith (r.folder + "/"))) ++r.count;
+    refilter();
+}
+
+void FxLibrary::refilter()
+{
+    auto shown = [&] (juce::String key)
+    {
+        while (key.isNotEmpty())
+        {
+            if (open.count (key) == 0) return false;
+            key = key.containsChar ('/') ? key.upToLastOccurrenceOf ("/", false, false) : juce::String();
+        }
+        return true;
+    };
+    rows.clear();
+    for (auto& r : all) if (shown (r.parent)) rows.push_back (r);
     list.updateContent(); list.repaint();
 }
+
+void FxLibrary::listBoxItemClicked (int row, const juce::MouseEvent&)
+{
+    if (row < 0 || row >= getNumRows() || ! rows[(size_t) row].header) return;
+    const auto key = rows[(size_t) row].folder;
+    if (open.count (key)) open.erase (key); else open.insert (key);
+    refilter();
+    list.selectRow (row, true, true);
+}
+
+void FxLibrary::selectedRowsChanged (int row)
+{
+    if (row < 0 || row >= getNumRows()) return;
+    auto& r = rows[(size_t) row];
+    if (r.header) return;
+    {
+        const juce::ScopedLock sl (exLock);
+        exWant = r.desc; exName = r.label;
+        exProj = std::make_shared<const Project> (st.project);
+        exAt = st.playhead;
+        exNote = "Rendering example...";
+    }
+    exWake.signal();
+    repaint (exArea);
+}
+
+static juce::Image rgbaToImage (const std::vector<juce::uint8>& px, int W, int H)
+{
+    juce::Image im (juce::Image::ARGB, W, H, false);
+    juce::Image::BitmapData bd (im, juce::Image::BitmapData::writeOnly);
+    for (int y = 0; y < H; ++y)
+    {
+        auto* src = px.data() + (size_t) y * W * 4;
+        auto* dst = reinterpret_cast<juce::PixelARGB*> (bd.getLinePointer (y));
+        for (int x = 0; x < W; ++x, src += 4) dst[x].setARGB (255, src[0], src[1], src[2]);
+    }
+    return im;
+}
+
+void FxLibrary::run()
+{
+    std::vector<juce::uint8> px;
+    while (! threadShouldExit())
+    {
+        exWake.wait (200);
+        juce::String desc; std::shared_ptr<const Project> p; Ticks at = 0;
+        {
+            const juce::ScopedLock sl (exLock);
+            if (exWant.isEmpty()) continue;
+            desc = exWant; exWant = {}; p = exProj; at = exAt;
+        }
+        if (p == nullptr) continue;
+        const auto& seq = p->seq();
+        auto isVideo = [&] (const Clip& c)
+        {
+            if (! c.enabled || c.mediaId.isEmpty() || c.track < 0 || c.track >= (int) seq.tracks.size()) return false;
+            if (seq.tracks[(size_t) c.track].kind != TrackKind::Video) return false;
+            auto* m = p->findMedia (c.mediaId);
+            return m != nullptr && m->kind != MediaKind::Audio;
+        };
+        juce::Image out; juce::String note;
+        int W = 0, H = 0; outputSize (*p, 180, W, H);
+        if (desc.startsWith ("sfx:")) note = "Sound effect: drag it onto the timeline to hear it.";
+        else if (desc.startsWith ("transition:"))
+        {   // the transition on a real cut of this edit: 3 frames across it
+            const Clip* best = nullptr; Ticks bestD = 0;
+            for (auto& c : seq.clips)
+            {
+                if (! isVideo (c)) continue;
+                bool cut = false;
+                for (auto& o : seq.clips)
+                    if (&o != &c && o.track == c.track && isVideo (o) && std::llabs (o.end() - c.start) <= secToTicks (0.05)) { cut = true; break; }
+                const Ticks d = std::llabs (c.start - at);
+                if (cut && (best == nullptr || d < bestD)) { best = &c; bestD = d; }
+            }
+            if (best == nullptr) note = "Put two clips back to back on a track to see this transition on your footage.";
+            else
+            {
+                Sequence s = seq;
+                auto* k = s.findClip (best->id);
+                k->transIn = (TransitionType) desc.fromFirstOccurrenceOf (":", false, false).getIntValue();
+                k->transLen = std::min (secToTicks (0.6), k->length / 2);
+                const int fw = std::max (1, W / 2), fh = std::max (1, H / 2);
+                out = juce::Image (juce::Image::ARGB, fw * 3 + 4, fh, true);
+                juce::Graphics g (out);
+                const double at3[] = { 0.2, 0.5, 0.8 };
+                for (int i = 0; i < 3 && ! threadShouldExit(); ++i)
+                    if (exRenderer.render (*p, s, k->start + (Ticks) (k->transLen * at3[i]), fw, fh, px, 360))
+                        g.drawImageAt (rgbaToImage (px, fw, fh), i * (fw + 2), 0);
+            }
+        }
+        else
+        {   // before | after on the clip under the playhead (or the first clip)
+            const Clip* c = nullptr;
+            for (auto& o : seq.clips) if (isVideo (o) && at >= o.start && at < o.end()) { c = &o; break; }
+            if (c == nullptr) for (auto& o : seq.clips) if (isVideo (o)) { c = &o; break; }
+            if (c == nullptr) note = "Add a clip to the timeline to see examples on your footage.";
+            else
+            {
+                Ticks t = at >= c->start && at < c->end() ? at : c->start + c->length / 2;
+                Sequence s = seq;
+                bool ok = true;
+                if (desc.startsWith ("look:"))
+                {
+                    const auto name = desc.fromFirstOccurrenceOf (":", false, false);
+                    ok = false;
+                    for (auto& l : lookLibrary())
+                        if (l.name == name) { FxStack fx; applyLook (fx, l, 1.0f); addEffectClip (s, fx, l.name, c->start, c->length); ok = true; break; }
+                }
+                else if (desc.startsWith ("lut:"))
+                {
+                    FxStack fx; fx.lutPath = desc.fromFirstOccurrenceOf (":", false, false);
+                    addEffectClip (s, fx, "LUT", c->start, c->length);
+                }
+                else if (desc.startsWith ("preset:"))
+                {
+                    UserPreset up; juce::String err;
+                    ok = readPresetFile (juce::File (desc.fromFirstOccurrenceOf ("preset:", false, false)), up, err);
+                    if (ok)
+                        if (auto* k = s.findClip (c->id))
+                        {
+                            applyUserPreset (*k, up);
+                            if (up.length > 0)
+                            {   // middle of the preset's animation
+                                const Ticks span = std::min (k->length, up.length);
+                                t = up.atEnd ? k->end() - span / 2 : k->start + span / 2;
+                            }
+                        }
+                }
+                if (! ok) note = "No example for this item.";
+                else
+                {
+                    std::vector<juce::uint8> before;
+                    const bool b = exRenderer.render (*p, seq, t, W, H, before, 360);
+                    const bool a = exRenderer.render (*p, s, t, W, H, px, 360);
+                    if (a && b)
+                    {   // left half untouched, right half with the effect
+                        for (int y = 0; y < H; ++y)
+                            std::memcpy (px.data() + (size_t) y * W * 4, before.data() + (size_t) y * W * 4, (size_t) (W / 2) * 4);
+                        out = rgbaToImage (px, W, H);
+                        juce::Graphics g (out);
+                        g.setColour (juce::Colours::white.withAlpha (0.8f));
+                        g.drawVerticalLine (W / 2, 0.0f, (float) H);
+                        g.setFont (11.0f);
+                        g.drawText ("Before", 4, H - 16, W / 2 - 8, 14, juce::Justification::left);
+                        g.drawText ("After", W / 2 + 4, H - 16, W / 2 - 8, 14, juce::Justification::right);
+                    }
+                    else note = "Could not render the example.";
+                }
+            }
+        }
+        {
+            const juce::ScopedLock sl (exLock);
+            if (exWant.isEmpty()) { example = out; exNote = note; }
+        }
+        triggerAsyncUpdate();
+    }
+}
+
+void FxLibrary::handleAsyncUpdate() { repaint (exArea); }
 
 void FxLibrary::paint (juce::Graphics& g)
 {
     g.fillAll (theme::panel);
     g.setColour (theme::accent2); g.setFont (headerFont (10.0f));
     g.drawText ("EFFECTS", 10, 4, getWidth() - 20, 16, juce::Justification::centredLeft);
+    if (exArea.isEmpty()) return;
+    auto r = exArea.reduced (0, 4);
+    g.setColour (theme::panel2.darker (0.3f)); g.fillRoundedRectangle (r.toFloat(), 4.0f);
+    juce::Image im; juce::String note, name;
+    { const juce::ScopedLock sl (exLock); im = example; note = exNote; name = exName; }
+    auto top = r.removeFromTop (16);
+    g.setColour (theme::accent); g.setFont (juce::FontOptions (10.5f, juce::Font::bold));
+    g.drawText (name.isEmpty() ? juce::String ("EXAMPLE: select an effect or transition") : "EXAMPLE: " + name, top.reduced (6, 0), juce::Justification::centredLeft, true);
+    r = r.reduced (6, 4);
+    if (im.isValid() && note.isEmpty())
+        g.drawImageWithin (im, r.getX(), r.getY(), r.getWidth(), r.getHeight(), juce::RectanglePlacement::centred);
+    else
+    {
+        g.setColour (juce::Colours::white.withAlpha (0.6f)); g.setFont (11.5f);
+        g.drawFittedText (note, r, juce::Justification::centred, 3);
+    }
 }
 
 void FxLibrary::paintListBoxItem (int row, juce::Graphics& g, int w, int h, bool sel)
 {
     if (row < 0 || row >= getNumRows()) return;
     auto& r = rows[(size_t) row];
-    if (r.header) { g.fillAll (theme::panel2); g.setColour (theme::accent); g.setFont (juce::FontOptions (10.5f, juce::Font::bold)); }
-    else { g.fillAll (sel ? theme::accent.withAlpha (0.25f) : row % 2 ? theme::panel : theme::panel2.darker (0.2f)); g.setColour (juce::Colours::white.withAlpha (0.9f)); g.setFont (12.5f); }
-    g.drawText (r.label, 10, 0, w - 14, h, juce::Justification::centredLeft, true);
+    const int x = 8 + r.level * 12;
+    if (r.header)
+    {
+        g.fillAll (r.level == 0 ? theme::panel2 : theme::panel2.darker (0.1f));
+        const bool isOpen = open.count (r.folder) > 0;
+        juce::Path tri;
+        const float cx = (float) x + 4, cy = h * 0.5f;
+        if (isOpen) tri.addTriangle (cx - 4, cy - 2, cx + 4, cy - 2, cx, cy + 3);
+        else tri.addTriangle (cx - 2, cy - 4, cx - 2, cy + 4, cx + 3, cy);
+        g.setColour (theme::accent); g.fillPath (tri);
+        // folder glyph
+        g.setColour (theme::accent2.withAlpha (0.8f));
+        g.fillRoundedRectangle ((float) x + 12, cy - 5, 12, 10, 1.5f);
+        g.setColour (r.level == 0 ? theme::accent : juce::Colours::white.withAlpha (0.88f));
+        g.setFont (juce::FontOptions (r.level == 0 ? 10.5f : 12.0f, juce::Font::bold));
+        g.drawText (r.label + "  (" + juce::String (r.count) + ")", x + 30, 0, w - x - 34, h, juce::Justification::centredLeft, true);
+        return;
+    }
+    g.fillAll (sel ? theme::accent.withAlpha (0.25f) : row % 2 ? theme::panel : theme::panel2.darker (0.2f));
+    g.setColour (juce::Colours::white.withAlpha (0.9f)); g.setFont (12.5f);
+    g.drawText (r.label, x + 14, 0, w - x - 18, h, juce::Justification::centredLeft, true);
 }
 
 juce::var FxLibrary::getDragSourceDescription (const juce::SparseSet<int>& sel)
@@ -490,7 +749,12 @@ juce::var FxLibrary::getDragSourceDescription (const juce::SparseSet<int>& sel)
     return rows[(size_t) sel[0]].desc;
 }
 
-juce::String FxLibrary::getTooltipForRow (int row) { return row >= 0 && row < getNumRows() ? rows[(size_t) row].help : juce::String(); }
+juce::String FxLibrary::getTooltipForRow (int row)
+{
+    if (row < 0 || row >= getNumRows()) return {};
+    auto& r = rows[(size_t) row];
+    return r.header ? "Click to open or close this folder." : r.help + "\nClick to see an example on your footage below.";
+}
 
 void MediaPanel::listBoxItemDoubleClicked (int row, const juce::MouseEvent&)
 {

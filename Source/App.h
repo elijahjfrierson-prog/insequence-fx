@@ -1,4 +1,5 @@
 #pragma once
+#include <set>
 #include <juce_gui_extra/juce_gui_extra.h>
 #include <juce_audio_utils/juce_audio_utils.h>
 #include "Model.h"
@@ -226,22 +227,40 @@ private:
 };
 
 // drag source for transitions (drop on a cut) and effects/looks (drop on a clip or empty space = effect layer)
-class FxLibrary : public juce::Component, public juce::DragAndDropContainer, private juce::ListBoxModel
+class FxLibrary : public juce::Component, public juce::DragAndDropContainer, private juce::ListBoxModel,
+                  private juce::Thread, private juce::AsyncUpdater
 {
 public:
     explicit FxLibrary (AppState& s);
+    ~FxLibrary() override;
     void reload();   // re-scan library folders (after Import Preset)
-    void resized() override { list.setBounds (getLocalBounds().reduced (6).withTrimmedTop (20)); }
+    void resized() override;
     void paint (juce::Graphics&) override;
 private:
-    struct Row { juce::String label, desc, help; bool header = false; };
-    std::vector<Row> rows;
+    // folder tree like Premiere's Effects panel: Video Transitions / Video Effects / Sound FX, each with subfolders
+    struct Row { juce::String label, desc, help; bool header = false; int level = 0; juce::String folder, parent; int count = 0; };
+    std::vector<Row> all, rows;   // all rows / rows inside open folders
+    std::set<juce::String> open;
+    void refilter();
     int getNumRows() override { return (int) rows.size(); }
     void paintListBoxItem (int, juce::Graphics&, int, int, bool) override;
+    void listBoxItemClicked (int, const juce::MouseEvent&) override;
+    void selectedRowsChanged (int) override;
     juce::var getDragSourceDescription (const juce::SparseSet<int>&) override;
     juce::String getTooltipForRow (int) override;
+    // example of the selected item rendered on the user's own footage, off the UI thread
+    void run() override;
+    void handleAsyncUpdate() override;
     AppState& st;
     juce::ListBox list;
+    juce::Rectangle<int> exArea;
+    juce::CriticalSection exLock;
+    juce::WaitableEvent exWake;
+    juce::String exWant, exName, exNote;
+    std::shared_ptr<const Project> exProj;
+    Ticks exAt = 0;
+    juce::Image example;
+    Renderer exRenderer;
 };
 
 class Inspector : public juce::Component
