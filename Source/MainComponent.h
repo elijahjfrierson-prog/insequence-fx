@@ -69,6 +69,7 @@ private:
     void fileMenu();
     void presetsMenu();
     void pluginsMenu();
+    void trackPluginsMenu (int track);
     void askText (const juce::String& title, const juce::String& def, std::function<void (juce::String)> cb);
     void updateSeqBox();
     void showMsg (const juce::String& title, const juce::String& msg);
@@ -76,6 +77,7 @@ private:
     ISFXLookAndFeel& lnf = sharedLookAndFeel();   // outlives every window; App::shutdown clears the default
     AppState st;
     PluginRack rack;
+    TrackRacks trackRacks;
     juce::AudioDeviceManager devices;
     Player player { st, rack };
     Preview preview { st };
