@@ -131,6 +131,13 @@ const std::vector<ParamDef>& clipParams()
         { "lensCurve",  "Lens Distortion", -1, 1, 0, "Stylize", "Barrel (negative) or pincushion (positive) lens curvature." },
         { "posterizeTime", "Posterize Time", 0, 60, 0, "Stylize", "Plays this clip at a lower frame rate (0 = off)." },
         { "invert",     "Invert",      0, 1, 0, "Stylize", "Inverts the colors of this clip." },
+        { "textSize",   "Text Size",   0.02f, 0.5f, 0.12f, "Text", "Letter height relative to the frame." },
+        { "textR",      "Text Red",    0, 1, 1, "Text", "Text color: red." },
+        { "textG",      "Text Green",  0, 1, 1, "Text", "Text color: green." },
+        { "textB",      "Text Blue",   0, 1, 1, "Text", "Text color: blue." },
+        { "textBold",   "Bold",        0, 1, 1, "Text", "Bold weight." },
+        { "textOutline","Outline",     0, 1, 0, "Text", "Black outline around the letters." },
+        { "textReveal", "Reveal",      0, 1, 1, "Text", "Share of the letters shown (keyframe it for a typewriter)." },
     };
     return d;
 }

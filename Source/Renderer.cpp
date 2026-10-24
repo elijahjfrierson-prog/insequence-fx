@@ -609,6 +609,52 @@ std::shared_ptr<Lut3D> Renderer::lutFor (const juce::String& path)
     return l;
 }
 
+// text clips rasterize once per look (cached), then composite like any layer
+static const Frame* textFrame (const Clip& c, int W, int H)
+{
+    const auto& CP = clipParams();
+    auto cv = [&] (const char* id) { return fxValue (c.fx, CP, id); };
+    const float size = cv ("textSize"), cr = cv ("textR"), cg = cv ("textG"), cb = cv ("textB"), outline = cv ("textOutline");
+    const bool bold = cv ("textBold") > 0.5f;
+    auto txt = c.text;
+    if (const float rv = juce::jlimit (0.0f, 1.0f, cv ("textReveal")); rv < 0.999f) txt = txt.substring (0, juce::roundToInt (txt.length() * rv));
+    const juce::String key = txt + "|" + c.font + "|" + juce::String (size, 4) + "|" + juce::String (cr, 3) + juce::String (cg, 3) + juce::String (cb, 3)
+                           + "|" + juce::String ((int) bold) + juce::String (outline, 3) + "|" + juce::String (W) + "x" + juce::String (H);
+    thread_local std::map<juce::String, Frame> cache;
+    if (auto it = cache.find (key); it != cache.end()) return &it->second;
+    if (cache.size() > 48) cache.clear();
+    juce::Image im (juce::Image::ARGB, W, H, true);
+    if (txt.isNotEmpty())
+    {
+        juce::Graphics g (im);
+        juce::Font f (juce::FontOptions (c.font.isEmpty() ? juce::Font::getDefaultSansSerifFontName() : c.font, std::max (4.0f, size * H),
+                                         bold ? juce::Font::bold : juce::Font::plain));
+        juce::GlyphArrangement ga;
+        ga.addFittedText (f, txt, 0.05f * W, 0, 0.9f * W, (float) H, juce::Justification::centred, 8);
+        juce::Path path; ga.createPath (path);
+        if (outline > 0.001f)
+        {
+            g.setColour (juce::Colours::black);
+            g.strokePath (path, juce::PathStrokeType (outline * size * H * 0.12f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+        }
+        g.setColour (juce::Colour::fromFloatRGBA (cr, cg, cb, 1.0f));
+        g.fillPath (path);
+    }
+    Frame fr; fr.w = W; fr.h = H; fr.pts = 0; fr.rgba.assign ((size_t) W * H * 4, 0);
+    {
+        juce::Image::BitmapData bd (im, juce::Image::BitmapData::readOnly);
+        for (int y = 0; y < H; ++y)
+            for (int x = 0; x < W; ++x)
+            {
+                auto px = *reinterpret_cast<const juce::PixelARGB*> (bd.getPixelPointer (x, y));
+                px.unpremultiply();
+                auto* d = fr.rgba.data() + ((size_t) y * W + x) * 4;
+                d[0] = px.getRed(); d[1] = px.getGreen(); d[2] = px.getBlue(); d[3] = px.getAlpha();
+            }
+    }
+    return &cache.emplace (key, std::move (fr)).first->second;
+}
+
 // ---------------------------------------------------------------- render
 bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int H, std::vector<juce::uint8>& rgba, int decodeH)
 {
@@ -618,8 +664,12 @@ bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int 
         for (auto& c : s.clips) anyKeys |= ! c.keys.empty();
         if (anyKeys && ! keyed)
         {
-            Sequence ks = s;
-            for (auto& c : ks.clips) applyKeyframes (c, t);
+            // copy only clips near the playhead: long keyframed timelines don't pay a full copy every frame
+            Sequence ks;
+            ks.id = s.id; ks.name = s.name; ks.tracks = s.tracks; ks.fx = s.fx; ks.style = s.style; ks.seed = s.seed;
+            const Ticks win = secToTicks (12.0);
+            for (auto& c : s.clips)
+                if (c.end() >= t - win && c.start <= t + win) { ks.clips.push_back (c); applyKeyframes (ks.clips.back(), t); }
             keyed = true;
             const bool r = render (p, ks, t, W, H, rgba, decodeH);
             keyed = false;
@@ -636,7 +686,7 @@ bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int 
     // effect clips (no media) on visible layers blend their look into the sequence FX while the playhead is over them
     FxStack postFx = s.fx;
     for (auto& c : s.clips)
-        if (c.mediaId.isEmpty() && c.enabled && t >= c.start && t < c.end() && c.track >= 0 && c.track < (int) s.tracks.size()
+        if (c.mediaId.isEmpty() && c.text.isEmpty() && c.enabled && t >= c.start && t < c.end() && c.track >= 0 && c.track < (int) s.tracks.size()
             && ! s.tracks[(size_t) c.track].hidden)
         {
             FxStack fx = c.fx;
@@ -726,7 +776,7 @@ bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int 
         const float postT = fxValue (c.fx, clipParams(), "posterizeTime");
         const Ticks tq = postT >= 1 ? c.start + (t - c.start) / (Ticks) (kFlicks / postT) * (Ticks) (kFlicks / postT) : t;
         const double srcPosT = c.srcPos (tq);
-        const Frame* fr = frameFor (p, c.mediaId, (Ticks) std::llround (srcPosT), decodeH, rot, nullptr, false, slowMo ? &fB : nullptr);
+        const Frame* fr = c.text.isNotEmpty() ? textFrame (c, W, H) : frameFor (p, c.mediaId, (Ticks) std::llround (srcPosT), decodeH, rot, nullptr, false, slowMo ? &fB : nullptr);
         if (fr == nullptr) return;
         Frame tween;
         if (fB != nullptr && fr->pts >= 0 && fB->pts > fr->pts && fB->w == fr->w && fB->h == fr->h)

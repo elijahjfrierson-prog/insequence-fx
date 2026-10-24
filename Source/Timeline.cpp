@@ -196,7 +196,7 @@ void Timeline::paint (juce::Graphics& g)
             for (auto& c : s.clips)
             {
                 if (c.track < 0 || c.track >= (int) s.tracks.size() || s.tracks[(size_t) c.track].kind != TrackKind::Video) continue;
-                if (c.mediaId.isEmpty() && &c != &e) continue;
+                if (&c != &e) continue;   // the band sits on the layer's own block only: clips below are not outlined
                 const Ticks a0 = std::max (c.start, e.start), b0 = std::min (c.end(), e.end());
                 if (b0 <= a0) continue;
                 const int xa = std::max (kHeader, secToX (ticksToSec (a0))), xb = std::min (W, secToX (ticksToSec (b0)));
@@ -528,8 +528,20 @@ void Timeline::mouseDown (const juce::MouseEvent& e)
         if (c) { clipMenu (c->id); return; }
         juce::PopupMenu m;
         m.addItem (1, "New Adjustment Layer here (affects everything below)");
+        m.addItem (2, "Add Text here");
         m.showMenuAsync (juce::PopupMenu::Options(), [this, t] (int r)
         {
+            if (r == 2)
+            {
+                const auto& song = st.project.song;
+                const Ticks len = song.valid ? secToTicks (song.beatSec() * song.beatsPerBar * 2) : secToTicks (4.0);
+                st.edit ("Add Text");
+                auto nid = addEffectClip (st.project.seq(), FxStack(), "TEXT", magnetSnap (t, 0), len);
+                if (auto* k = st.project.seq().findClip (nid)) { k->text = "TEXT"; st.selected = { nid }; }
+                if (onEdited) onEdited();
+                repaint();
+                return;
+            }
             if (r != 1) return;
             addAdjustmentLayer (t);
         });
@@ -950,6 +962,9 @@ void Timeline::clipMenu (const juce::String& id)
     auto names = autoCutNames();
     for (int i = 0; i < names.size(); ++i) cut.addItem (100 + i, names[i] + (st.selected.size() > 1 ? "  (" + juce::String (st.selected.size()) + " clips)" : juce::String()));
     cut.addSeparator();
+    cut.addItem (261, "Default chop (one cut per beat)", ! c->locked);
+    cut.addItem (260, "None: rejoin pieces into one clip", ! c->locked);
+    cut.addSeparator();
     cut.addItem (99, "Switch camera angles on each cut", video, switchAngles && video);
     const bool lk = c->locked;
     const bool many = st.selected.size() > 1;
@@ -973,6 +988,7 @@ void Timeline::clipMenu (const juce::String& id)
     m.addItem (6, "Ripple Delete  (Shift+Del)", ! lk);
     m.addItem (47, "Pull out of edit (synced take fills the gap)", ! lk);
     m.addItem (2, "Split at playhead  (Ctrl+K)", ! lk && st.playhead > c->start && st.playhead < c->end());
+    m.addItem (100 + (int) AutoCut::HatRoll, "Hi-hat Roll" + (many ? "  (" + juce::String (st.selected.size()) + " clips)" : juce::String()), ! lk && video);
     m.addSubMenu ("Re-cut (Auto Cut)", cut, ! lk);
     m.addSeparator();
     m.addItem (20, juce::String (c->enabled ? "Disable" : "Enable") + "  (Shift+E)", ! lk);
@@ -1036,6 +1052,30 @@ void Timeline::clipMenu (const juce::String& id)
         for (auto& [k, ks] : c->keys)
             if (! ks.empty() && ! fxNames.contains (k)) { fxNames.add (k); fxM.addItem (5000 + fxNames.size() - 1, "Trash  " + k + " keyframes", ! lk); }
         m.addSubMenu ("Effects on clip (" + juce::String (fxNames.size()) + ")", fxM, fxNames.size() > 0);
+    }
+    {
+        juce::PopupMenu stab;
+        const bool hasMedia = c->mediaId.isNotEmpty() && c->text.isEmpty();
+        stab.addItem (600, "Subtle (keeps some motion)", video && ! lk && hasMedia);
+        stab.addItem (601, "Smooth", video && ! lk && hasMedia);
+        stab.addItem (602, "Locked-off (tripod)", video && ! lk && hasMedia);
+        stab.addSeparator();
+        stab.addItem (609, "Remove stabilization", ! lk && c->fx.p.count ("stab") > 0);
+        m.addSubMenu (many ? "Warp Stabilizer (" + juce::String (st.selected.size()) + " clips)" : juce::String ("Warp Stabilizer"), stab, video && ! lk);
+        if (c->text.isNotEmpty())
+        {
+            juce::PopupMenu ta;
+            const char* sty[] { "Fade", "Pop", "Slide Up", "Typewriter" };
+            const char* spd[] { "Fast", "Medium", "Slow" };
+            for (int a = 0; a < 4; ++a)
+            {
+                juce::PopupMenu sm;
+                for (int v = 0; v < 3; ++v) sm.addItem (620 + a * 3 + v, spd[v]);
+                ta.addSubMenu (sty[a], sm);
+            }
+            ta.addSeparator(); ta.addItem (639, "Remove animation");
+            m.addSubMenu ("Text animation", ta, ! lk);
+        }
     }
     m.addItem (32, "Remove Effects", ! lk && (! c->fx.p.empty() || ! c->keys.empty() || c->opacity != 1.0f || c->transIn != TransitionType::Cut));
     m.addSeparator();
@@ -1139,6 +1179,84 @@ void Timeline::clipMenu (const juce::String& id)
                         k->srcIn = quantizeToFrame (k->srcIn, km->fps);   // start on a real frame so every output frame is a real source frame
                     setClipSpeed (sq, st.project, i, sp);
                 }
+        }
+        if (r == 260 || r == 261)
+        {
+            st.edit (r == 260 ? "Rejoin clips" : "Default chop");
+            std::vector<Clip*> v;
+            for (auto& i : sel) if (auto* k = sq.findClip (i); k && ! k->locked) v.push_back (k);
+            std::sort (v.begin(), v.end(), [] (const Clip* x, const Clip* y) { return x->track != y->track ? x->track < y->track : x->start < y->start; });
+            juce::StringArray drop, keep;
+            Clip* head = nullptr;
+            for (auto* k : v)
+            {
+                if (head && k->track == head->track && k->start <= head->end() + 1 && k->start >= head->start && ! k->ramped() && ! head->ramped()
+                    && k->mediaId.isNotEmpty() && head->mediaId.isNotEmpty())
+                {
+                    head->length = std::max (head->end(), k->end()) - head->start;
+                    drop.add (k->id);
+                    continue;
+                }
+                head = k; keep.add (k->id);
+            }
+            sq.clips.erase (std::remove_if (sq.clips.begin(), sq.clips.end(), [&] (const Clip& k) { return drop.contains (k.id); }), sq.clips.end());
+            sq.sortClips();
+            if (r == 261)
+            {
+                auto seed = (juce::uint32) juce::Time::currentTimeMillis();
+                for (auto& i : keep) autoCutClip (st.project, i, AutoCut::Quarter, false, seed++);
+                st.selected.clear();
+            }
+            else st.selected = keep;
+            if (onEdited) onEdited();
+            repaint();
+            return;
+        }
+        if (r >= 600 && r <= 602 && onStabilize)
+        {
+            auto ids = sel; const float sm = r == 600 ? 0.5f : r == 601 ? 1.5f : 4.0f;
+            juce::MessageManager::callAsync ([this, ids, sm] { onStabilize (ids, sm); });
+            return;
+        }
+        if (r == 609)
+        {
+            st.edit ("Remove stabilization");
+            for (auto& i : sel)
+                if (auto* k = sq.findClip (i); k && ! k->locked && k->fx.p.count ("stab") > 0)
+                {
+                    k->keys.erase ("posX"); k->keys.erase ("posY");
+                    k->fx.set ("scale", k->fx.get ("scale", 1.0f) / std::max (0.01f, k->fx.get ("stabZoom", 1.0f)));
+                    k->fx.p.erase ("stab"); k->fx.p.erase ("stabZoom"); k->fx.p.erase ("posX"); k->fx.p.erase ("posY");
+                }
+            if (onEdited) onEdited();
+            repaint();
+            return;
+        }
+        if ((r >= 620 && r < 632) || r == 639)
+        {
+            st.edit ("Text animation");
+            const double secs[] { 0.25, 0.6, 1.2 };
+            for (auto& i : sel)
+            {
+                auto* k = sq.findClip (i);
+                if (k == nullptr || k->locked || k->text.isEmpty()) continue;
+                for (auto* id : { "opacity", "scale", "posY", "textReveal" }) k->keys.erase (id);
+                if (r == 639) continue;
+                const int sty = (r - 620) / 3;
+                const Ticks d = std::min<Ticks> (secToTicks (secs[(r - 620) % 3]), k->length / 2), L = k->length;
+                auto K = [&] (const char* id, std::initializer_list<std::pair<Ticks, float>> pts)
+                {
+                    auto& ks = k->keys[id];
+                    for (auto& [tt, vv] : pts) { Clip::Key key; key.t = juce::jlimit<Ticks> (0, L, tt); key.v = vv; key.interp = 2; ks.push_back (key); }
+                };
+                if (sty == 0) K ("opacity", { { 0, 0.0f }, { d, 1.0f }, { L - d, 1.0f }, { L, 0.0f } });
+                if (sty == 1) { K ("scale", { { 0, 0.6f }, { d, 1.0f } }); K ("opacity", { { 0, 0.0f }, { d / 2, 1.0f } }); }
+                if (sty == 2) { K ("posY", { { 0, 0.25f }, { d, 0.0f } }); K ("opacity", { { 0, 0.0f }, { d, 1.0f } }); }
+                if (sty == 3) K ("textReveal", { { 0, 0.0f }, { std::min<Ticks> (L, d * 4), 1.0f } });
+            }
+            if (onEdited) onEdited();
+            repaint();
+            return;
         }
         if (r == 43 && onSyncClips) { auto ids = sel; juce::MessageManager::callAsync ([this, ids] { onSyncClips (ids); }); return; }
         if (r == 4) { st.edit ("Lock"); cl->locked = ! cl->locked; }

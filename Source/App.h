@@ -150,6 +150,7 @@ public:
     std::function<void (const juce::File&, int track, Ticks at)> onSfxDropped;                  // from the built-in SFX library
     std::function<void (const juce::String& title, const juce::String& def, std::function<void (juce::String)>)> onAskText;
     std::function<void (const juce::StringArray& clipIds)> onSyncClips;
+    std::function<void (const juce::StringArray& clipIds, float smoothSec)> onStabilize;
     std::function<void (const juce::String&)> onStatus;
     std::function<void (int track)> onTrackPlugins;                       // right-click an audio track header   // right-click Sync clip(s) to audio
     bool isInterestedInFileDrag (const juce::StringArray&) override { return true; }

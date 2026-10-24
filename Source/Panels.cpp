@@ -669,13 +669,112 @@ struct CurveEditor : public juce::Component
     int ch = 0, dragIdx = -1;
 };
 
+// speed / time-remap graph: x = clip time, y = speed (0..4x); click adds a point, drag moves, double-click deletes,
+// right-click cycles Linear / Ease / Hold. Points are the clip's "speed" keys, so playback, split and export follow it.
+struct SpeedGraph : public juce::Component
+{
+    SpeedGraph (std::function<Clip&()> c, std::function<void()> b, std::function<void()> e)
+        : clip (std::move (c)), begin (std::move (b)), edited (std::move (e)) {}
+    static constexpr float maxV = 4.0f;
+    juce::Rectangle<float> plot() const { auto r = getLocalBounds().toFloat().reduced (4); r.removeFromTop (16); return r; }
+    float xOf (Ticks t) const { auto r = plot(); return r.getX() + r.getWidth() * (float) ((double) t / std::max<Ticks> (1, clip().length)); }
+    float yOf (float v) const { auto r = plot(); return r.getBottom() - r.getHeight() * juce::jlimit (0.0f, 1.0f, v / maxV); }
+    Ticks tOf (float x) const { auto r = plot(); return (Ticks) ((double) juce::jlimit (0.0f, 1.0f, (x - r.getX()) / r.getWidth()) * (double) clip().length); }
+    float vOf (float y) const { auto r = plot(); return juce::jlimit (0.1f, maxV, (r.getBottom() - y) / r.getHeight() * maxV); }
+    void paint (juce::Graphics& g) override
+    {
+        auto r = plot();
+        g.setColour (theme::text.withAlpha (0.8f)); g.setFont (11.0f);
+        g.drawText ("Speed graph (time remap): click add, drag, dbl-click delete, right-click ease", getLocalBounds().removeFromTop (18).reduced (4, 0), juce::Justification::left);
+        g.setColour (juce::Colours::black.withAlpha (0.35f)); g.fillRect (r);
+        g.setColour (theme::line); g.drawRect (r);
+        g.setColour (theme::line.brighter (0.3f)); g.drawHorizontalLine ((int) yOf (1.0f), r.getX(), r.getRight());
+        const auto& c = clip();
+        auto it = c.keys.find ("speed");
+        const bool has = it != c.keys.end() && ! it->second.empty();
+        juce::Path p;
+        for (int i = 0; i <= 120; ++i)
+        {
+            const Ticks t = (Ticks) ((double) c.length * i / 120.0);
+            const float v = has ? keyValue (it->second, t) : (float) c.speed;
+            const float x = xOf (t), y = yOf (v);
+            if (i == 0) p.startNewSubPath (x, y); else p.lineTo (x, y);
+        }
+        g.setColour (theme::accent2); g.strokePath (p, juce::PathStrokeType (2.0f));
+        if (has)
+            for (auto& k : it->second)
+            {
+                g.setColour (k.interp == 2 ? theme::accent2 : k.interp == 1 ? juce::Colours::orange : juce::Colours::white);
+                g.fillEllipse (xOf (k.t) - 4, yOf (k.v) - 4, 8, 8);
+            }
+    }
+    int hit (juce::Point<float> pos) const
+    {
+        auto it = clip().keys.find ("speed");
+        if (it == clip().keys.end()) return -1;
+        for (int i = 0; i < (int) it->second.size(); ++i)
+            if (pos.getDistanceFrom ({ xOf (it->second[(size_t) i].t), yOf (it->second[(size_t) i].v) }) < 7) return i;
+        return -1;
+    }
+    void mouseDown (const juce::MouseEvent& e) override
+    {
+        begin();
+        auto& c = clip();
+        auto& ks = c.keys["speed"];
+        if (ks.empty())
+        {
+            Clip::Key a; a.t = 0; a.v = (float) c.speed; a.interp = 2;
+            Clip::Key b = a; b.t = c.length;
+            ks = { a, b };
+        }
+        const int h = hit (e.position);
+        if (e.mods.isPopupMenu()) { if (h >= 0) ks[(size_t) h].interp = (ks[(size_t) h].interp + 1) % 3 == 0 ? 0 : (ks[(size_t) h].interp == 0 ? 2 : 1); edited(); repaint(); return; }
+        if (h >= 0) { drag = h; return; }
+        Clip::Key k; k.t = tOf (e.position.x); k.v = vOf (e.position.y); k.interp = 2;
+        auto pos = std::upper_bound (ks.begin(), ks.end(), k.t, [] (Ticks x, const Clip::Key& y) { return x < y.t; });
+        drag = (int) (ks.insert (pos, k) - ks.begin());
+        edited(); repaint();
+    }
+    void mouseDrag (const juce::MouseEvent& e) override
+    {
+        auto& ks = clip().keys["speed"];
+        if (drag < 0 || drag >= (int) ks.size()) return;
+        auto& k = ks[(size_t) drag];
+        k.v = vOf (e.position.y);
+        if (drag > 0 && drag < (int) ks.size() - 1)
+            k.t = juce::jlimit (ks[(size_t) drag - 1].t + 1, std::max (ks[(size_t) drag - 1].t + 1, ks[(size_t) drag + 1].t - 1), tOf (e.position.x));
+        edited(); repaint();
+    }
+    void mouseUp (const juce::MouseEvent&) override { drag = -1; }
+    void mouseDoubleClick (const juce::MouseEvent& e) override
+    {
+        auto& ks = clip().keys["speed"];
+        const int h = hit (e.position);
+        if (h > 0 && h < (int) ks.size() - 1) { begin(); ks.erase (ks.begin() + h); edited(); repaint(); }
+    }
+    std::function<Clip&()> clip; std::function<void()> begin, edited;
+    int drag = -1;
+};
+
+struct TextRow : public juce::Component
+{
+    juce::Label l; juce::TextEditor ed;
+    TextRow (const juce::String& label, const juce::String& v)
+    {
+        l.setText (label, juce::dontSendNotification); l.setFont (12.0f);
+        ed.setText (v, juce::dontSendNotification);
+        addAndMakeVisible (l); addAndMakeVisible (ed);
+    }
+    void resized() override { auto r = getLocalBounds(); l.setBounds (r.removeFromLeft (110)); ed.setBounds (r.reduced (0, 2)); }
+};
+
 void Inspector::resized()
 {
     auto r = getLocalBounds().reduced (8);
     title.setBounds (r.removeFromTop (24));
     view.setBounds (r);
     int w = view.getWidth() - view.getScrollBarThickness() - 2, y = 0;
-    for (auto* c : items) { int h = dynamic_cast<Heading*> (c) ? 24 : dynamic_cast<CurveEditor*> (c) ? 236 : 26; c->setBounds (0, y, w, h); y += h; }
+    for (auto* c : items) { int h = dynamic_cast<Heading*> (c) ? 24 : dynamic_cast<CurveEditor*> (c) ? 236 : dynamic_cast<SpeedGraph*> (c) ? 140 : 26; c->setBounds (0, y, w, h); y += h; }
     content.setSize (w, y + 10);
 }
 
@@ -683,7 +782,10 @@ void Inspector::rebuild()
 {
     items.clear(); content.removeAllChildren();
     auto& seq = st.project.seq();
-    Clip* clip = st.selected.size() == 1 ? seq.findClip (st.selected[0]) : nullptr;
+    // with several clips selected the Inspector shows the first one and every change goes to all of them
+    Clip* clip = st.selected.isEmpty() ? nullptr : seq.findClip (st.selected[0]);
+    const juce::StringArray allSel = st.selected;
+    const bool showText = clip != nullptr && clip->text.isNotEmpty();
     target = clip ? clip->id : juce::String();
     auto add = [this] (juce::Component* c) { items.add (c); content.addAndMakeVisible (c); };
     auto edited = [this] { st.dirty = true; if (onEdited) onEdited(); };
@@ -695,7 +797,7 @@ void Inspector::rebuild()
         add (row);
     };
 
-    auto addParams = [&] (const std::vector<ParamDef>& defs, std::function<FxStack&()> stack)
+    auto addParams = [&] (const std::vector<ParamDef>& defs, std::function<FxStack&()> stack, bool multi = false)
     {
         juce::String group;
         bool curves = false;
@@ -706,6 +808,7 @@ void Inspector::rebuild()
                 if (! curves) { curves = true; group = d.group; add (new Heading ("Curves")); add (new CurveEditor (stack, [this] { st.edit ("Curve"); }, edited)); }
                 continue;
             }
+            if (juce::String (d.group) == "Text" && ! showText) continue;
             if (juce::String (d.group) != group) { group = d.group; add (new Heading (group)); }
             float v = stack().get (d.id, d.def);
             bool discrete = juce::String (d.id) == "reframe" || juce::String (d.id) == "blend" || juce::String (d.id) == "maskShape" || juce::String (d.id) == "maskInvert";
@@ -716,10 +819,14 @@ void Inspector::rebuild()
             if (id == "maskShape") r->slider.textFromValueFunction = [] (double x) { return juce::StringArray { "None", "Ellipse", "Rect" }[(int) x]; };
             r->slider.updateText();
             r->slider.onDragStart = [this, n = juce::String (d.name)] { st.edit (n); };
-            r->slider.onValueChange = [this, r, id, stack, edited]
+            r->slider.onValueChange = [this, r, id, stack, edited, multi, allSel]
             {
                 if (! r->slider.isMouseButtonDown()) st.edit (id);
-                stack().set (id, (float) r->slider.getValue()); edited();
+                const float v = (float) r->slider.getValue();
+                stack().set (id, v);
+                if (multi && allSel.size() > 1)
+                    for (auto& sid : allSel) if (auto* k = st.project.seq().findClip (sid); k && ! k->locked) k->fx.set (id, v);
+                edited();
             };
             add (r);
         }
@@ -728,7 +835,9 @@ void Inspector::rebuild()
     if (clip)
     {
         auto* m = st.project.findMedia (clip->mediaId);
-        title.setText ("Clip: " + (m ? m->name : juce::String ("?")), juce::dontSendNotification);
+        title.setText (allSel.size() > 1 ? juce::String (allSel.size()) + " clips (changes apply to all)"
+                       : clip->text.isNotEmpty() ? "Text: " + clip->text
+                       : "Clip: " + (m ? m->name : clip->name.isNotEmpty() ? clip->name : juce::String ("?")), juce::dontSendNotification);
         const juce::String cid = clip->id;
         auto clipRef = [this, cid]() -> Clip& { static Clip dummy; auto* c = st.project.seq().findClip (cid); return c ? *c : dummy; };
         add (new Heading ("Clip"));
@@ -736,12 +845,38 @@ void Inspector::rebuild()
         {
             auto* r = new ParamRow (n, help, lo, hi, v, (hi - lo) / 1000.0);
             r->slider.onDragStart = [this, n] { st.edit (n); };
-            r->slider.onValueChange = [this, r, set, clipRef, edited, n] { if (! r->slider.isMouseButtonDown()) st.edit (n); set (clipRef(), r->slider.getValue()); edited(); };
+            r->slider.onValueChange = [this, r, set, clipRef, edited, n, allSel]
+            {
+                if (! r->slider.isMouseButtonDown()) st.edit (n);
+                set (clipRef(), r->slider.getValue());
+                for (auto& sid : allSel) if (auto* k = st.project.seq().findClip (sid); k && ! k->locked && k->id != clipRef().id) set (*k, r->slider.getValue());
+                edited();
+            };
             add (r);
         };
+        if (clip->text.isNotEmpty())
+        {
+            auto* tr = new TextRow ("Text", clip->text);
+            auto commit = [this, tr, clipRef, edited]
+            {
+                auto v = tr->ed.getText().trim();
+                if (v.isEmpty() || v == clipRef().text) return;
+                st.edit ("Text"); clipRef().text = v; clipRef().name = v; edited();
+            };
+            tr->ed.onReturnKey = commit; tr->ed.onFocusLost = commit;
+            add (tr);
+            auto fonts = juce::Font::findAllTypefaceNames(); fonts.insert (0, "(default)");
+            addCombo ("Font", fonts, std::max (0, fonts.indexOf (clip->font)), "Typeface for this text.",
+                      [this, clipRef, edited, fonts] (int i) { st.edit ("Font"); clipRef().font = i <= 0 ? juce::String() : fonts[i]; edited(); });
+        }
         mk ("Opacity", "Clip opacity for compositing over lower tracks.", 0, 1, clip->opacity, [] (Clip& c, double v) { c.opacity = (float) v; });
         mk ("Volume", "Clip audio level (video takes start muted; the song carries the mix).", 0, 2, clip->volume, [] (Clip& c, double v) { c.volume = (float) v; });
         mk ("Speed", "Playback speed. Values below 1 slow motion, above 1 speed up. Negative values are not used; use Reverse.", 0.1, 4, clip->speed, [] (Clip& c, double v) { c.speed = v; });
+        if (m != nullptr && m->kind == MediaKind::Video)
+        {
+            add (new Heading ("Speed ramp / time remap"));
+            add (new SpeedGraph (clipRef, [this] { st.edit ("Speed graph"); }, edited));
+        }
         addCombo ("Transition in", transitionNames(), (int) clip->transIn, "Transition from the previous clip on this track.",
                   [this, clipRef, edited] (int i) { st.edit ("Transition"); auto& c = clipRef(); c.transIn = (TransitionType) i;
                       if (c.transLen == 0 && i > 0) c.transLen = secToTicks (st.project.song.valid ? st.project.song.beatSec() / 2 : 0.25); edited(); });
@@ -757,7 +892,7 @@ void Inspector::rebuild()
         addCombo ("Clip preset", cps, 0, "Your saved clip effects (Presets > Save clip effects).",
                   [this, clipRef, edited, cpv] (int i) { if (i <= 0) return; st.edit ("Clip preset"); clipRef().fx = cpv[(size_t) i - 1].fx; edited();
                       juce::MessageManager::callAsync ([this] { rebuild(); resized(); }); });
-        addParams (clipParams(), [clipRef]() -> FxStack& { return clipRef().fx; });
+        addParams (clipParams(), [clipRef]() -> FxStack& { return clipRef().fx; }, true);
     }
     else
     {

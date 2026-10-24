@@ -193,6 +193,7 @@ juce::var toVar (const Project& p)
             if (c.label != 0) co->setProperty ("label", c.label);
             if (c.keep) co->setProperty ("keep", true);
             if (c.frameInterp != 1) co->setProperty ("frameInterp", c.frameInterp);
+            if (c.text.isNotEmpty()) { co->setProperty ("text", c.text); co->setProperty ("font", c.font); }
             cl.add (juce::var (co));
         }
         o->setProperty ("clips", cl);
@@ -272,6 +273,7 @@ bool fromVar (const juce::var& v, Project& p, juce::String& error)
                                     if (k.size() >= 2) setKey (c, pr.name.toString(), s2t (k[0]), (float) (double) k[1], k.size() > 2 ? (int) k[2] : 0);
                     c.name = cv["name"].toString(); c.enabled = cv.hasProperty ("enabled") ? (bool) cv["enabled"] : true; c.reverse = (bool) cv["reverse"]; c.label = (int) cv["label"]; c.keep = (bool) cv["keep"];
                     c.frameInterp = cv.hasProperty ("frameInterp") ? (int) cv["frameInterp"] : 1;
+                    c.text = cv["text"].toString(); c.font = cv["font"].toString();
                     if (c.track >= 0 && c.track < (int) s.tracks.size()) s.clips.push_back (c);
                 }
             r.sequences.push_back (s);

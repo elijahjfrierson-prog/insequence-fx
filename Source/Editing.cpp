@@ -681,7 +681,8 @@ int stackGenerated (Project& p, juce::uint32 seed, const juce::String& styleMode
 namespace isfx
 {
 juce::StringArray autoCutNames() { return { "1/4", "1/8", "1/16", "1/32", "Triplets", "Hi-hats", "Kicks", "Snares", "Roll (1/8 > 1/16 > 1/32)", "Hi-hat rolls only",
-                                                     "Crazy: spray takes on every hat + roll", "Stutter: repeat the shot on hats", "Smooth: bars only" }; }
+                                                     "Crazy: spray takes on every hat + roll", "Stutter: repeat the shot on hats", "Smooth: bars only",
+                                                     "Half-bar (every 2 beats)", "Off-beat (the 'and')", "Build-up (speeds up into the drop)", "Dotted 1/8 (bounce)" }; }
 
 int autoCutClip (Project& p, const juce::String& clipId, AutoCut mode, bool switchAngles, juce::uint32 seed)
 {
@@ -738,6 +739,31 @@ int autoCutClip (Project& p, const juce::String& clipId, AutoCut mode, bool swit
             const int bpb = std::max (1, g.beatsPerBar);
             auto n0 = (juce::int64) std::ceil (g.beatAt (a) / bpb - 1e-9), n1 = (juce::int64) std::floor (g.beatAt (b) / bpb + 1e-9);
             for (auto n = n0; n <= n1; ++n) { Ticks t = q (g.subdivTime (n * bpb, 1)); if (t > a && t < b) pts.push_back (t); }
+            break;
+        }
+        case AutoCut::HalfBar:
+            grid (1, a, b);
+            pts.erase (std::remove_if (pts.begin(), pts.end(), [&] (Ticks t) { return (juce::int64) std::llround (g.beatAt (t)) % 2 != 0; }), pts.end());
+            break;
+        case AutoCut::Offbeat:
+            grid (2, a, b);
+            pts.erase (std::remove_if (pts.begin(), pts.end(), [&] (Ticks t) { return std::llround (g.beatAt (t) * 2) % 2 == 0; }), pts.end());
+            break;
+        case AutoCut::Dotted:
+        {
+            const double b0 = g.beatAt (a), b1 = g.beatAt (b);
+            for (double x = std::ceil (b0 / 0.75) * 0.75; x < b1; x += 0.75) { Ticks t = q (g.gridTime (x)); if (t > a && t < b) pts.push_back (t); }
+            break;
+        }
+        case AutoCut::Build:   // bars -> beats -> 1/8 -> 1/16 across the clip
+        {
+            const double b0 = g.beatAt (a), b1 = g.beatAt (b), span = b1 - b0;
+            const double steps[] = { (double) std::max (1, g.beatsPerBar), 1.0, 0.5, 0.25 };
+            for (int seg = 0; seg < 4; ++seg)
+            {
+                const double f = b0 + span * seg / 4.0, to = b0 + span * (seg + 1) / 4.0, st = steps[seg];
+                for (double x = std::ceil (f / st - 1e-9) * st; x < to - 1e-6; x += st) { Ticks t = q (g.gridTime (x)); if (t > a && t < b) pts.push_back (t); }
+            }
             break;
         }
         case AutoCut::HatRoll:
