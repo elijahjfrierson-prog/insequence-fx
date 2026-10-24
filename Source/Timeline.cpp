@@ -339,6 +339,18 @@ void Timeline::mouseMove (const juce::MouseEvent& e)
     else setTooltip ("E select/move/trim, P paint, D delete, C cut. Drag in the ruler to select a range. Ctrl+wheel zooms.");
 }
 
+void Timeline::addAdjustmentLayer (Ticks at)
+{
+    const auto& song = st.project.song;
+    const Ticks len = song.valid ? secToTicks (song.beatSec() * song.beatsPerBar * 4) : secToTicks (8.0);
+    st.edit ("New Adjustment Layer");
+    FxStack fx; fx.set ("exposure", 0.0f);
+    auto id = addEffectClip (st.project.seq(), fx, "Adjustment Layer", magnetSnap (at, 0), len);
+    if (id.isNotEmpty()) st.selected = { id };
+    if (onEdited) onEdited();
+    repaint();
+}
+
 std::vector<Timeline::CutDot> Timeline::cutDots() const
 {
     const auto& s = st.project.seq();
@@ -413,7 +425,18 @@ void Timeline::mouseDown (const juce::MouseEvent& e)
     }
 
     int edge = 0; const Clip* c = clipAt (pos, edge);
-    if (e.mods.isPopupMenu()) { if (c) clipMenu (c->id); return; }
+    if (e.mods.isPopupMenu())
+    {
+        if (c) { clipMenu (c->id); return; }
+        juce::PopupMenu m;
+        m.addItem (1, "New Adjustment Layer here (affects everything below)");
+        m.showMenuAsync (juce::PopupMenu::Options(), [this, t] (int r)
+        {
+            if (r != 1) return;
+            addAdjustmentLayer (t);
+        });
+        return;
+    }
     int tr = trackAt (pos.y);
     bool trackLocked = tr >= 0 && tr < (int) s.tracks.size() && s.tracks[(size_t) tr].locked;
 
@@ -751,7 +774,7 @@ void Timeline::clipMenu (const juce::String& id)
             if (! ks.empty() && ! fxNames.contains (k)) { fxNames.add (k); fxM.addItem (5000 + fxNames.size() - 1, "Trash  " + k + " keyframes", ! lk); }
         m.addSubMenu ("Effects on clip (" + juce::String (fxNames.size()) + ")", fxM, fxNames.size() > 0);
     }
-    m.addItem (32, "Remove Effects", ! lk && (! c->fx.p.empty() || c->opacity != 1.0f || c->transIn != TransitionType::Cut));
+    m.addItem (32, "Remove Effects", ! lk && (! c->fx.p.empty() || ! c->keys.empty() || c->opacity != 1.0f || c->transIn != TransitionType::Cut));
     m.addSeparator();
     m.addItem (33, "Rename...");
     m.addSubMenu (st.selected.size() > 1 ? "Label Color (" + juce::String (st.selected.size()) + " clips)" : juce::String ("Label Color"), labelM);
@@ -850,7 +873,7 @@ void Timeline::clipMenu (const juce::String& id)
             st.edit ("Trash effect");
             for (auto& i : sel) if (auto* k = sq.findClip (i)) { k->fx.p.erase (fid); k->keys.erase (fid); }
         }
-        if (r == 32) { st.edit ("Remove Effects"); for (auto& i : sel) if (auto* k = sq.findClip (i)) { k->fx = {}; k->opacity = 1; k->transIn = TransitionType::Cut; k->transLen = 0; } }
+        if (r == 32) { st.edit ("Remove Effects"); for (auto& i : sel) if (auto* k = sq.findClip (i)) { k->fx = {}; k->keys.clear(); k->opacity = 1; k->transIn = TransitionType::Cut; k->transLen = 0; } }
         if (r == 33 && onAskText)
             onAskText ("Rename clip", cl->name, [this, id] (juce::String v)
             {

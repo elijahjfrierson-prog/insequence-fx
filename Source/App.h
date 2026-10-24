@@ -179,6 +179,9 @@ private:
     int trackY (int i) const;
     struct CutDot { juce::String clipId; int x; juce::Point<int> centre; bool full; };
     std::vector<CutDot> cutDots() const;
+public:
+    void addAdjustmentLayer (Ticks at);
+private:
     int trackAt (int y) const;
     double xToSec (int x) const { return scrollSec + (x - kHeader) / pxPerSec; }
     int secToX (double s) const { return kHeader + (int) std::lround ((s - scrollSec) * pxPerSec); }

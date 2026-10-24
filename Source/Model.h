@@ -122,6 +122,8 @@ float keyValue (const std::vector<Clip::Key>& k, Ticks rel);
 // writes every keyframed param of c into c.fx at timeline time t
 void applyKeyframes (Clip& c, Ticks t);
 void setKey (Clip& c, const juce::String& param, Ticks rel, float v, int interp = 0);
+// keep keyframes pinned to timeline time when the clip's start moves by delta (split, left trim)
+void shiftKeys (Clip& c, Ticks delta);
 
 
 enum class TrackKind { Video = 0, Audio };

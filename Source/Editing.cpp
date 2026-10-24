@@ -42,10 +42,31 @@ Ticks snapTime (Ticks t, const Project& p, SnapMode m)
 
 juce::StringArray chopModeNames() { return { "CHOP 1/8", "CHOP 1/16", "CHOP 1/32", "KICK", "SNARE", "HI-HAT" }; }
 
+std::vector<Ticks> hatRolls (const SongAnalysis& s, Ticks a, Ticks b)
+{
+    std::vector<Ticks> hats, out;
+    for (auto& e : s.events) if (e.type == EventType::HiHat && e.time >= a && e.time < b) hats.push_back (e.time);
+    std::sort (hats.begin(), hats.end());
+    const Ticks gap = secToTicks (s.beatSec() / 3.0 + 0.01), minLen = secToTicks (1.0 / 15.0);
+    for (size_t i = 0; i < hats.size();)
+    {
+        size_t j = i;
+        while (j + 1 < hats.size() && hats[j + 1] - hats[j] <= gap) ++j;
+        if (j - i + 1 >= 4)
+        {
+            Ticks last = hats[i] - minLen * 2;
+            for (size_t k = i; k <= j; ++k) if (hats[k] - last >= minLen) { out.push_back (hats[k]); last = hats[k]; }
+        }
+        i = j + 1;
+    }
+    return out;
+}
+
 std::vector<Ticks> chopPoints (const SongAnalysis& s, Ticks a, Ticks b, ChopMode m)
 {
     std::vector<Ticks> out;
     if (b <= a) return out;
+    if (m == ChopMode::HatRoll) return hatRolls (s, a, b);
     if (m == ChopMode::Grid8 || m == ChopMode::Grid16 || m == ChopMode::Grid32)
     {
         int per = m == ChopMode::Grid8 ? 2 : (m == ChopMode::Grid16 ? 4 : 8);
@@ -89,6 +110,7 @@ bool splitAt (Sequence& s, Ticks t, const juce::StringArray& only)
         r.id = newId();
         if (c.reverse) { r.srcIn = c.srcIn; c.srcIn = c.srcAt (t) + 1; }   // reversed: the left half holds the later source
         else r.srcIn = c.srcAt (t);
+        shiftKeys (r, t - c.start);
         r.start = t; r.length = c.end() - t;
         r.transIn = TransitionType::Cut; r.transLen = 0;
         c.length = t - c.start;
@@ -250,7 +272,7 @@ void fillGaps (Sequence& s, const Project& p, int track)
         if (gap > 0 && ! b.locked)
         {
             Ticks e2 = b.speed <= 0 ? gap : std::min (gap, std::max<Ticks> (0, (Ticks) ((double) b.srcIn / b.speed)));
-            b.start -= e2; b.length += e2; b.srcIn -= (Ticks) ((double) e2 * b.speed);
+            shiftKeys (b, -e2); b.start -= e2; b.length += e2; b.srcIn -= (Ticks) ((double) e2 * b.speed);
         }
     }
 }
@@ -282,6 +304,7 @@ bool trimClip (Sequence& s, const Project& p, const juce::String& id, bool left,
         Ticks newSrc = c->srcIn + (Ticks) ((double) (e - c->start) * c->speed);
         if (newSrc < 0) { e -= (Ticks) ((double) newSrc / c->speed); newSrc = 0; }
         if (c->end() - e < minLen) return false;
+        shiftKeys (*c, e - c->start);
         c->length = c->end() - e; c->srcIn = newSrc; c->start = e;
     }
     else
@@ -429,6 +452,14 @@ static const StyleRules kStyles[3] = {
     { "Performance", "Performance Punch",{ 4, 2, 1 }, ChopMode::Kick,  0.25, TransitionType::Flash,    0.6, { 0.6f, 0.45f, 0.35f, 0.0f } },
 };
 
+static std::vector<TransitionType> stylePalette (const juce::String& n)
+{
+    using T = TransitionType;
+    if (n == "Cinematic") return { T::Dissolve, T::DipBlack, T::LightLeak, T::Blur };
+    if (n == "Underground") return { T::Whip, T::Blur, T::Shake, T::Mirror, T::DipBlack };
+    return { T::Flash, T::Zoom, T::Whip, T::Shake, T::Spin };
+}
+
 static Sequence generateOne (const Project& p, const StyleRules& st, juce::uint32 seed, const juce::String& styleMode)
 {
     Sequence s = Project::makeDefaultSequence (juce::String (st.name) + " Cut");
@@ -469,10 +500,13 @@ static Sequence generateOne (const Project& p, const StyleRules& st, juce::uint3
         if (t1 - t < secToTicks (beat * 0.5)) t1 = std::min (songLen, a.gridTime (nextBeat + segBeats));
 
         std::vector<Ticks> cuts { t, t1 };
-        if (sec == 2 && st.burstChance > 0 && rng.nextDouble() < st.burstChance)
+        // active sequencer: hat rolls always cut, hooks burst often, verses sometimes
+        const double burstP = sec == 2 ? std::max (st.burstChance, 0.55) : sec == 1 ? std::max (st.burstChance, 0.2) * 0.8 : st.burstChance * 0.25;
+        if (st.burstChance > 0 && rng.nextDouble() < burstP)
+            for (auto e : chopPoints (a, t, t1, st.burst)) cuts.push_back (e);
+        if (st.burstChance > 0 || sec == 2)
+            for (auto e : hatRolls (a, t, t1)) cuts.push_back (e);
         {
-            auto extra = chopPoints (a, t, t1, st.burst);
-            for (auto e : extra) cuts.push_back (e);
             std::sort (cuts.begin(), cuts.end());
             cuts.erase (std::unique (cuts.begin(), cuts.end()), cuts.end());
         }
@@ -500,13 +534,32 @@ static Sequence generateOne (const Project& p, const StyleRules& st, juce::uint3
             }
             else continue;
             auto& placed = s.clips.back();
+            const double len = ticksToSec (placed.length);
             if (sec != prevSection && prevSection >= 0 && i == 0)
             {
                 placed.transIn = st.sectionTrans;
-                placed.transLen = secToTicks (std::min (beat, ticksToSec (placed.length) * 0.5));
+                placed.transLen = secToTicks (std::min (beat, len * 0.5));
             }
-            if (juce::String (st.name) == "Performance" && sec == 2 && rng.nextDouble() < 0.3)
-                placed.fx.set ("scale", 1.15f + 0.15f * (float) rng.nextDouble());
+            else if (c0 > 0 && len >= beat * 0.75)
+            {
+                // transitions on a share of ordinary cuts, short and on-grid
+                const double trP = (juce::String (st.name) == "Cinematic" ? 0.12 : 0.25) * (sec + 1);
+                if (rng.nextDouble() < trP)
+                {
+                    auto pal = stylePalette (st.name);
+                    placed.transIn = pal[(size_t) rng.nextInt ((int) pal.size())];
+                    placed.transLen = secToTicks (std::min (beat * 0.5, len * 0.4));
+                }
+            }
+            // punch-in on hits: an eased scale keyframe from 1.1x back to 1x over a quarter beat-ish
+            const bool punchy = juce::String (st.name) != "Cinematic";
+            if (punchy && sec >= 1 && len >= 0.2 && rng.nextDouble() < (sec == 2 ? 0.45 : 0.2))
+            {
+                setKey (placed, "scale", 0, 1.08f + 0.08f * (float) rng.nextDouble(), 2);
+                setKey (placed, "scale", secToTicks (std::min (0.3, len * 0.6)), 1.0f);
+            }
+            if (juce::String (st.name) == "Underground" && sec == 2 && len >= beat && rng.nextDouble() < 0.2)
+                placed.fx.set ("blackFlash2", 0.6f);
         }
         prevSection = sec;
         t = t1;
@@ -589,7 +642,7 @@ std::vector<int> generateEdits (Project& p, juce::uint32 seed, const juce::Strin
 
 namespace isfx
 {
-juce::StringArray autoCutNames() { return { "1/4", "1/8", "1/16", "1/32", "Triplets", "Hi-hats", "Kicks", "Snares", "Roll (1/8 > 1/16 > 1/32)" }; }
+juce::StringArray autoCutNames() { return { "1/4", "1/8", "1/16", "1/32", "Triplets", "Hi-hats", "Kicks", "Snares", "Roll (1/8 > 1/16 > 1/32)", "Hi-hat rolls only" }; }
 
 int autoCutClip (Project& p, const juce::String& clipId, AutoCut mode, bool switchAngles, juce::uint32 seed)
 {
@@ -623,6 +676,13 @@ int autoCutClip (Project& p, const juce::String& clipId, AutoCut mode, bool swit
             Ticks minGap = secToTicks (video ? 1.0 / p.fps : 0.01);
             for (auto& e : p.song.events)
                 if (e.type == ty && e.time > a + minGap && e.time < b - minGap && (pts.empty() || e.time - pts.back() >= minGap)) pts.push_back (q (e.time));
+            break;
+        }
+        case AutoCut::HatRoll:
+        {
+            Ticks minGap = secToTicks (video ? 1.0 / p.fps : 0.01);
+            for (auto e : hatRolls (p.song, a, b))
+                if (e > a + minGap && e < b - minGap && (pts.empty() || e - pts.back() >= minGap)) pts.push_back (q (e));
             break;
         }
         case AutoCut::Roll:

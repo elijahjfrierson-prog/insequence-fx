@@ -209,6 +209,14 @@ static Project syntheticProject()
 static void testEditing()
 {
     Project p = syntheticProject();
+    {
+        SongAnalysis rs = p.song;
+        const Ticks r0 = secToTicks (20.0), step = secToTicks (rs.beatSec() / 4.0);
+        for (int k = 1; k <= 6; ++k) rs.events.push_back ({ r0 + step * k + secToTicks (0.001), EventType::HiHat, 0.5f, 0.8f });
+        auto rolls = hatRolls (rs, r0, r0 + secToTicks (2.0));
+        CHECK (rolls.size() >= 6, "hi-hat roll found and cut on every roll hat (" + juce::String ((int) rolls.size()) + ")");
+        CHECK (hatRolls (p.song, 0, secToTicks (10)).empty(), "steady 8th hats are not a roll");
+    }
     History h;
     auto id = addMediaClip (p, "take1", 0, 0);
     CHECK (id.isNotEmpty() && p.seq().clips.size() == 1, "clip added");
@@ -962,6 +970,13 @@ int main (int argc, char** argv)
             CHECK (std::abs (kc.fx.get ("scale", 0) - 1.5f) < 1e-4f && kc.fx.get ("rotation", -1) == 0.0f, "keyframes: linear + hold evaluate at clip time");
             applyKeyframes (kc, secToTicks (10));
             CHECK (kc.fx.get ("scale", 0) == 2.0f && kc.fx.get ("rotation", 0) == 90.0f, "keyframes clamp to last key");
+            {
+                Sequence ss = Project::makeDefaultSequence ("k"); Clip sc = kc; sc.track = 0; ss.clips = { sc };
+                splitAt (ss, secToTicks (3), {});
+                Clip* rc = nullptr; for (auto& x : ss.clips) if (x.start == secToTicks (3)) rc = &x;
+                if (rc) applyKeyframes (*rc, secToTicks (3.5));
+                CHECK (rc != nullptr && std::abs (rc->fx.get ("scale", 0) - 1.75f) < 1e-4f, "split keeps keyframes at their timeline times");
+            }
             Project kp = Project::makeNew(); kc.track = 0; kp.seq().clips = { kc };
             auto kf = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("keys.isfx");
             juce::String kerr; Project kq;

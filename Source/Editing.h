@@ -10,7 +10,9 @@ juce::StringArray snapModeNames();
 int snapPerBeat (SnapMode m);                 // grid lines per beat (0 = bar/frame/off)
 Ticks snapTime (Ticks t, const Project& p, SnapMode m);
 
-enum class ChopMode { Grid8 = 0, Grid16, Grid32, Kick, Snare, HiHat };
+enum class ChopMode { Grid8 = 0, Grid16, Grid32, Kick, Snare, HiHat, HatRoll };
+// cut points on hi-hat rolls: runs of 4+ hats closer than a triplet 8th, thinned to >= 1/15 s apart
+std::vector<Ticks> hatRolls (const SongAnalysis& s, Ticks a, Ticks b);
 juce::StringArray chopModeNames();
 
 // cut times inside [a, b) for a chop mode (grid modes: exact musical times; event modes: detected hits)
@@ -64,7 +66,7 @@ std::vector<int> generateEdits (Project& p, juce::uint32 seed, const juce::Strin
 // Right-click Auto Cut: slices one clip on the grid / detected hits, or a hi-hat-style roll
 // (1/8 -> 1/16 -> 1/32 into the next bar, every slice repeating the roll's first slice = stutter).
 // switchAngles: video slices cycle through the other synced takes covering each slice.
-enum class AutoCut { Quarter = 0, Eighth, Sixteenth, ThirtySecond, Triplet, HiHat, Kick, Snare, Roll };
+enum class AutoCut { Quarter = 0, Eighth, Sixteenth, ThirtySecond, Triplet, HiHat, Kick, Snare, Roll, HatRoll };
 juce::StringArray autoCutNames();
 int autoCutClip (Project& p, const juce::String& clipId, AutoCut mode, bool switchAngles, juce::uint32 seed = 1);
 }

@@ -353,6 +353,11 @@ void applyKeyframes (Clip& c, Ticks t)
     for (auto& [id, ks] : c.keys) if (! ks.empty()) c.fx.set (id, keyValue (ks, t - c.start));
 }
 
+void shiftKeys (Clip& c, Ticks delta)
+{
+    for (auto& [id, ks] : c.keys) for (auto& k : ks) k.t -= delta;
+}
+
 void setKey (Clip& c, const juce::String& param, Ticks rel, float v, int interp)
 {
     auto& ks = c.keys[param];
