@@ -297,6 +297,7 @@ MainComponent::MainComponent()
     };
     media.onSyncAll = [this] { autoSync(); };
     media.onResync = [this] (const juce::String& id) { autoSync (id); };
+    timeline.onStatus = [this] (const juce::String& m) { status.setText (m, juce::dontSendNotification); };
     timeline.onSyncClips = [this] (const juce::StringArray& ids) { syncClips (ids); };
     timeline.onTrackPlugins = [this] (int tr) { trackPluginsMenu (tr); };
     player.setTrackFx (&trackRacks);

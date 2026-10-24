@@ -54,6 +54,10 @@ int layoutSyncedTakes (Project& p);
 // GENERATE 3 EDITS: appends Cinematic / Underground / Performance sequences, returns their indices
 // Swap each clip (not locked/kept, normal speed) to a different synced take at the same song time. Returns swaps.
 int randomizeShots (const Project& p, Sequence& s, const juce::StringArray& clipIds, juce::uint32 seed);
+// Pull clips out of the edit. ripple = Extract (close the gap). Lift keeps the gap, but a synced shot on an edit track
+// (a track that mixes takes, like a generated edit) is swapped to another take covering the same span so it never goes black.
+// Returns how many gaps were filled from takes.
+int liftClips (const Project& p, Sequence& s, const juce::StringArray& ids, bool ripple, juce::uint32 seed);
 // Every synced take as one full clip on its own hidden, muted video track (raw material under the edit).
 int addTakeLayers (const Project& p, Sequence& s);
 std::vector<int> generateEdits (Project& p, juce::uint32 seed, const juce::String& styleMode = {});

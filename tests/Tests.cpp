@@ -942,6 +942,18 @@ int main (int argc, char** argv)
         int hiddenTakes = 0;
         for (auto& c : rs.clips) if (c.id != "a" && c.id != "b" && rs.tracks[(size_t) c.track].hidden && rs.tracks[(size_t) c.track].mute) ++hiddenTakes;
         CHECK (layers == 3 && rs.tracks.size() == tracks0 + 3 && hiddenTakes == 3, "all takes sit under the edit on hidden, muted tracks");
+        {
+            Sequence ls = rs;
+            const auto before = ls.findClip ("a")->mediaId;
+            const int filled = liftClips (rp, ls, { "a" }, false, 3);
+            auto* la = ls.findClip ("a");
+            CHECK (filled == 1 && la != nullptr && la->mediaId != before && la->start == secToTicks (4)
+                   && la->srcIn == la->start - rp.findMedia (la->mediaId)->sync.offset, "lift from the generated edit: a synced take fills the gap");
+            juce::String takeClip; for (auto& c : ls.clips) if (c.track != 0) { takeClip = c.id; break; }
+            CHECK (liftClips (rp, ls, { takeClip }, false, 3) == 0 && ls.findClip (takeClip) == nullptr, "lift on a take layer just removes it");
+            const size_t n0 = ls.clips.size();
+            CHECK (liftClips (rp, ls, { "a" }, true, 3) == 0 && ls.findClip ("a") == nullptr && ls.clips.size() == n0 - 1, "extract pulls the clip out");
+        }
     }
     {
         Project sp = Project::makeNew();

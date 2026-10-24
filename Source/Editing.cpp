@@ -538,6 +538,23 @@ int randomizeShots (const Project& p, Sequence& s, const juce::StringArray& clip
     return n;
 }
 
+int liftClips (const Project& p, Sequence& s, const juce::StringArray& ids, bool ripple, juce::uint32 seed)
+{
+    juce::StringArray gone;
+    int filled = 0;
+    for (auto& id : ids)
+    {
+        const auto* c = s.findClip (id);
+        if (c == nullptr) continue;
+        bool editTrack = false;
+        for (auto& k : s.clips) editTrack |= k.track == c->track && k.mediaId.isNotEmpty() && k.mediaId != c->mediaId && k.mediaId != p.songId;
+        if (! ripple && editTrack && ! c->keep && randomizeShots (p, s, { id }, seed + (juce::uint32) gone.size() * 7919u + (juce::uint32) filled) == 1) { ++filled; continue; }
+        gone.add (id);
+    }
+    deleteClips (s, gone, ripple);
+    return filled;
+}
+
 int addTakeLayers (const Project& p, Sequence& s)
 {
     int n = 0;

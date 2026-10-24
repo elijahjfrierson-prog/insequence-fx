@@ -243,7 +243,14 @@ void Timeline::paint (juce::Graphics& g)
     g.setColour (dim); g.setFont (10.0f);
     g.drawText (p.song.valid ? juce::String (p.song.bpm, 2) + " BPM" : juce::String ("no song"), 4, 0, kHeader - 6, kRuler, juce::Justification::centredLeft);
 
-    if (snapGuide >= 0 && drag != Drag::None)
+    if (drag == Drag::Move && dragOut)
+    {
+        g.setColour (juce::Colours::red.withAlpha (0.18f)); g.fillRect (getLocalBounds());
+        g.setColour (juce::Colours::white); g.setFont (16.0f);
+        g.drawText ("Release to pull " + juce::String (st.selected.size()) + " clip(s) out   -   hold Alt to close the gap",
+                    getLocalBounds().removeFromTop (kRuler + 40), juce::Justification::centred);
+    }
+    if (snapGuide >= 0 && drag != Drag::None && ! dragOut)
     {
         int gx = secToX (ticksToSec (snapGuide));
         g.setColour (accent2); g.drawVerticalLine (gx, (float) kRuler, (float) H);
@@ -433,6 +440,11 @@ void Timeline::mouseDrag (const juce::MouseEvent& e)
         case Drag::Move:
         {
             st.project = beforeDrag;
+            {
+                int bottom = trackY ((int) st.project.seq().tracks.size());
+                dragOut = pos.y > juce::jmin (getHeight(), bottom + 24) || pos.y < 0 || pos.x < 0 || pos.x > getWidth();
+            }
+            if (dragOut) { if (onEdited) onEdited(); repaint(); break; }
             const auto* dc = beforeDrag.seq().findClip (dragClip);
             Ticks delta = magnetSnap (dragOrig + (t - dragStart), dc != nullptr ? dc->length : 0) - dragOrig;
             if (dragOrig + delta < 0) delta = -dragOrig;
@@ -464,10 +476,20 @@ void Timeline::mouseDrag (const juce::MouseEvent& e)
     if (tool == Tool::Delete || tool == Tool::Paint) mouseDown (e);   // drag-paint / drag-delete
 }
 
-void Timeline::mouseUp (const juce::MouseEvent&)
+void Timeline::mouseUp (const juce::MouseEvent& e)
 {
     snapGuide = -1;
-    if (drag == Drag::Move)
+    bool pulled = false;
+    if (drag == Drag::Move && dragOut)
+    {
+        st.project = beforeDrag;
+        const bool ripple = e.mods.isAltDown() || st.ripple;
+        const int filled = liftClips (st.project, st.project.seq(), st.selected, ripple, (juce::uint32) juce::Time::currentTimeMillis());
+        st.selected.clear(); pulled = true;
+        if (onStatus) onStatus (ripple ? juce::String ("Extracted (gap closed)") : filled > 0 ? "Pulled out, " + juce::String (filled) + " gap(s) filled from synced takes" : juce::String ("Pulled out (gap left)"));
+        if (onEdited) onEdited();
+    }
+    else if (drag == Drag::Move)
     {
         // dropped clips cover only the spot they land on; neighbours keep their song position (sync safe)
         settleClips (st.project.seq(), st.selected);
@@ -478,12 +500,12 @@ void Timeline::mouseUp (const juce::MouseEvent&)
     {
         if (toVar (beforeDrag).toString() != toVar (st.project).toString())
         {
-            st.history.push (beforeDrag, drag == Drag::Move ? "Move" : drag == Drag::Song ? "Move song" : "Trim");
+            st.history.push (beforeDrag, pulled ? "Pull out" : drag == Drag::Move ? "Move" : drag == Drag::Song ? "Move song" : "Trim");
             st.dirty = true;
         }
     }
     if (drag == Drag::Range && st.rangeB - st.rangeA < secToTicks (0.01)) st.rangeA = st.rangeB = 0;
-    drag = Drag::None;
+    drag = Drag::None; dragOut = false;
     repaint();
 }
 
@@ -618,6 +640,7 @@ void Timeline::clipMenu (const juce::String& id)
     m.addSeparator();
     m.addItem (5, "Delete", ! lk);
     m.addItem (6, "Ripple Delete  (Shift+Del)", ! lk);
+    m.addItem (47, "Pull out of edit (synced take fills the gap)", ! lk);
     m.addItem (2, "Split at playhead  (Ctrl+K)", ! lk && st.playhead > c->start && st.playhead < c->end());
     m.addSubMenu ("Auto Cut", cut, ! lk);
     m.addSeparator();
@@ -731,6 +754,7 @@ void Timeline::clipMenu (const juce::String& id)
         if (r == 4) { st.edit ("Lock"); cl->locked = ! cl->locked; }
         if (r == 5) { st.edit ("Delete"); deleteClips (sq, sel, false); st.selected.clear(); }
         if (r == 6) { st.edit ("Ripple Delete"); deleteClips (sq, sel, true); st.selected.clear(); }
+        if (r == 47) { st.edit ("Pull out"); liftClips (st.project, sq, sel, false, (juce::uint32) juce::Time::currentTimeMillis()); st.selected.clear(); }
         if (r == 20) { st.edit ("Enable"); bool on = ! cl->enabled; for (auto& i : sel) if (auto* k = sq.findClip (i)) k->enabled = on; }
         if (r == 21 || r == 22)
         {
