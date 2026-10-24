@@ -4,6 +4,7 @@
 #include <juce_graphics/juce_graphics.h>
 
 struct AVFormatContext; struct AVCodecContext; struct AVFrame; struct AVPacket; struct SwsContext;
+struct AVBufferRef;
 
 namespace isfx
 {
@@ -63,6 +64,12 @@ private:
     int stream = -1, outW = 0, outH = 0, rot = 0, maxH = 0;
     double frameRate = 30.0, tb = 0;
     Frame cur, next;
+    AVFrame* swAv = nullptr;
+    AVBufferRef* hwDev = nullptr;
+    int hwFmt = -1;
+public:
+    bool usingHardware() const { return hwDev != nullptr; }
+private:
     AVFrame* curAv = nullptr;   // decoded but not yet converted: frames we skip past never pay for RGBA conversion
     AVFrame* nextAv = nullptr;
     Ticks curPts = -1, nextPts = -1;

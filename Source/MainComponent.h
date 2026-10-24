@@ -108,7 +108,7 @@ private:
     void mouseDown (const juce::MouseEvent&) override;
     void mouseDrag (const juce::MouseEvent&) override;
     void mouseUp (const juce::MouseEvent&) override { draggingSplit = false; }
-    juce::TextButton mediaTgl { "Media" }, inspTgl { "Inspector" }, maxPrevBtn { "Max Preview" }, maxTlBtn { "Max Timeline" };
+    juce::TextButton mediaTgl { "Media" }, inspTgl { "Inspector" }, maxPrevBtn { "Max Preview" }, maxTlBtn { "Max Timeline" }, movieBtn { "Movie Border" };
     juce::VBlankAttachment vblank { this, [this] { if (player.isPlaying()) timerCallback(); } };
     juce::uint32 genSeed = 1;
 };

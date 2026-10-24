@@ -5,7 +5,7 @@
 
 namespace isfx
 {
-juce::StringArray snapModeNames() { return { "Off", "Bar", "Beat", "1/2", "1/4", "1/8", "1/16", "1/32", "Triplet", "Frame" }; }
+juce::StringArray snapModeNames() { return { "Off", "Bar", "Beat", "1/2", "1/4", "1/8", "1/16", "1/32", "Triplet", "Frame", "1 s", "100 ms", "10 ms" }; }
 
 // beat = quarter note. 1/8 note = 2 per beat, 1/16 = 4, 1/32 = 8
 int snapPerBeat (SnapMode m)
@@ -26,6 +26,11 @@ int snapPerBeat (SnapMode m)
 Ticks snapTime (Ticks t, const Project& p, SnapMode m)
 {
     if (m == SnapMode::Off) return t;
+    if (m == SnapMode::Sec1 || m == SnapMode::Ms100 || m == SnapMode::Ms10)
+    {
+        const Ticks step = secToTicks (m == SnapMode::Sec1 ? 1.0 : m == SnapMode::Ms100 ? 0.1 : 0.01);
+        return (t + step / 2) / step * step;
+    }
     if (m == SnapMode::Frame || ! p.song.valid) return quantizeToFrame (t, p.fps);
     const auto& s = p.song;
     double beats = s.beatAt (t);
@@ -514,6 +519,43 @@ static Sequence generateOne (const Project& p, const StyleRules& st, juce::uint3
     return s;
 }
 
+int randomizeShots (const Project& p, Sequence& s, const juce::StringArray& clipIds, juce::uint32 seed)
+{
+    juce::Random rng ((juce::int64) seed);
+    int n = 0;
+    for (auto& id : clipIds)
+    {
+        auto* c = s.findClip (id);
+        if (c == nullptr || c->locked || c->keep || c->speed != 1.0 || c->reverse) continue;
+        if (c->track < 0 || c->track >= (int) s.tracks.size() || s.tracks[(size_t) c->track].locked || s.tracks[(size_t) c->track].kind != TrackKind::Video) continue;
+        std::vector<const MediaItem*> pool;
+        for (auto* m : takesCovering (p, c->start, c->length)) if (m->id != c->mediaId) pool.push_back (m);
+        if (pool.empty()) continue;
+        auto* m = pool[(size_t) rng.nextInt ((int) pool.size())];
+        c->mediaId = m->id; c->srcIn = c->start - m->sync.offset;
+        ++n;
+    }
+    return n;
+}
+
+int addTakeLayers (const Project& p, Sequence& s)
+{
+    int n = 0;
+    for (auto& m : p.media)
+    {
+        if (m.kind != MediaKind::Video || m.missing || (m.sync.status != SyncInfo::Synced && m.sync.status != SyncInfo::Manual)) continue;
+        const int tk = insertVideoTrack (s);
+        auto& tr = s.tracks[(size_t) tk];
+        tr.name = m.name; tr.hidden = true; tr.mute = true;
+        Clip c; c.id = newId(); c.mediaId = m.id; c.track = tk;
+        c.start = std::max ((Ticks) 0, m.sync.offset); c.srcIn = c.start - m.sync.offset;
+        c.length = m.duration - c.srcIn; c.volume = 0.0f;
+        if (c.length > 0) { s.clips.push_back (c); ++n; }
+    }
+    s.sortClips();
+    return n;
+}
+
 std::vector<int> generateEdits (Project& p, juce::uint32 seed, const juce::String& styleMode)
 {
     std::vector<int> idx;
@@ -521,6 +563,7 @@ std::vector<int> generateEdits (Project& p, juce::uint32 seed, const juce::Strin
     for (int i = 0; i < 3; ++i)
     {
         p.sequences.push_back (generateOne (p, kStyles[i], seed * 7919u + (juce::uint32) i * 104729u, styleMode));
+        addTakeLayers (p, p.sequences.back());
         idx.push_back ((int) p.sequences.size() - 1);
     }
     return idx;

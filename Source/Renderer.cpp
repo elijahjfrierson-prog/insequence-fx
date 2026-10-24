@@ -1069,7 +1069,8 @@ bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int 
     int bar = 0;
     if (lbox > 0)
     {
-        float target = 2.39f, cur = (float) W / H;
+        float target = sv ("letterboxRatio"), cur = (float) W / H;
+        if (target < 1.0f) target = 2.39f;
         if (cur < target) bar = (int) std::lround (H * (1 - cur / target) * 0.5f * std::min (1.0f, lbox * 2));
     }
     rgba.resize (NP * 4);

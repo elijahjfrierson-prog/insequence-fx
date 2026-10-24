@@ -5,7 +5,7 @@ namespace isfx
 {
 constexpr double kMaxSongSeconds = 600.0;   // full music videos up to 10 minutes
 
-enum class SnapMode { Off = 0, Bar, Beat, Half, Quarter, Eighth, Sixteenth, ThirtySecond, Triplet, Frame };
+enum class SnapMode { Off = 0, Bar, Beat, Half, Quarter, Eighth, Sixteenth, ThirtySecond, Triplet, Frame, Sec1, Ms100, Ms10 };
 juce::StringArray snapModeNames();
 int snapPerBeat (SnapMode m);                 // grid lines per beat (0 = bar/frame/off)
 Ticks snapTime (Ticks t, const Project& p, SnapMode m);
@@ -52,6 +52,10 @@ int chopRange (Project& p, Ticks a, Ticks b, ChopMode m, juce::uint32 seed);
 int layoutSyncedTakes (Project& p);
 
 // GENERATE 3 EDITS: appends Cinematic / Underground / Performance sequences, returns their indices
+// Swap each clip (not locked/kept, normal speed) to a different synced take at the same song time. Returns swaps.
+int randomizeShots (const Project& p, Sequence& s, const juce::StringArray& clipIds, juce::uint32 seed);
+// Every synced take as one full clip on its own hidden, muted video track (raw material under the edit).
+int addTakeLayers (const Project& p, Sequence& s);
 std::vector<int> generateEdits (Project& p, juce::uint32 seed, const juce::String& styleMode = {});
 // Right-click Auto Cut: slices one clip on the grid / detected hits, or a hi-hat-style roll
 // (1/8 -> 1/16 -> 1/32 into the next bar, every slice repeating the roll's first slice = stutter).
