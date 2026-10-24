@@ -661,7 +661,7 @@ void Timeline::selectRangeClips()
 {
     st.selected.clear();
     for (auto& c : st.project.seq().clips)
-        if (c.start < st.rangeB && c.end() > st.rangeA && ! c.locked && c.mediaId != st.project.songId) st.selected.add (c.id);
+        if (c.start < st.rangeB && c.end() > st.rangeA && ! c.locked && (st.project.songId.isEmpty() || c.mediaId != st.project.songId)) st.selected.add (c.id);
     if (onStatus && ! st.selected.isEmpty())
         onStatus (juce::String (st.selected.size()) + " clips in the highlighted range. Right-click one: Re-cut, copy, delete, effects. Esc clears.");
     if (onEdited) onEdited();
@@ -947,8 +947,8 @@ void Timeline::clipMenu (const juce::String& id)
                     for (auto& k : sq.clips) if (tracks.count (k.track) && ! k.locked && k.mediaId != st.project.songId
                                                 && (strict ? (k.start >= st.rangeA && k.end() <= st.rangeB) : (k.start < st.rangeB && k.end() > st.rangeA))) ids.add (k.id);
                     return ids; };
-                splitAt (sq, st.rangeA, inside (false));
-                splitAt (sq, st.rangeB, inside (false));
+                if (auto ids = inside (false); ! ids.isEmpty()) splitAt (sq, st.rangeA, ids);
+                if (auto ids = inside (false); ! ids.isEmpty()) splitAt (sq, st.rangeB, ids);
                 sel = inside (true);
             }
             for (auto& i : sel) n += autoCutClip (st.project, i, (AutoCut) (r - 100), switchAngles, seed++);
@@ -961,7 +961,9 @@ void Timeline::clipMenu (const juce::String& id)
             for (auto& i : sel)
                 if (auto* k = sq.findClip (i); k && ! k->locked && k->mediaId.isNotEmpty())
                 {
-                    for (auto* id : { "scale", "posX", "posY" }) k->keys.erase (id);
+                    for (auto* id : { "scale", "posX", "posY" })   // only replace 2-key start/end moves, keep manual animation
+                        if (auto it = k->keys.find (id); it != k->keys.end() && it->second.size() == 2
+                            && it->second.front().t == 0 && it->second.back().t == k->length) k->keys.erase (it);
                     if (r == 493) continue;
                     const float s0 = k->fx.get ("scale", 1.0f);
                     const float a0 = r == 491 ? s0 * 1.08f : s0, a1 = r == 490 ? s0 * 1.08f : r == 492 ? s0 * 1.06f : s0;

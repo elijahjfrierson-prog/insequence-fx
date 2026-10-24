@@ -733,7 +733,13 @@ int autoCutClip (Project& p, const juce::String& clipId, AutoCut mode, bool swit
             if (mode == AutoCut::Stutter) rollStart = a;
             break;
         }
-        case AutoCut::Smooth: grid (1, a, b); { std::vector<Ticks> bars; for (auto t : pts) if (std::abs (std::fmod (g.beatAt (t), (double) g.beatsPerBar)) < 1e-3 || std::abs (std::fmod (g.beatAt (t), (double) g.beatsPerBar) - g.beatsPerBar) < 1e-3) bars.push_back (t); pts = bars; } break;
+        case AutoCut::Smooth:   // bar lines straight from the grid, then frame-quantized
+        {
+            const int bpb = std::max (1, g.beatsPerBar);
+            auto n0 = (juce::int64) std::ceil (g.beatAt (a) / bpb - 1e-9), n1 = (juce::int64) std::floor (g.beatAt (b) / bpb + 1e-9);
+            for (auto n = n0; n <= n1; ++n) { Ticks t = q (g.subdivTime (n * bpb, 1)); if (t > a && t < b) pts.push_back (t); }
+            break;
+        }
         case AutoCut::HatRoll:
         {
             Ticks minGap = secToTicks (video ? 1.0 / p.fps : 0.01);
