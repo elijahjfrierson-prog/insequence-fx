@@ -962,10 +962,10 @@ void Timeline::clipMenu (const juce::String& id)
                 if (auto* k = sq.findClip (i); k && ! k->locked && k->mediaId.isNotEmpty())
                 {
                     if (k->fx.get ("slowMove", 0.0f) > 0.0f)   // the slow move owns these keys, even after trims/splits
-                        for (auto* id : { "scale", "posX", "posY" }) k->keys.erase (id);
+                        for (auto* id : { "scale", "posX" }) k->keys.erase (id);
                     k->fx.p.erase ("slowMove");
                     if (r == 493) continue;
-                    for (auto* id : { "scale", "posX", "posY" }) k->keys.erase (id);
+                    k->keys.erase ("scale"); if (r == 492) k->keys.erase ("posX");   // only replace what this move animates
                     k->fx.set ("slowMove", 1.0f);
                     const float s0 = k->fx.get ("scale", 1.0f);
                     const float a0 = r == 491 ? s0 * 1.08f : s0, a1 = r == 490 ? s0 * 1.08f : r == 492 ? s0 * 1.06f : s0;
