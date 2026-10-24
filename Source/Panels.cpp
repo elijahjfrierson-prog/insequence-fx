@@ -600,8 +600,40 @@ void FxLibrary::refilter()
     list.updateContent(); list.repaint();
 }
 
-void FxLibrary::listBoxItemClicked (int row, const juce::MouseEvent&)
+void FxLibrary::listBoxItemClicked (int row, const juce::MouseEvent& e)
 {
+    if (e.mods.isPopupMenu() && row >= 0 && row < getNumRows() && ! rows[(size_t) row].header)
+    {
+        const auto desc = rows[(size_t) row].desc;
+        if (desc.startsWith ("sfx:")) return;
+        list.selectRow (row);
+        juce::PopupMenu m;
+        if (desc.startsWith ("transition:"))
+        {
+            const char* where[3] = { "Selected clips", "All clips", "Adjustment layer (fade)" };
+            for (int sc = 0; sc < 3; ++sc)
+            {
+                juce::PopupMenu sub;
+                sub.addItem (1 + sc * 10, "In (start of clip)");
+                sub.addItem (2 + sc * 10, "Out (end of clip)");
+                sub.addItem (3 + sc * 10, "In + Out");
+                m.addSubMenu (juce::String ("Apply to ") + where[sc], sub);
+            }
+        }
+        else
+        {
+            m.addItem (1, "Apply to selected clips");
+            m.addItem (11, "Apply to all clips");
+            m.addItem (21, "Apply to adjustment layer (selected, or a new one over the selection)");
+        }
+        juce::Component::SafePointer<FxLibrary> safe (this);
+        m.showMenuAsync (juce::PopupMenu::Options(), [safe, desc] (int r)
+        {
+            if (r <= 0 || safe == nullptr || ! safe->onApply) return;
+            safe->onApply (desc, (r - 1) / 10, (r - 1) % 10);
+        });
+        return;
+    }
     if (row < 0 || row >= getNumRows() || ! rows[(size_t) row].header) return;
     const auto key = rows[(size_t) row].folder;
     if (open.count (key)) open.erase (key); else open.insert (key);

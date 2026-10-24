@@ -399,6 +399,96 @@ void Timeline::revealClip (const juce::String& id)
     repaint();
 }
 
+void Timeline::applyLibraryItem (const juce::String& desc, int scope, int side)
+{
+    auto& sq = st.project.seq();
+    const Ticks beat = st.project.song.valid ? secToTicks (st.project.song.beatSec()) : secToTicks (0.5);
+    auto isVideo = [&] (const Clip& c) { return c.track >= 0 && c.track < (int) sq.tracks.size() && sq.tracks[(size_t) c.track].kind == TrackKind::Video
+                                                && ! c.locked && ! sq.tracks[(size_t) c.track].locked; };
+    auto isLayer = [] (const Clip& c) { return c.mediaId.isEmpty() && c.text.isEmpty(); };
+    // what the effect is
+    const bool isTrans = desc.startsWith ("transition:");
+    FxStack lookFx; UserPreset up; bool havePreset = false; juce::String layerName;
+    if (desc.startsWith ("look:"))
+    {
+        const auto name = desc.fromFirstOccurrenceOf (":", false, false);
+        bool found = false;
+        for (auto& l : lookLibrary()) if (l.name == name) { applyLook (lookFx, l, 1.0f); found = true; break; }
+        if (! found) return;
+        layerName = name;
+    }
+    else if (desc.startsWith ("lut:"))
+    {
+        const juce::File f (desc.fromFirstOccurrenceOf ("lut:", false, false));
+        lookFx.lutPath = f.getFullPathName(); layerName = "LUT " + f.getFileNameWithoutExtension();
+    }
+    else if (desc.startsWith ("preset:"))
+    {
+        juce::String err;
+        if (! readPresetFile (juce::File (desc.fromFirstOccurrenceOf ("preset:", false, false)), up, err)) { if (onStatus) onStatus (err); return; }
+        havePreset = true; lookFx = up.fx; layerName = up.name.fromLastOccurrenceOf (" / ", false, false);
+    }
+    else if (! isTrans) return;
+    auto applyFx = [&] (Clip& c)
+    {
+        if (havePreset && ! isLayer (c)) { applyUserPreset (c, up); return; }
+        for (auto& [k, v] : lookFx.p) c.fx.set (k, v);
+        if (lookFx.lutPath.isNotEmpty()) c.fx.lutPath = lookFx.lutPath;
+    };
+    // targets
+    juce::StringArray ids;
+    for (auto& c : sq.clips)
+    {
+        if (! isVideo (c)) continue;
+        const bool sel = st.selected.contains (c.id);
+        if (scope == 0 && sel && (isTrans ? c.mediaId.isNotEmpty() || c.text.isNotEmpty() : true)) ids.add (c.id);
+        if (scope == 1 && (c.mediaId.isNotEmpty() || c.text.isNotEmpty())) ids.add (c.id);
+        if (scope == 2 && sel && isLayer (c)) ids.add (c.id);
+    }
+    st.edit (isTrans ? "Apply transition" : "Apply effect");
+    if (scope == 2 && ids.isEmpty())
+    {   // no adjustment layer selected: make one over the selection (or the whole song)
+        Ticks a = -1, b = -1;
+        for (auto& c : sq.clips) if (st.selected.contains (c.id) && isVideo (c)) { a = a < 0 ? c.start : std::min (a, c.start); b = std::max (b, c.end()); }
+        if (a < 0) { a = 0; b = st.project.song.valid ? st.project.song.duration : sq.duration(); }
+        auto id = addEffectClip (sq, isTrans ? FxStack() : lookFx, isTrans ? juce::String ("Adjustment Layer") : layerName, a, b - a);
+        if (id.isEmpty()) { st.history.undo (st.project); return; }
+        ids.add (id);
+        if (! isTrans) { st.selected = { id }; revealClip (id); if (onEdited) onEdited(); return; }
+    }
+    if (ids.isEmpty()) { st.history.undo (st.project); if (onStatus) onStatus (scope == 0 ? "Select clips first." : "No clips to apply to."); return; }
+    int n = 0;
+    if (isTrans)
+    {
+        const auto ty = (TransitionType) desc.fromFirstOccurrenceOf (":", false, false).getIntValue();
+        const Ticks len = beat / 2, tol = secToTicks (1.0 / juce::jmax (1.0, st.project.fps));
+        for (auto& id : ids)
+        {
+            auto* c = sq.findClip (id);
+            if (c == nullptr) continue;
+            if (isLayer (*c))
+            {   // adjustment layer: the transition fades its effect in / out
+                const Ticks L = c->length, f = std::min (len, L / 2);
+                auto& k = c->keys["opacity"]; k.clear();
+                if (side != 1) { k.push_back ({ 0, 0.0f, 1 }); k.push_back ({ f, 1.0f, 1 }); }
+                if (side != 0) { if (k.empty()) k.push_back ({ 0, 1.0f, 1 }); k.push_back ({ L - f, 1.0f, 1 }); k.push_back ({ L, 0.0f, 1 }); }
+                ++n; continue;
+            }
+            const int tr = c->track; const Ticks s0 = c->start, e0 = c->end();
+            bool did = false;
+            if (side != 1) did |= setTransitionAtCut (sq, tr, s0, ty, len, tol);
+            if (side != 0) did |= setTransitionAtCut (sq, tr, e0, ty, len, tol);
+            n += did;
+        }
+    }
+    else
+        for (auto& id : ids) if (auto* c = sq.findClip (id)) { applyFx (*c); ++n; }
+    if (n == 0) { st.history.undo (st.project); if (onStatus) onStatus ("Nothing to apply to (transitions need a cut next to the clip)."); return; }
+    if (onStatus) onStatus ("Applied to " + juce::String (n) + (n == 1 ? " clip" : " clips"));
+    if (onEdited) onEdited();
+    repaint();
+}
+
 void Timeline::addAdjustmentLayer (Ticks at)
 {
     const auto& song = st.project.song;

@@ -188,6 +188,8 @@ private:
     std::vector<CutDot> cutDots() const;
 public:
     void addAdjustmentLayer (Ticks at);
+    // Effects panel right-click: scope 0 = selected clips, 1 = all clips, 2 = adjustment layer; side 0 = in, 1 = out, 2 = both (transitions)
+    void applyLibraryItem (const juce::String& desc, int scope, int side);
 private:
     int trackAt (int y) const;
     double xToSec (int x) const { return scrollSec + (x - kHeader) / pxPerSec; }
@@ -242,6 +244,7 @@ public:
     void mouseDrag (const juce::MouseEvent&) override;
     void mouseMove (const juce::MouseEvent&) override;
     void popOut (bool on);
+    std::function<void (const juce::String& desc, int scope, int side)> onApply;
 private:
     void exRepaint();
     bool onDivider (int y) const { return ! exArea.isEmpty() && std::abs (y - (exArea.getY() - 3)) <= 5; }

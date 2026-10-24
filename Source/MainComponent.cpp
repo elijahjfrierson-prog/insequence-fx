@@ -288,6 +288,7 @@ MainComponent::MainComponent()
 
     hscroll.addListener (this); hscroll.setAutoHide (false);
     timeline.onEdited = [this] { refresh (true); };
+    fxlib.onApply = [this] (const juce::String& d, int scope, int side) { timeline.applyLibraryItem (d, scope, side); };
     timeline.onSeek = [this] (Ticks t) { seek (t); };
     timeline.onAskText = [this] (const juce::String& t, const juce::String& d, std::function<void (juce::String)> cb) { askText (t, d, cb); };
     timeline.onFilesDropped = [this] (const juce::Array<juce::File>& files, int tr, Ticks at)
