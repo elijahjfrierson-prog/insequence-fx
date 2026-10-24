@@ -329,6 +329,11 @@ void Timeline::paint (juce::Graphics& g)
         tri.addTriangle ((float) px - 6, 12, (float) px + 6, 12, (float) px, 19);
         g.fillPath (tri);
     }
+    if (drag == Drag::Box && ! box.isEmpty())
+    {
+        g.setColour (juce::Colours::white.withAlpha (0.08f)); g.fillRect (box);
+        g.setColour (juce::Colours::white.withAlpha (0.6f)); g.drawRect (box, 1);
+    }
 }
 
 Ticks Timeline::magnetSnap (Ticks t, Ticks len)
@@ -498,8 +503,9 @@ void Timeline::mouseDown (const juce::MouseEvent& e)
                 drag = c->locked || trackLocked ? Drag::None : edge < 0 ? Drag::TrimL : edge > 0 ? Drag::TrimR : Drag::Move;
             }
             else
-            {
-                st.selected.clear(); drag = Drag::Scrub;
+            {   // empty space: click seeks, drag draws a selection box (Shift/Cmd adds to the selection)
+                boxBase = e.mods.isShiftDown() || e.mods.isCommandDown() ? st.selected : juce::StringArray();
+                st.selected = boxBase; drag = Drag::Box; box = { pos.x, pos.y, 0, 0 };
                 if (onSeek) onSeek (t);
             }
             if (onEdited) onEdited();
@@ -550,6 +556,23 @@ void Timeline::mouseDrag (const juce::MouseEvent& e)
             Ticks a = st.snapT (dragStart), b = st.snapT (t);
             st.rangeA = std::min (a, b); st.rangeB = std::max (a, b);
             repaint(); break;
+        }
+        case Drag::Box:
+        {
+            box = juce::Rectangle<int>::leftTopRightBottom (std::min (e.getMouseDownX(), e.x), std::min (e.getMouseDownY(), e.y),
+                                                            std::max (e.getMouseDownX(), e.x), std::max (e.getMouseDownY(), e.y));
+            st.selected = boxBase;
+            const auto& sq = st.project.seq();
+            for (auto& c : sq.clips)
+            {
+                if (c.track < 0 || c.track >= (int) sq.tracks.size() || (st.project.songId.isNotEmpty() && c.mediaId == st.project.songId)) continue;
+                const int y0 = trackY (c.track);
+                juce::Rectangle<int> r (secToX (ticksToSec (c.start)), y0, std::max (1, secToX (ticksToSec (c.end())) - secToX (ticksToSec (c.start))), sq.tracks[(size_t) c.track].height);
+                if (r.intersects (box)) st.selected.addIfNotAlreadyThere (c.id);
+            }
+            if (onEdited) onEdited();
+            repaint();
+            break;
         }
         case Drag::Scrub: if (onSeek) onSeek (e.mods.isAltDown() ? t : st.snapT (t)); break;
         case Drag::Song:
@@ -653,7 +676,20 @@ void Timeline::mouseUp (const juce::MouseEvent& e)
     if (drag == Drag::TransLen && toVar (beforeDrag).toString() != toVar (st.project).toString()) { st.history.push (beforeDrag, "Transition length"); st.dirty = true; }
     if (drag == Drag::Range && st.rangeB - st.rangeA < secToTicks (0.01)) st.rangeA = st.rangeB = 0;
     else if (drag == Drag::Range) selectRangeClips();
+    if (drag == Drag::Box && onStatus && st.selected.size() > 1) onStatus (juce::String (st.selected.size()) + " clips selected. Right-click one: Re-cut, Slow Move, effects, delete.");
+    box = {};
     drag = Drag::None; dragOut = false;
+    repaint();
+}
+
+void Timeline::selectAll()
+{
+    st.selected.clear();
+    const auto& sq = st.project.seq();
+    for (auto& c : sq.clips)
+        if (! c.locked && (st.project.songId.isEmpty() || c.mediaId != st.project.songId)) st.selected.add (c.id);
+    if (onStatus) onStatus (juce::String (st.selected.size()) + " clips selected");
+    if (onEdited) onEdited();
     repaint();
 }
 

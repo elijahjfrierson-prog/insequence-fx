@@ -544,6 +544,7 @@ bool MainComponent::keyPressed (const juce::KeyPress& k)
         if (c == 'I') { media.onImport(); return true; }
         if (c == 'E') { exportDialog(); return true; }
         if (c == 'N') { newProject(); return true; }
+        if (c == 'A') { timeline.selectAll(); return true; }
         if (c == 'K') { st.edit ("Split"); splitAt (s, st.playhead, st.selected); refresh (true); return true; }
         if (c == 'C') { st.clipboard = copyClips (s, st.selected); return true; }
         if (c == 'X' && ! st.selected.isEmpty()) { st.clipboard = copyClips (s, st.selected); st.edit ("Cut"); deleteClips (s, st.selected, false); st.selected.clear(); refresh (true); return true; }
@@ -568,6 +569,7 @@ bool MainComponent::keyPressed (const juce::KeyPress& k)
         }
         return true;
     }
+    if (ch == 'a' && ! shift) { timeline.selectAll(); return true; }
     if (ch == 'e') { setTool (Tool::Select); return true; }
     if (ch == 'p') { setTool (Tool::Paint); return true; }
     if (ch == 'd') { setTool (Tool::Delete); return true; }
