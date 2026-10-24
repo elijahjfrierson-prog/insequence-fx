@@ -39,6 +39,11 @@ void Preview::requestFrame (Ticks t)
     // Fixed decode tiers (1080/div) so resizing the window never opens extra decoders; 1/2 and below read the proxy.
     const int tier = live ? std::max (90, 1080 / std::max (1, quality.load())) : 1080;
     int sh = juce::jlimit (90, tier, phys);
+    if (live)
+    {   // effect-heavy frames over budget: shrink the live render size (decode tier unchanged); paused frames stay full
+        const double ms = avgMs.load();
+        if (ms > 45) sh = std::min (sh, 540); else if (ms > 30) sh = std::min (sh, 720);
+    }
     int W, H; outputSize (st.project, sh, W, H);
     const juce::ScopedLock sl (lock);
     want = t; lastReq = t; wantW = W; wantH = H; wantDecodeH = tier;
