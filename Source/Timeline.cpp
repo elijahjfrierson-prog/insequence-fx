@@ -1,4 +1,5 @@
 #include "App.h"
+#include <set>
 
 namespace isfx
 {
@@ -438,7 +439,9 @@ void Timeline::mouseDown (const juce::MouseEvent& e)
             drag = Drag::Scrub; repaint(); return;   // grabbed the playhead
         }
     }
-    if (pos.y < kRuler)
+    int edge0 = 0;
+    const bool patternSel = pos.y >= kRuler && pos.x >= kHeader && e.mods.isCommandDown() && ! e.mods.isPopupMenu() && clipAt (pos, edge0) == nullptr;
+    if (pos.y < kRuler || patternSel)
     {
         drag = Drag::Range;
         st.rangeA = st.rangeB = st.snapT (t);
@@ -626,7 +629,30 @@ void Timeline::mouseUp (const juce::MouseEvent& e)
         }
     }
     if (drag == Drag::Range && st.rangeB - st.rangeA < secToTicks (0.01)) st.rangeA = st.rangeB = 0;
+    else if (drag == Drag::Range) selectRangeClips();
     drag = Drag::None; dragOut = false;
+    repaint();
+}
+
+void Timeline::selectRangeClips()
+{
+    st.selected.clear();
+    for (auto& c : st.project.seq().clips)
+        if (c.start < st.rangeB && c.end() > st.rangeA && ! c.locked && c.mediaId != st.project.songId) st.selected.add (c.id);
+    if (onStatus && ! st.selected.isEmpty())
+        onStatus (juce::String (st.selected.size()) + " clips in the highlighted range. Right-click one: Re-cut, copy, delete, effects. Esc clears.");
+    if (onEdited) onEdited();
+}
+
+void Timeline::mouseDoubleClick (const juce::MouseEvent& e)
+{
+    if (e.y >= kRuler || e.x < kHeader) return;
+    const auto& g = st.project.song;
+    const double beat = g.valid ? g.beatSec() : 0.5, bar = beat * (g.valid ? g.beatsPerBar : 4);
+    const double off = g.valid ? ticksToSec (g.gridOffset) : 0.0;
+    const double x = std::floor ((std::max (0.0, xToSec (e.x)) - off) / bar);
+    st.rangeA = secToTicks (std::max (0.0, off + x * bar)); st.rangeB = secToTicks (off + (x + 1) * bar);
+    selectRangeClips();
     repaint();
 }
 
@@ -785,7 +811,7 @@ void Timeline::clipMenu (const juce::String& id)
     bool video = st.project.seq().tracks[(size_t) c->track].kind == TrackKind::Video;
     juce::PopupMenu cut;
     auto names = autoCutNames();
-    for (int i = 0; i < names.size(); ++i) cut.addItem (100 + i, names[i]);
+    for (int i = 0; i < names.size(); ++i) cut.addItem (100 + i, names[i] + (st.selected.size() > 1 ? "  (" + juce::String (st.selected.size()) + " clips)" : juce::String()));
     cut.addSeparator();
     cut.addItem (99, "Switch camera angles on each cut", video, switchAngles && video);
     const bool lk = c->locked;
@@ -810,7 +836,7 @@ void Timeline::clipMenu (const juce::String& id)
     m.addItem (6, "Ripple Delete  (Shift+Del)", ! lk);
     m.addItem (47, "Pull out of edit (synced take fills the gap)", ! lk);
     m.addItem (2, "Split at playhead  (Ctrl+K)", ! lk && st.playhead > c->start && st.playhead < c->end());
-    m.addSubMenu ("Auto Cut", cut, ! lk);
+    m.addSubMenu ("Re-cut (Auto Cut)", cut, ! lk);
     m.addSeparator();
     m.addItem (20, juce::String (c->enabled ? "Disable" : "Enable") + "  (Shift+E)", ! lk);
     m.addItem (21, "Group  (G)", many && ! lk);
@@ -882,7 +908,19 @@ void Timeline::clipMenu (const juce::String& id)
         if (r >= 100 && r < 200)
         {
             st.edit ("Auto Cut");
-            int n = autoCutClip (st.project, id, (AutoCut) (r - 100), switchAngles, (juce::uint32) juce::Time::currentTimeMillis());
+            int n = 0; auto seed = (juce::uint32) juce::Time::currentTimeMillis();
+            if (st.rangeB > st.rangeA)   // highlighted pattern: re-cut only inside it
+            {
+                std::set<int> tracks; for (auto& i : sel) if (auto* k = sq.findClip (i)) tracks.insert (k->track);
+                auto inside = [&] (bool strict) { juce::StringArray ids;
+                    for (auto& k : sq.clips) if (tracks.count (k.track) && ! k.locked && k.mediaId != st.project.songId
+                                                && (strict ? (k.start >= st.rangeA && k.end() <= st.rangeB) : (k.start < st.rangeB && k.end() > st.rangeA))) ids.add (k.id);
+                    return ids; };
+                splitAt (sq, st.rangeA, inside (false));
+                splitAt (sq, st.rangeB, inside (false));
+                sel = inside (true);
+            }
+            for (auto& i : sel) n += autoCutClip (st.project, i, (AutoCut) (r - 100), switchAngles, seed++);
             if (n == 0) st.history.undo (st.project);
             st.selected.clear();
         }

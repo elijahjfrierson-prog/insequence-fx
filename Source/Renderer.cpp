@@ -639,16 +639,20 @@ bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int 
         if (c.mediaId.isEmpty() && c.enabled && t >= c.start && t < c.end() && c.track >= 0 && c.track < (int) s.tracks.size()
             && ! s.tracks[(size_t) c.track].hidden)
         {
-            for (auto& [k, v] : c.fx.p)
+            FxStack fx = c.fx;
+            for (auto& [k, ks] : c.keys) if (! ks.empty() && k != "speed") fx.set (k, keyValue (ks, t - c.start));
+            const float op = c.opacity * juce::jlimit (0.0f, 1.0f, fx.get ("opacity", 1.0f));
+            fx.p.erase ("opacity");
+            for (auto& [k, v] : fx.p)
             {
                 auto* d = findParam (SP, k);
                 float base = postFx.get (k, d ? d->def : 0.0f);
-                postFx.set (k, base + (v - base) * c.opacity);
+                postFx.set (k, base + (v - base) * op);
             }
-            if (c.fx.lutPath.isNotEmpty() && c.opacity > 0.001f)
+            if (fx.lutPath.isNotEmpty() && op > 0.001f)
             {
-                postFx.lutPath = c.fx.lutPath;
-                postFx.set ("lutMix", c.fx.get ("lutMix", 1.0f) * c.opacity);
+                postFx.lutPath = fx.lutPath;
+                postFx.set ("lutMix", fx.get ("lutMix", 1.0f) * op);
             }
         }
     auto sv = [&] (const char* id) { return fxValue (postFx, SP, id); };

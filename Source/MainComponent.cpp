@@ -1218,7 +1218,7 @@ void MainComponent::presetsMenu()
             {
                 UserPreset up; up.name = name; up.clip = r == 2;
                 if (r == 1) up.fx = st.project.seq().fx;
-                else if (auto* c = st.selected.size() == 1 ? st.project.seq().findClip (st.selected[0]) : nullptr) up.fx = c->fx;
+                else if (auto* c = st.selected.size() == 1 ? st.project.seq().findClip (st.selected[0]) : nullptr) { up.fx = c->fx; up.keys = c->keys; up.length = c->length; }
                 juce::File f; juce::String err;
                 if (! saveUserPreset (up, f, err)) showMsg ("Preset", err);
                 else { status.setText ("Saved preset \"" + name + "\" (it is in the Look list in every project)", juce::dontSendNotification); inspector.rebuild(); }

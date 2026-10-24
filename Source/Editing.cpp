@@ -680,7 +680,8 @@ int stackGenerated (Project& p, juce::uint32 seed, const juce::String& styleMode
 
 namespace isfx
 {
-juce::StringArray autoCutNames() { return { "1/4", "1/8", "1/16", "1/32", "Triplets", "Hi-hats", "Kicks", "Snares", "Roll (1/8 > 1/16 > 1/32)", "Hi-hat rolls only" }; }
+juce::StringArray autoCutNames() { return { "1/4", "1/8", "1/16", "1/32", "Triplets", "Hi-hats", "Kicks", "Snares", "Roll (1/8 > 1/16 > 1/32)", "Hi-hat rolls only",
+                                                     "Crazy: spray takes on every hat + roll", "Stutter: repeat the shot on hats", "Smooth: bars only" }; }
 
 int autoCutClip (Project& p, const juce::String& clipId, AutoCut mode, bool switchAngles, juce::uint32 seed)
 {
@@ -716,6 +717,23 @@ int autoCutClip (Project& p, const juce::String& clipId, AutoCut mode, bool swit
                 if (e.type == ty && e.time > a + minGap && e.time < b - minGap && (pts.empty() || e.time - pts.back() >= minGap)) pts.push_back (q (e.time));
             break;
         }
+        case AutoCut::Crazy: case AutoCut::Stutter:
+        {
+            // every hat, every hat-roll hit, and 1/8 fill where the hats go quiet
+            Ticks minGap = secToTicks (video ? 1.0 / p.fps : 0.01);
+            std::vector<Ticks> c;
+            for (auto& e : p.song.events) if (e.type == EventType::HiHat && e.time > a && e.time < b) c.push_back (e.time);
+            for (auto e : hatRolls (p.song, a, b)) c.push_back (e);
+            const size_t nHat = c.size();
+            grid (2, a, b);
+            if (nHat > 0) { c.insert (c.end(), pts.begin(), pts.end()); pts.clear(); }
+            else { c = pts; pts.clear(); }
+            std::sort (c.begin(), c.end());
+            for (auto t : c) if (t > a + minGap && t < b - minGap && (pts.empty() || q (t) - pts.back() >= minGap)) pts.push_back (q (t));
+            if (mode == AutoCut::Stutter) rollStart = a;
+            break;
+        }
+        case AutoCut::Smooth: grid (1, a, b); { std::vector<Ticks> bars; for (auto t : pts) if (std::abs (std::fmod (g.beatAt (t), (double) g.beatsPerBar)) < 1e-3 || std::abs (std::fmod (g.beatAt (t), (double) g.beatsPerBar) - g.beatsPerBar) < 1e-3) bars.push_back (t); pts = bars; } break;
         case AutoCut::HatRoll:
         {
             Ticks minGap = secToTicks (video ? 1.0 / p.fps : 0.01);
@@ -759,8 +777,8 @@ int autoCutClip (Project& p, const juce::String& clipId, AutoCut mode, bool swit
         if (k.length <= 0) continue;
         k.srcIn = orig.srcAt (k.start);
         if (i > 0) { k.transIn = TransitionType::Cut; k.transLen = 0; }
-        if (mode == AutoCut::Roll && rollStart >= 0 && k.start >= rollStart) k.srcIn = rollSrc;   // stutter
-        if (switchAngles && video && i > 0 && mode != AutoCut::Roll)
+        if ((mode == AutoCut::Roll || mode == AutoCut::Stutter) && rollStart >= 0 && k.start >= rollStart) k.srcIn = rollSrc;   // stutter
+        if ((switchAngles || mode == AutoCut::Crazy) && video && i > 0 && mode != AutoCut::Roll && mode != AutoCut::Stutter)
         {
             auto takes = takesCovering (p, k.start, k.length);
             std::vector<const MediaItem*> other;
@@ -846,7 +864,7 @@ bool swapClipSlots (Sequence& s, const Project& p, const juce::String& ida, cons
         {
             const Ticks need = (Ticks) ((double) c->length * c->speed);
             if (c->srcIn + need > m->duration) c->srcIn = std::max<Ticks> (0, m->duration - need);
-            if (c->srcIn + need > m->duration) c->length = (Ticks) ((double) (m->duration - c->srcIn) / c->speed);
+            if (c->srcIn + need > m->duration) c->speed = (double) (m->duration - c->srcIn) / (double) std::max<Ticks> (1, c->length);   // short shot: slow it to fill the slot
         }
     s.sortClips();
     return true;
@@ -886,7 +904,9 @@ bool setClipSpeed (Sequence& s, const Project& p, const juce::String& id, double
 {
     auto* c = s.findClip (id);
     if (c == nullptr || c->locked || speed <= 0) return false;
-    Ticks len = (Ticks) std::llround ((double) c->length * (c->speed > 0 ? c->speed : 1.0) / speed);
+    const double was = c->ramped() ? rampedOffset (*c, c->length) / std::max<Ticks> (1, c->length) : (c->speed > 0 ? c->speed : 1.0);
+    c->keys.erase ("speed");
+    Ticks len = (Ticks) std::llround ((double) c->length * was / speed);
     if (auto* m = p.findMedia (c->mediaId); m != nullptr && m->kind != MediaKind::Image)
         len = std::min (len, (Ticks) ((double) (m->duration - c->srcIn) / speed));
     for (auto& o : s.clips)

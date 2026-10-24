@@ -364,7 +364,14 @@ static double rampSeg (const Clip::Key& a, const Clip::Key& b, double x)
     return v0 * x + dv * x * u / 2;
 }
 
+static double rampedRaw (const Clip& c, Ticks rel);
 double rampedOffset (const Clip& c, Ticks rel)
+{
+    // keys can sit before 0 after a split; integrate speed from the clip start only
+    return rampedRaw (c, rel) - rampedRaw (c, 0);
+}
+
+static double rampedRaw (const Clip& c, Ticks rel)
 {
     auto it = c.keys.find ("speed");
     if (it == c.keys.end() || it->second.empty()) return (double) rel * c.speed;

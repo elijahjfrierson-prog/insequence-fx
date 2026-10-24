@@ -1001,6 +1001,13 @@ int main (int argc, char** argv)
     testSync();
     testEditing();
     testPrfpset();
+    {
+        Clip c; c.start = 0; c.length = secToTicks (4); c.srcIn = 0;
+        setKey (c, "speed", 0, 1.0f, 0); setKey (c, "speed", secToTicks (4), 0.25f, 0);
+        const double at2 = c.srcPos (secToTicks (2));
+        Clip r = c; r.start = secToTicks (2); r.length = secToTicks (2); r.srcIn = (Ticks) at2; shiftKeys (r, secToTicks (2));
+        CHECK (std::abs (r.srcPos (secToTicks (2)) - at2) < secToTicks (0.001) && r.srcPos (secToTicks (3)) > at2, "split speed ramp: right piece continues, no jump back");
+    }
     testDropInBetween();
     testPremiereCommands();
     testChopAndGenerate();
