@@ -153,7 +153,7 @@ void Timeline::paint (juce::Graphics& g)
         g.drawText (label, r.reduced (4, 2), juce::Justification::topLeft, true);
         {   // CapCut-style badges: how many effects / keyframes / transition on this clip
             static const juce::StringArray meta { "scale", "posX", "posY", "rotation", "reframe", "maskShape", "maskW", "maskH",
-                                                  "maskFeather", "trAmt", "trDir", "anchorX", "anchorY" };
+                                                  "maskFeather", "trAmt", "trDir", "anchorX", "anchorY", "slowMove" };
             int nfx = 0, nkf = 0;
             for (auto& [k, v] : c.fx.p) if (! meta.contains (k) && v != 0.0f) ++nfx;
             for (auto& [k, ks] : c.keys) nkf += (int) ks.size();
@@ -961,10 +961,12 @@ void Timeline::clipMenu (const juce::String& id)
             for (auto& i : sel)
                 if (auto* k = sq.findClip (i); k && ! k->locked && k->mediaId.isNotEmpty())
                 {
-                    for (auto* id : { "scale", "posX", "posY" })   // only replace 2-key start/end moves, keep manual animation
-                        if (auto it = k->keys.find (id); it != k->keys.end() && it->second.size() == 2
-                            && it->second.front().t == 0 && it->second.back().t == k->length) k->keys.erase (it);
+                    if (k->fx.get ("slowMove", 0.0f) > 0.0f)   // the slow move owns these keys, even after trims/splits
+                        for (auto* id : { "scale", "posX", "posY" }) k->keys.erase (id);
+                    k->fx.p.erase ("slowMove");
                     if (r == 493) continue;
+                    for (auto* id : { "scale", "posX", "posY" }) k->keys.erase (id);
+                    k->fx.set ("slowMove", 1.0f);
                     const float s0 = k->fx.get ("scale", 1.0f);
                     const float a0 = r == 491 ? s0 * 1.08f : s0, a1 = r == 490 ? s0 * 1.08f : r == 492 ? s0 * 1.06f : s0;
                     setKey (*k, "scale", 0, a0, 2); setKey (*k, "scale", k->length, a1, 2);
