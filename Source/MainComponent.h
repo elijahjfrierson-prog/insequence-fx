@@ -45,7 +45,7 @@ private:
     void togglePlay();
     void setTool (Tool t);
     void runTask (const juce::String& title, std::function<void (ProgressCb, std::function<bool()>)> work, std::function<void()> done);
-    void importFiles (const juce::Array<juce::File>&, std::function<void()> then = {});
+    void importFiles (const juce::Array<juce::File>&, std::function<void()> then = {}, bool allowSong = true);
     bool isInterestedInFileDrag (const juce::StringArray&) override { return true; }
     void filesDropped (const juce::StringArray& paths, int, int) override
     {

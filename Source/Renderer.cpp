@@ -534,7 +534,11 @@ bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int 
                 float base = postFx.get (k, d ? d->def : 0.0f);
                 postFx.set (k, base + (v - base) * c.opacity);
             }
-            if (c.fx.lutPath.isNotEmpty()) postFx.lutPath = c.fx.lutPath;
+            if (c.fx.lutPath.isNotEmpty())
+            {
+                postFx.lutPath = c.fx.lutPath;
+                postFx.set ("lutMix", c.fx.get ("lutMix", 1.0f) * c.opacity);
+            }
         }
     auto sv = [&] (const char* id) { return fxValue (postFx, SP, id); };
     const BeatEnv be = beatEnvAt (p.song, t);

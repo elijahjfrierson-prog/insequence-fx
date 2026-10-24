@@ -147,6 +147,7 @@ class Timeline : public juce::Component, public juce::DragAndDropTarget, public 
 public:
     explicit Timeline (AppState& s);
     std::function<void (const juce::Array<juce::File>&, int track, Ticks at)> onFilesDropped;   // from Finder/Explorer
+    std::function<void (const juce::File&, int track, Ticks at)> onSfxDropped;                  // from the built-in SFX library
     std::function<void (const juce::String& title, const juce::String& def, std::function<void (juce::String)>)> onAskText;
     std::function<void (const juce::StringArray& clipIds)> onSyncClips;
     std::function<void (const juce::String&)> onStatus;

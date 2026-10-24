@@ -706,7 +706,7 @@ void Timeline::itemDropped (const SourceDetails& d)
     {
         const juce::File f (desc.fromFirstOccurrenceOf ("sfx:", false, false));
         Ticks at = magnetSnap (secToTicks (std::max (0.0, xToSec (d.localPosition.x))), 0);
-        if (onFilesDropped) onFilesDropped ({ f }, trackAt (d.localPosition.y), at);
+        if (onSfxDropped) onSfxDropped (f, trackAt (d.localPosition.y), at);
         return;
     }
     if (! desc.startsWith ("media:")) return;

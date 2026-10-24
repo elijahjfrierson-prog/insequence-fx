@@ -277,6 +277,31 @@ MainComponent::MainComponent()
             refresh (true);
         });
     };
+    // SFX never become the song and never land on the song's track: use the drop track if it is a free audio track, else another one, else a new "SFX" track
+    timeline.onSfxDropped = [this] (const juce::File& f, int tr, Ticks at)
+    {
+        importFiles ({ f }, [this, f, tr, at]
+        {
+            juce::String mid;
+            for (auto& m : st.project.media)
+                if (m.path == f.getFullPathName() && m.id != st.project.songId) { mid = m.id; break; }
+            if (mid.isEmpty()) return;
+            st.edit ("Add sound");
+            auto& s = st.project.seq();
+            auto usable = [&] (int i)
+            {
+                if (i < 0 || i >= (int) s.tracks.size() || s.tracks[(size_t) i].kind != TrackKind::Audio || s.tracks[(size_t) i].locked) return false;
+                for (auto& c : s.clips) if (c.track == i && c.mediaId == st.project.songId) return false;
+                return true;
+            };
+            int track = tr;
+            for (int i = 0; ! usable (track) && i < (int) s.tracks.size(); ++i) track = i;
+            if (! usable (track)) track = s.addTrack (TrackKind::Audio, "SFX");
+            auto id = addMediaClip (st.project, mid, track, at);
+            if (id.isNotEmpty()) st.selected = { id };
+            refresh (true);
+        }, false);
+    };
     inspector.onEdited = [this] { refresh (false); };
     preview.onEdited = [this] { refresh (false); timeline.repaint(); };
     preview.onSelect = [this] { refresh (true); };
@@ -584,11 +609,11 @@ void MainComponent::askText (const juce::String& title, const juce::String& def,
 }
 
 // ============================================================ media
-void MainComponent::importFiles (const juce::Array<juce::File>& files, std::function<void()> then)
+void MainComponent::importFiles (const juce::Array<juce::File>& files, std::function<void()> then, bool allowSong)
 {
     auto res = std::make_shared<ImportResult>();
     auto songId = st.project.songId; auto mono = songMono;
-    bool makeSong = st.project.songId.isEmpty();
+    bool makeSong = allowSong && st.project.songId.isEmpty();
     runTask ("Importing media", [res, files, songId, mono, makeSong] (ProgressCb p, std::function<bool()> c)
              { *res = decodeFiles (files, songId, mono, makeSong, p, c); },
              [this, res, then] { applyImport (*res); if (then) then(); });
