@@ -646,7 +646,7 @@ void Timeline::clipMenu (const juce::String& id)
     m.addItem (32, "Remove Effects", ! lk && (! c->fx.p.empty() || c->opacity != 1.0f || c->transIn != TransitionType::Cut));
     m.addSeparator();
     m.addItem (33, "Rename...");
-    m.addSubMenu ("Label", labelM);
+    m.addSubMenu (st.selected.size() > 1 ? "Label Color (" + juce::String (st.selected.size()) + " clips)" : juce::String ("Label Color"), labelM);
     m.addItem (4, c->locked ? "Unlock clip  (L)" : "Lock clip  (L)");
     m.showMenuAsync (juce::PopupMenu::Options(), [this, id] (int r)
     {

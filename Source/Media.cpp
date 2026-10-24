@@ -5,6 +5,8 @@ extern "C" {
 #include <libavutil/avutil.h>
 #include <libavutil/display.h>
 #include <libavutil/opt.h>
+#include <libavutil/hwcontext.h>
+#include <libavutil/pixdesc.h>
 #include <libavutil/channel_layout.h>
 #include <libswscale/swscale.h>
 #include <libswresample/swresample.h>
@@ -147,12 +149,40 @@ void VideoDecoder::close()
     if (sws) { sws_freeContext (sws); sws = nullptr; }
     if (frame) av_frame_free (&frame);
     if (curAv) av_frame_free (&curAv);
+    if (swAv) av_frame_free (&swAv);
     if (nextAv) av_frame_free (&nextAv);
     curPts = nextPts = -1; curConverted = false;
     if (pkt) av_packet_free (&pkt);
     if (dec) avcodec_free_context (&dec);
+    if (hwDev) av_buffer_unref (&hwDev);
+    hwFmt = -1;
     if (fmt) avformat_close_input (&fmt);
     cur = {}; next = {}; haveNext = false; eof = false; stream = -1;
+}
+
+// GPU decode: VideoToolbox on macOS, D3D11VA on Windows. ISFX_HWDEC=<ffmpeg device type> overrides, "none" disables.
+// Any file or GPU the hardware can't handle falls back to the CPU decoder.
+static const char* hwDeviceName()
+{
+    static const juce::String env = juce::SystemStats::getEnvironmentVariable ("ISFX_HWDEC", {});
+    if (env.isNotEmpty()) return env == "none" ? nullptr : env.toRawUTF8();
+   #if JUCE_MAC
+    return "videotoolbox";
+   #elif JUCE_WINDOWS
+    return "d3d11va";
+   #else
+    return nullptr;
+   #endif
+}
+
+static AVPixelFormat pickHwFormat (AVCodecContext* c, const AVPixelFormat* fmts)
+{
+    const int want = (int) (intptr_t) c->opaque;
+    for (auto* p = fmts; *p != AV_PIX_FMT_NONE; ++p)
+        if ((int) *p == want) return *p;
+    for (auto* p = fmts; *p != AV_PIX_FMT_NONE; ++p)   // hardware refused this stream: first software format
+        if (! (av_pix_fmt_desc_get (*p)->flags & AV_PIX_FMT_FLAG_HWACCEL)) return *p;
+    return fmts[0];
 }
 
 bool VideoDecoder::open (const juce::File& f, int maxHeight, juce::String& error)
@@ -168,9 +198,42 @@ bool VideoDecoder::open (const juce::File& f, int maxHeight, juce::String& error
     auto* st = fmt->streams[stream];
     dec = avcodec_alloc_context3 (codec);
     avcodec_parameters_to_context (dec, st->codecpar);
-    dec->thread_count = juce::jlimit (1, 8, juce::SystemStats::getNumCpus());   // more threads = more frame buffers, little gain
-    dec->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
-    if ((e = avcodec_open2 (dec, codec, nullptr)) < 0) { error = avErr (e); close(); return false; }
+    if (auto* name = hwDeviceName())
+    {
+        const auto type = av_hwdevice_find_type_by_name (name);
+        for (int i = 0; type != AV_HWDEVICE_TYPE_NONE; ++i)
+        {
+            auto* cfg = avcodec_get_hw_config (codec, i);
+            if (cfg == nullptr) break;
+            if (cfg->device_type == type && (cfg->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX))
+            {
+                if (av_hwdevice_ctx_create (&hwDev, type, nullptr, nullptr, 0) >= 0) hwFmt = (int) cfg->pix_fmt;
+                break;
+            }
+        }
+    }
+    if (hwDev != nullptr)
+    {
+        dec->hw_device_ctx = av_buffer_ref (hwDev);
+        dec->opaque = (void*) (intptr_t) hwFmt;
+        dec->get_format = pickHwFormat;
+        dec->thread_count = 1;   // the GPU decodes; CPU threads would only add buffered surfaces
+    }
+    else
+    {
+        dec->thread_count = juce::jlimit (1, 8, juce::SystemStats::getNumCpus());   // more threads = more frame buffers, little gain
+        dec->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
+    }
+    if ((e = avcodec_open2 (dec, codec, nullptr)) < 0 && hwDev != nullptr)
+    {
+        avcodec_free_context (&dec); av_buffer_unref (&hwDev); hwFmt = -1;
+        dec = avcodec_alloc_context3 (codec);
+        avcodec_parameters_to_context (dec, st->codecpar);
+        dec->thread_count = juce::jlimit (1, 8, juce::SystemStats::getNumCpus());
+        dec->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
+        e = avcodec_open2 (dec, codec, nullptr);
+    }
+    if (e < 0) { error = avErr (e); close(); return false; }
     tb = av_q2d (st->time_base);
     auto fr = av_guess_frame_rate (fmt, st, nullptr);
     frameRate = (fr.num > 0 && fr.den > 0) ? av_q2d (fr) : 30.0;
@@ -205,6 +268,14 @@ bool VideoDecoder::receive (AVFrame* into, Ticks& pts)
 
 void VideoDecoder::convert (const AVFrame* src, Frame& out)
 {
+    if (src->hw_frames_ctx != nullptr)
+    {
+        if (swAv == nullptr) swAv = av_frame_alloc();
+        av_frame_unref (swAv);
+        if (av_hwframe_transfer_data (swAv, src, 0) < 0) { out.w = out.h = 0; return; }
+        swAv->pts = src->pts;
+        src = swAv;
+    }
     // Preview tiers: plain area averaging (clean, ~3x cheaper). Export/full: accurate rounding + full chroma.
     const int flags = fastScale ? (outH < src->height ? SWS_AREA : SWS_BILINEAR)
                                 : ((outH < src->height ? SWS_AREA : SWS_BICUBIC) | SWS_ACCURATE_RND | SWS_FULL_CHR_H_INT);
