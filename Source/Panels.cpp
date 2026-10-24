@@ -190,8 +190,8 @@ FxLibrary::FxLibrary (AppState& s) : st (s)
 void FxLibrary::paint (juce::Graphics& g)
 {
     g.fillAll (theme::panel);
-    g.setColour (theme::dim); g.setFont (11.0f);
-    g.drawText ("EFFECTS  -  drag to the timeline", 10, 4, getWidth() - 20, 16, juce::Justification::centredLeft);
+    g.setColour (theme::accent2); g.setFont (headerFont (10.0f));
+    g.drawText ("EFFECTS", 10, 4, getWidth() - 20, 16, juce::Justification::centredLeft);
 }
 
 void FxLibrary::paintListBoxItem (int row, juce::Graphics& g, int w, int h, bool sel)

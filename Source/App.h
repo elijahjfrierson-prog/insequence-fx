@@ -17,11 +17,13 @@ namespace isfx
 // ---- theme
 namespace theme
 {
-    const juce::Colour bg { 0xff0e0f13 }, panel { 0xff16181e }, panel2 { 0xff1d2028 }, line { 0xff2a2e38 },
-                       text { 0xffe8e9ee }, dim { 0xff8a8f9c }, accent { 0xffff3d6e }, accent2 { 0xff38d6ff },
+    // chrome + electric blue, matching the InSequence FX logo
+    const juce::Colour bg { 0xff060709 }, panel { 0xff0d0f14 }, panel2 { 0xff141821 }, line { 0xff232a38 },
+                       text { 0xffe4e9f2 }, dim { 0xff8890a2 }, accent { 0xff3d7bff }, accent2 { 0xff9cc0ff },
                        good { 0xff3ddc84 }, warn { 0xffffb020 }, bad { 0xffff4d4d };
 }
-void drawLogo (juce::Graphics&, juce::Rectangle<float> area);  // sleek InSequence FX wordmark
+void drawLogo (juce::Graphics&, juce::Rectangle<float> area);  // chrome InSequence FX mark + wordmark
+juce::Font headerFont (float height);                            // wide logo-style face (Michroma) for titles
 
 class ISFXLookAndFeel : public juce::LookAndFeel_V4
 {

@@ -95,7 +95,7 @@ if(NOT ISFX_TESTS_ONLY)
         Source/MainComponent.cpp
         Source/Main.cpp
     )
-    juce_add_binary_data(ISFXData SOURCES installer/LICENSE.txt assets/insequence-icon.png)
+    juce_add_binary_data(ISFXData SOURCES installer/LICENSE.txt assets/insequence-icon.png assets/insequence-logo.png assets/Michroma-Regular.ttf)
     target_compile_definitions(InSequenceFX PRIVATE ${ISFX_DEFS} JUCE_PLUGINHOST_VST3=1 JUCE_PLUGINHOST_AU=1 JUCE_PLUGINHOST_LADSPA=0)
     if(MSVC)
         target_compile_options(InSequenceFX PRIVATE /Zi)

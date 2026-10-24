@@ -279,16 +279,16 @@ ISFXLookAndFeel& sharedLookAndFeel() { static ISFXLookAndFeel l; return l; }
 void MainComponent::paint (juce::Graphics& g)
 {
     g.fillAll (theme::bg);
-    g.setColour (theme::panel2); g.fillRect (0, 0, getWidth(), 44);
+    g.setGradientFill (juce::ColourGradient (juce::Colours::black, 0, 0, theme::panel, 0, 44, false)); g.fillRect (0, 0, getWidth(), 44);
     g.setColour (theme::line); g.fillRect (0, 43, getWidth(), 1);
-    drawLogo (g, { 12.0f, 0.0f, 186.0f, 44.0f });
+    drawLogo (g, { 12.0f, 0.0f, 232.0f, 44.0f });
 }
 
 void MainComponent::resized()
 {
     auto r = getLocalBounds();
     auto top = r.removeFromTop (44).reduced (6, 7);
-    top.removeFromLeft (200);
+    top.removeFromLeft (246);
     auto place = [] (juce::Rectangle<int>& row, juce::Component& c, int w) { c.setBounds (row.removeFromLeft (w)); row.removeFromLeft (5); };
     place (top, fileBtn, 56); place (top, undoBtn, 56); place (top, redoBtn, 56); place (top, importBtn, 70); place (top, presetsBtn, 76); place (top, pluginsBtn, 80);
     top.removeFromLeft (6); place (top, mediaTgl, 58); place (top, inspTgl, 72); place (top, maxPrevBtn, 92); place (top, maxTlBtn, 98);
