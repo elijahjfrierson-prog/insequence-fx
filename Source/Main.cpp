@@ -153,7 +153,13 @@ public:
         if (window != nullptr) window->setVisible (false);
         juce::MessageManager::callAsync ([this]
         {
+           #if JUCE_WINDOWS
+            // JUCE 8's HWNDComponentPeer destructor faults on some Windows systems/VMs. Delete the editor (stops
+            // threads, audio, saves state) but leave the empty native window for the OS to reclaim at exit.
+            if (window != nullptr) { window->clearContentComponent(); window.release(); }
+           #else
             window.reset();
+           #endif
             juce::MessageManager::callAsync ([] { quit(); });
         });
     }
