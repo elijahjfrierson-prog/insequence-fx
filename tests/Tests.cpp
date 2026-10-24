@@ -6,8 +6,11 @@
 #include "../Source/Looks.h"
 #include "../Source/AudioMix.h"
 #include "../Source/Exporter.h"
+#include "../Source/Renderer.h"
 #include <iostream>
 #include <chrono>
+#include <set>
+#include <functional>
 
 using namespace isfx;
 static int failures = 0;
@@ -289,6 +292,120 @@ static void testExport()
     job.output.deleteFile();
 }
 
+
+static juce::File writePng (const juce::String& name, std::function<juce::Colour (int, int)> fn, int w = 320, int h = 180)
+{
+    juce::Image im (juce::Image::ARGB, w, h, true);
+    for (int y = 0; y < h; ++y) for (int x = 0; x < w; ++x) im.setPixelAt (x, y, fn (x, y));
+    auto f = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile (name);
+    f.deleteFile();
+    juce::FileOutputStream os (f); juce::PNGImageFormat png; png.writeImageToStream (im, os);
+    return f;
+}
+
+static double diff (const std::vector<juce::uint8>& a, const std::vector<juce::uint8>& b)
+{
+    double d = 0; for (size_t i = 0; i < a.size() && i < b.size(); ++i) d += std::abs ((int) a[i] - (int) b[i]);
+    return d / std::max<size_t> (1, a.size());
+}
+
+static constexpr int W = 192, H = 108;
+static void testRender()
+{
+    auto gradF = writePng ("isfx_grad.png", [] (int x, int y) { return juce::Colour ((juce::uint8) (x * 255 / 319), (juce::uint8) (y * 255 / 179), (juce::uint8) ((x + y) % 256)); });
+    auto greenF = writePng ("isfx_green.png", [] (int x, int y) { return (x > 100 && x < 220 && y > 50 && y < 130) ? juce::Colour (230, 40, 200) : juce::Colour (20, 220, 30); });
+    Project p = Project::makeNew();
+    auto addImg = [&] (const juce::File& f) { MediaItem m; m.id = newId(); m.path = f.getFullPathName(); m.kind = MediaKind::Image; m.width = 320; m.height = 180; m.duration = secToTicks (10); p.media.push_back (m); return m.id; };
+    auto g = addImg (gradF), gr = addImg (greenF);
+    auto& s = p.seq();
+    Clip a; a.id = "a"; a.mediaId = g; a.track = 0; a.start = 0; a.length = secToTicks (1); s.clips.push_back (a);
+    Clip b = a; b.id = "b"; b.start = secToTicks (1); b.length = secToTicks (1); s.clips.push_back (b);
+    // song events right before t0 so beat FX fire
+    Ticks t0 = secToTicks (1.02);
+    p.song.valid = true; p.song.bpm = 120;
+    for (auto ty : { EventType::Kick, EventType::Snare, EventType::HiHat }) p.song.events.push_back ({ t0 - secToTicks (0.005), ty, 1, 1 });
+    auto renderAt = [&] (const Sequence& sq, Ticks t, int w = W, int h = H) {
+        Renderer r; std::vector<juce::uint8> px;
+        r.render (p, sq, t - secToTicks (1.0 / 30), w, h, px, 0);   // previous frame primes trails
+        r.render (p, sq, t, w, h, px, 0);
+        return px;
+    };
+    auto base = renderAt (s, t0);
+    auto at = [&] (const std::vector<juce::uint8>& px, int x, int y, int c, int w = W) { return (int) px[((size_t) y * w + x) * 4 + c]; };
+    CHECK (std::abs (at (base, W / 2, H / 2, 0) - 128) < 12 && std::abs (at (base, W / 2, H / 2, 1) - 128) < 12, "renderer draws the clip (center " << at (base, W / 2, H / 2, 0) << "," << at (base, W / 2, H / 2, 1) << ")");
+
+    int dead = 0; juce::String deadList;
+    for (auto& d : sequenceParams())
+    {
+        juce::String id (d.id);
+        if (id == "lutMix" || id == "grainSize" || id == "trails") continue;   // modifiers / need motion (tested below)
+        Sequence sq = s; float v = d.max;
+        if (id == "contrast" || id == "saturation") v = d.max;
+        sq.fx.set (id, v);
+        if (id == "letterbox") sq.fx.set (id, 1.0f);
+        double df = diff (renderAt (sq, t0), base);
+        bool finite = true;
+        if (df < 0.5) { ++dead; deadList << id << " "; }
+        juce::ignoreUnused (finite);
+    }
+    CHECK (dead == 0, "every sequence FX visibly changes the frame " << deadList);
+
+    {   // echo trails need motion: a cut from the green frame to the gradient must leave an echo
+        Sequence sq = s; sq.clips[0].mediaId = gr;
+        auto plain = renderAt (sq, secToTicks (1.0));
+        sq.fx.set ("trails", 1.0f);
+        auto echo = renderAt (sq, secToTicks (1.0));
+        CHECK (diff (echo, plain) > 2, "echo trails carry the previous frame (" << diff (echo, plain) << ")");
+    }
+    // blend modes and chroma key on V2
+    Clip k; k.id = "k"; k.mediaId = gr; k.track = 1; k.start = 0; k.length = secToTicks (2);
+    std::set<int> distinct;
+    for (int m = 0; m < 12; ++m)
+    {
+        Sequence sq = s; k.fx.p.clear(); k.fx.set ("blend", (float) m); k.opacity = 0.8f; sq.clips.push_back (k);
+        auto px = renderAt (sq, t0);
+        distinct.insert ((int) std::lround (diff (px, base) * 10));
+    }
+    CHECK (distinct.size() >= 10, "12 blend modes produce distinct composites (" << (int) distinct.size() << ")");
+    {
+        Sequence sq = s; k.fx.p.clear(); k.opacity = 1; k.fx.set ("chromaKey", 1.0f); sq.clips.push_back (k);
+        auto px = renderAt (sq, t0);
+        int cx = 10, cy = 10;   // green area -> keyed to V1
+        CHECK (std::abs (at (px, cx, cy, 1) - at (base, cx, cy, 1)) < 25 && at (px, W / 2, H / 2, 0) > 180, "chroma key removes green, keeps the subject");
+        k.fx.p.clear(); k.fx.set ("maskShape", 1.0f); k.fx.set ("maskW", 0.4f); k.fx.set ("maskH", 0.4f);
+        sq = s; sq.clips.push_back (k); px = renderAt (sq, t0);
+        CHECK (diff (std::vector<juce::uint8> (px.begin(), px.begin() + 4 * 8), std::vector<juce::uint8> (base.begin(), base.begin() + 4 * 8)) < 2 && at (px, W / 2, H / 2, 0) > 180, "ellipse mask limits the overlay");
+    }
+
+    // aspect ratios + reframing
+    int ow, oh;
+    p.aspectW = 9; p.aspectH = 16; outputSize (p, 1080, ow, oh);
+    CHECK (ow == 1080 && oh == 1920, "9:16 output 1080x1920");
+    p.aspectW = 239; p.aspectH = 100; outputSize (p, 2160, ow, oh);
+    CHECK (oh == 2160 && std::abs (ow - 5162) <= 2, "2.39:1 4K output " << ow << "x" << oh);
+    CHECK (aspectPresets().size() >= 12, "aspect presets");
+    {
+        Sequence sq = s; sq.clips[0].fx.set ("reframe", 1.0f); sq.clips[1].fx.set ("reframe", 1.0f);
+        auto fit = renderAt (sq, secToTicks (0.5), 108, 192);
+        sq.clips[0].fx.set ("reframe", 2.0f);
+        auto blur = renderAt (sq, secToTicks (0.5), 108, 192);
+        auto fill = renderAt (s, secToTicks (0.5), 108, 192);
+        CHECK (at (fit, 54, 5, 0, 108) < 3 && at (blur, 54, 5, 0, 108) + at (blur, 54, 5, 1, 108) > 20 && at (fill, 54, 5, 1, 108) > 0, "9:16 fit / blur-fill / fill reframing");
+    }
+    // full-HD cost with a heavy reference look
+    {
+        Sequence sq = s;
+        for (auto& l : lookLibrary()) if (l.name == "Sky Chrome Haze") applyLook (sq.fx, l, 1.0f);
+        Renderer r; std::vector<juce::uint8> px;
+        r.render (p, sq, t0, 1920, 1080, px, 0);
+        auto st = std::chrono::steady_clock::now();
+        for (int i = 0; i < 3; ++i) r.render (p, sq, t0 + secToTicks (i / 30.0), 1920, 1080, px, 0);
+        double ms = std::chrono::duration<double, std::milli> (std::chrono::steady_clock::now() - st).count() / 3;
+        CHECK (px.size() == 1920u * 1080 * 4, "1080p frame with Sky Chrome Haze renders in " << ms << " ms");
+    }
+    gradF.deleteFile(); greenF.deleteFile();
+}
+
 int main (int argc, char** argv)
 {
     juce::ignoreUnused (argc, argv);
@@ -300,6 +417,7 @@ int main (int argc, char** argv)
     testPersistence();
     testLut();
     testExport();
+    testRender();
     std::cout << (failures == 0 ? "ALL TESTS PASSED" : "FAILURES: ") << (failures ? juce::String (failures) : juce::String()) << "\n";
     return failures;
 }

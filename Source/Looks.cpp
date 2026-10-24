@@ -28,6 +28,19 @@ const std::vector<ParamDef>& sequenceParams()
         { "shake",      "Kick Shake",   0, 1, 0, "Beat",  "Camera shake triggered by kicks." },
         { "hatStrobe",  "Hi-Hat Strobe",0, 1, 0, "Beat",  "Exposure flicker on detected hi-hats." },
         { "beatGlitch", "Beat Glitch",  0, 1, 0, "Beat",  "Glitch + RGB split hits on snares." },
+        { "invertHits", "Negative Flips",0, 1, 0, "Acid",  "Flips the frame to a negative for 1-2 frames on snare hits." },
+        { "solarize",   "Solarize",     0, 1, 0, "Acid",  "Inverts the brightest tones like a darkroom solarization." },
+        { "hueCycle",   "Hue Cycle",    0, 1, 0, "Acid",  "Rotates all colors over time and jumps on every kick." },
+        { "posterize",  "Posterize",    0, 1, 0, "Acid",  "Reduces the image to flat color bands." },
+        { "thermal",    "Thermal",      0, 1, 0, "Acid",  "Maps brightness to a heat-camera palette." },
+        { "edgeGlow",   "Edge Glow",    0, 1, 0, "Acid",  "Neon glowing outlines over a darkened image." },
+        { "kaleido",    "Kaleidoscope", 0, 1, 0, "Acid",  "Mirrors the frame into rotating segments." },
+        { "liquid",     "Liquid Warp",  0, 1, 0, "Acid",  "Flowing wave displacement, pushed harder on kicks." },
+        { "trails",     "Echo Trails",  0, 1, 0, "Acid",  "Frame echo: bright motion leaves fading trails." },
+        { "lightLeak",  "Light Leak",   0, 1, 0, "Overlay","Generated warm light leaks drifting across the frame." },
+        { "filmBurn",   "Film Burn",    0, 1, 0, "Overlay","Orange-white burn flare on every cut." },
+        { "dust",       "Dust & Scratches",0,1,0, "Overlay","Generated dust specks, hairs and vertical scratches." },
+        { "flare",      "Anamorphic Flare",0,1,0, "Overlay","Blue horizontal streaks from bright highlights." },
     };
     return d;
 }
@@ -43,6 +56,18 @@ const std::vector<ParamDef>& clipParams()
         { "posY",       "Position Y", -1, 1, 0, "Transform", "Vertical offset." },
         { "rotation",   "Rotation", -180, 180, 0, "Transform", "Rotation in degrees." },
         { "mirror",     "Mirror",      0, 1, 0, "Transform", "Flip horizontally (1 = on)." },
+        { "reframe",    "Reframe",     0, 2, 0, "Transform", "0 = Fill (crop), 1 = Fit (bars), 2 = Blur Fill (fit over a blurred copy)." },
+        { "blend",      "Blend Mode",  0, 11, 0, "Composite", "Normal, Add, Screen, Multiply, Overlay, Soft Light, Lighten, Darken, Difference, Color Dodge, Hard Light, Exclusion." },
+        { "chromaKey",  "Chroma Key",  0, 1, 0, "Composite", "Keys out a color (green screen). Amount = key strength." },
+        { "keyHue",     "Key Hue",     0, 360, 120, "Composite", "Color to key out, in degrees (120 = green, 240 = blue)." },
+        { "keyTol",     "Key Tolerance",0, 1, .3f, "Composite", "How wide a range of the key color is removed." },
+        { "lumaKey",    "Luma Key",    0, 1, 0, "Composite", "Keys out dark areas, for light leaks and fire filmed on black." },
+        { "lumaThresh", "Luma Threshold",0, 1, .15f, "Composite", "Brightness below which the luma key removes pixels." },
+        { "maskShape",  "Mask",        0, 2, 0, "Mask", "0 = none, 1 = ellipse, 2 = rectangle." },
+        { "maskW",      "Mask Width",  0, 1.5f, .6f, "Mask", "Mask width relative to the frame." },
+        { "maskH",      "Mask Height", 0, 1.5f, .6f, "Mask", "Mask height relative to the frame." },
+        { "maskFeather","Mask Feather",0, 1, .3f, "Mask", "Soft edge of the mask." },
+        { "maskInvert", "Invert Mask", 0, 1, 0, "Mask", "Show outside the mask instead of inside." },
     };
     return d;
 }
@@ -83,6 +108,22 @@ const std::vector<Look>& lookLibrary()
           { { "kickZoom", .6f }, { "snareFlash", .45f }, { "shake", .35f }, { "contrast", 1.1f } } },
         { "Mono Contrast", "Color", "High contrast black and white.",
           { { "saturation", 0.0f }, { "contrast", 1.4f }, { "grain", .3f } } },
+        // tuned against the quality-bar references (docs/REFERENCES.md)
+        { "Night Teal Flip", "Reference", "Night-street teal cast, low saturation, push-ins, white flash bursts and negative flips on hits.",
+          { { "temperature", -.35f }, { "tint", -.08f }, { "saturation", .7f }, { "contrast", 1.2f }, { "crush", .2f }, { "splitTone", .35f },
+            { "grain", .3f }, { "vignette", .35f }, { "kickZoom", .35f }, { "snareFlash", .35f }, { "invertHits", .45f }, { "bloom", .15f } } },
+        { "Warm Crush", "Reference", "Crushed inky blacks, warm brick reds, heavy vignette, clean hard cuts.",
+          { { "temperature", .3f }, { "tint", .1f }, { "saturation", .65f }, { "contrast", 1.3f }, { "crush", .55f }, { "vignette", .7f },
+            { "halation", .35f }, { "grain", .35f }, { "grainSize", 1.0f } } },
+        { "Sky Chrome Haze", "Reference", "Bright sky blues and gold, chrome bloom, light leaks and fast smeared cuts.",
+          { { "exposure", .2f }, { "saturation", 1.2f }, { "contrast", 1.05f }, { "splitTone", .3f }, { "bloom", .5f }, { "halation", .2f },
+            { "lightLeak", .45f }, { "flare", .3f }, { "trails", .2f }, { "grain", .15f } } },
+        { "Acid Cutout", "Acid", "Thermal edge-glow trip with hue cycling and echo trails.",
+          { { "thermal", .5f }, { "edgeGlow", .5f }, { "hueCycle", .4f }, { "trails", .5f }, { "liquid", .25f }, { "contrast", 1.15f } } },
+        { "Kaleido Strobe", "Acid", "Kaleidoscope mirror, posterized color and hi-hat strobing.",
+          { { "kaleido", .8f }, { "posterize", .4f }, { "hueCycle", .3f }, { "hatStrobe", .3f }, { "saturation", 1.4f } } },
+        { "Burnt Film", "Film", "16mm with dust, scratches and film burns on every cut.",
+          { { "grain", .5f }, { "grainSize", 1.0f }, { "dust", .55f }, { "filmBurn", .6f }, { "fade", .15f }, { "temperature", .15f }, { "vignette", .4f } } },
     };
     return L;
 }

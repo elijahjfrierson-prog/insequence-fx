@@ -101,7 +101,7 @@ endif()
 # --- Headless tests: timing, analysis, sync, chop, editing, project I/O, media ----
 enable_testing()
 juce_add_console_app(ISFXTests PRODUCT_NAME "ISFXTests")
-target_sources(ISFXTests PRIVATE ${ISFX_CORE_SOURCES} Source/Exporter.cpp tests/Tests.cpp)
+target_sources(ISFXTests PRIVATE ${ISFX_CORE_SOURCES} Source/Renderer.cpp Source/Exporter.cpp tests/Tests.cpp)
 target_compile_definitions(ISFXTests PRIVATE ${ISFX_DEFS} ISFX_HEADLESS=1)
 target_link_libraries(ISFXTests PRIVATE ${ISFX_LIBS}
     PUBLIC juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
