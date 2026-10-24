@@ -428,7 +428,29 @@ void Timeline::mouseDown (const juce::MouseEvent& e)
         int tr = trackAt (pos.y); if (tr < 0) return;
         int k = (pos.x - 6) / 22; int y = trackY (tr);
         const bool audio = s.tracks[(size_t) tr].kind == TrackKind::Audio;
-        if (e.mods.isPopupMenu()) { if (onTrackPlugins) onTrackPlugins (tr); return; }
+        if (e.mods.isPopupMenu())
+        {   // FL-style: reorder tracks; clips travel with their track
+            auto canSwap = [&] (int o) { return o >= 0 && o < (int) s.tracks.size() && s.tracks[(size_t) o].kind == s.tracks[(size_t) tr].kind; };
+            juce::PopupMenu m;
+            m.addItem (1, "Move track up", canSwap (tr - 1));
+            m.addItem (2, "Move track down", canSwap (tr + 1));
+            if (audio) { m.addSeparator(); m.addItem (3, "Plug-ins..."); }
+            m.showMenuAsync (juce::PopupMenu::Options(), [this, tr, canSwap] (int r)
+            {
+                auto& sq = st.project.seq();
+                if (r == 3) { if (onTrackPlugins) onTrackPlugins (tr); return; }
+                if (r != 1 && r != 2) return;
+                const int o = r == 1 ? tr - 1 : tr + 1;
+                if (o < 0 || o >= (int) sq.tracks.size() || sq.tracks[(size_t) o].kind != sq.tracks[(size_t) tr].kind) return;
+                st.edit ("Move track");
+                std::swap (sq.tracks[(size_t) tr], sq.tracks[(size_t) o]);
+                for (auto& c : sq.clips) { if (c.track == tr) c.track = o; else if (c.track == o) c.track = tr; }
+                sq.sortClips();
+                if (onEdited) onEdited();
+                repaint();
+            });
+            return;
+        }
         if (pos.y >= y + 22 && pos.y < y + 38 && k >= 0 && k < (audio ? 3 : 2))
         {
             st.edit ("Track toggle");
