@@ -313,6 +313,7 @@ void Timeline::mouseDown (const juce::MouseEvent& e)
         int tr = trackAt (pos.y); if (tr < 0) return;
         int k = (pos.x - 6) / 22; int y = trackY (tr);
         const bool audio = s.tracks[(size_t) tr].kind == TrackKind::Audio;
+        if (e.mods.isPopupMenu()) { if (onTrackPlugins) onTrackPlugins (tr); return; }
         if (pos.y >= y + 22 && pos.y < y + 38 && k >= 0 && k < (audio ? 3 : 2))
         {
             st.edit ("Track toggle");

@@ -18,5 +18,13 @@ private:
 };
 
 // Mixes the sequence's audible clips for [start, start + n samples) at kMixRate into L/R (overwritten).
-void mixSequence (const Sequence& s, const AudioCache& cache, juce::int64 startSample, int n, float* L, float* R);
+// Per-track insert effects (VST3/AU chains). Tracks the host reports via has() are mixed separately, processed, then summed.
+struct TrackFxHost
+{
+    virtual ~TrackFxHost() = default;
+    virtual bool has (const juce::String& trackId) const = 0;
+    virtual void process (const juce::String& trackId, float* L, float* R, int n) = 0;
+};
+void mixSequence (const Sequence& s, const AudioCache& cache, juce::int64 startSample, int n, float* L, float* R,
+                  TrackFxHost* trackFx = nullptr);
 }

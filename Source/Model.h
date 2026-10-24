@@ -122,6 +122,8 @@ struct Track
     TrackKind kind = TrackKind::Video;
     bool mute = false, hidden = false, locked = false, solo = false;
     int height = 64;
+    juce::String id;         // set when the track first gets plug-ins
+    juce::var plugins;       // track plug-in chain (descriptions + state)
 };
 
 struct Sequence

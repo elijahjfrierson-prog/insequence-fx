@@ -42,6 +42,7 @@ struct ExportJob
     int mbps = 20;
     Ticks rangeStart = 0, rangeEnd = 0;   // end 0 = sequence end
     std::function<void (float* L, float* R, int n)> audioFx;   // master plug-in chain (optional)
+    TrackFxHost* trackFx = nullptr;                            // per-track plug-in chains (optional)
 };
 
 // renderFrame(time, rgbaOut) must fill width*height*4 bytes (top-down RGBA)

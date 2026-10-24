@@ -856,6 +856,34 @@ int main (int argc, char** argv)
     testReverseAndSlowMo();
     testSyncShortClip();
     {
+        struct ZeroFx : TrackFxHost
+        {
+            juce::String target; int calls = 0;
+            bool has (const juce::String& id) const override { return id == target; }
+            void process (const juce::String&, float* L, float* R, int n) override { ++calls; for (int i = 0; i < n; ++i) L[i] = R[i] = 0.0f; }
+        };
+        AudioCache ac;
+        auto tone = std::make_shared<std::vector<float>> ((size_t) kMixRate * 2 * 2, 0.25f);
+        ac.put ("tone", tone);
+        Sequence ms; Track ta; ta.kind = TrackKind::Audio; ta.id = "fxTrack"; Track tb; tb.kind = TrackKind::Audio;
+        ms.tracks = { ta, tb };
+        Clip ca; ca.id = "ca"; ca.mediaId = "tone"; ca.track = 0; ca.length = secToTicks (1);
+        Clip cb = ca; cb.id = "cb"; cb.track = 1;
+        ms.clips = { ca, cb };
+        std::vector<float> L (4800), R (4800);
+        mixSequence (ms, ac, 1000, 4800, L.data(), R.data());
+        const float dry = L[100];
+        ZeroFx z; z.target = "fxTrack";
+        mixSequence (ms, ac, 1000, 4800, L.data(), R.data(), &z);
+        CHECK (std::abs (dry - 0.5f) < 1e-4f && std::abs (L[100] - 0.25f) < 1e-4f && z.calls == 1, "track plug-in chain processes only its own track");
+        Project tp = Project::makeNew(); tp.seq().tracks[0].id = "t1";
+        juce::Array<juce::var> chain; chain.add (juce::var ("x")); tp.seq().tracks[0].plugins = chain;
+        auto tf = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("trk_fx.isfx");
+        juce::String terr; Project tq;
+        CHECK (saveProject (tp, tf, terr) && loadProject (tf, tq, terr) && tq.seq().tracks[0].id == "t1" && tq.seq().tracks[0].plugins.size() == 1,
+               "track plug-in chain saved with the project");
+    }
+    {
         Project rp = Project::makeNew();
         for (int i = 0; i < 3; ++i)
         {
