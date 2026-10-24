@@ -190,7 +190,7 @@ private:
     int secToX (double s) const { return kHeader + (int) std::lround ((s - scrollSec) * pxPerSec); }
     const Clip* clipAt (juce::Point<int> p, int& edge) const;
     AppState& st;
-    enum class Drag { None, Move, TrimL, TrimR, Range, Scrub, Song } drag = Drag::None;
+    enum class Drag { None, Move, TrimL, TrimR, Range, Scrub, Song, TransLen } drag = Drag::None;
     juce::String dragClip;
     Ticks dragStart = 0, dragOrig = 0; int dragTrack = 0;
     Ticks snapGuide = -1;

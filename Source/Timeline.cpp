@@ -137,6 +137,12 @@ void Timeline::paint (juce::Graphics& g)
                 }
             }
         }
+        if (c.transIn != TransitionType::Cut && c.transLen > 0)
+        {   // transition span: drag its right edge to make it longer/shorter
+            const int xe = std::min (r.getRight(), secToX (ticksToSec (c.start + c.transLen)));
+            g.setColour (juce::Colours::white.withAlpha (0.13f)); g.fillRect (r.getX(), r.getY(), std::max (0, xe - r.getX()), r.getHeight());
+            g.setColour (juce::Colours::white.withAlpha (0.7f)); g.fillRect (xe - 1, r.getY() + 2, 2, r.getHeight() - 4);
+        }
         g.setColour (text); g.setFont (11.0f);
         juce::String label = c.name.isNotEmpty() ? c.name : (m ? m->name : juce::String ("(missing)"));
         if (! c.enabled) label = "[off] " + label;
@@ -465,6 +471,13 @@ void Timeline::mouseDown (const juce::MouseEvent& e)
     int tr = trackAt (pos.y);
     bool trackLocked = tr >= 0 && tr < (int) s.tracks.size() && s.tracks[(size_t) tr].locked;
 
+    if (tool == Tool::Select && c && c->transIn != TransitionType::Cut && c->transLen > 0 && ! c->locked && ! trackLocked
+        && std::abs (pos.x - secToX (ticksToSec (c->start + c->transLen))) <= 5)
+    {
+        drag = Drag::TransLen; dragClip = c->id; dragOrig = c->transLen; st.selected = { c->id };
+        if (onEdited) onEdited();
+        return;
+    }
     switch (tool)
     {
         case Tool::Select:
@@ -581,6 +594,15 @@ void Timeline::mouseDrag (const juce::MouseEvent& e)
             if (onEdited) onEdited();
             break;
         }
+        case Drag::TransLen:
+            if (auto* k = st.project.seq().findClip (dragClip))
+            {
+                const Ticks fr = secToTicks (1.0 / std::max (1.0, st.project.fps));
+                k->transLen = juce::jlimit (fr, std::max (fr, k->length), dragOrig + (t - dragStart));
+                if (onStatus) onStatus ("Transition " + juce::String (ticksToSec (k->transLen), 2) + " s");
+                if (onEdited) onEdited();
+            }
+            break;
         case Drag::None: break;
     }
     if (tool == Tool::Delete || tool == Tool::Paint) mouseDown (e);   // drag-paint / drag-delete
@@ -628,6 +650,7 @@ void Timeline::mouseUp (const juce::MouseEvent& e)
             st.dirty = true;
         }
     }
+    if (drag == Drag::TransLen && toVar (beforeDrag).toString() != toVar (st.project).toString()) { st.history.push (beforeDrag, "Transition length"); st.dirty = true; }
     if (drag == Drag::Range && st.rangeB - st.rangeA < secToTicks (0.01)) st.rangeA = st.rangeB = 0;
     else if (drag == Drag::Range) selectRangeClips();
     drag = Drag::None; dragOut = false;
@@ -875,6 +898,14 @@ void Timeline::clipMenu (const juce::String& id)
         m.addItem (45, "Keep (pin, Randomize skips it)", video, c->keep);
         m.addItem (46, "Randomize all unpinned shots on this track", video && ! lk);
     }
+    {
+        juce::PopupMenu mv;
+        mv.addItem (490, "Slow Push In (grow 8%, eased)", video && ! lk);
+        mv.addItem (491, "Slow Pull Out (shrink 8%, eased)", video && ! lk);
+        mv.addItem (492, "Slow Drift (gentle pan + 6% push)", video && ! lk);
+        mv.addSeparator(); mv.addItem (493, "Remove slow move", video && ! lk);
+        m.addSubMenu (many ? "Slow Move (" + juce::String (st.selected.size()) + " clips)" : juce::String ("Slow Move"), mv, video && ! lk);
+    }
     m.addItem (31, "Add Frame Hold Segment (1 beat)", ! lk && video && st.playhead > c->start && st.playhead < c->end());
     m.addSubMenu ("Transition in", trans, ! lk);
     m.addSubMenu ("Scale / Reframe", scale, video && ! lk);
@@ -923,6 +954,20 @@ void Timeline::clipMenu (const juce::String& id)
             for (auto& i : sel) n += autoCutClip (st.project, i, (AutoCut) (r - 100), switchAngles, seed++);
             if (n == 0) st.history.undo (st.project);
             st.selected.clear();
+        }
+        if (r >= 490 && r <= 493)
+        {
+            st.edit ("Slow move");
+            for (auto& i : sel)
+                if (auto* k = sq.findClip (i); k && ! k->locked && k->mediaId.isNotEmpty())
+                {
+                    for (auto* id : { "scale", "posX", "posY" }) k->keys.erase (id);
+                    if (r == 493) continue;
+                    const float s0 = k->fx.get ("scale", 1.0f);
+                    const float a0 = r == 491 ? s0 * 1.08f : s0, a1 = r == 490 ? s0 * 1.08f : r == 492 ? s0 * 1.06f : s0;
+                    setKey (*k, "scale", 0, a0, 2); setKey (*k, "scale", k->length, a1, 2);
+                    if (r == 492) { setKey (*k, "posX", 0, -0.02f, 2); setKey (*k, "posX", k->length, 0.02f, 2); }
+                }
         }
         if (r >= 200 && r < 209) { st.edit ("Label"); for (auto& i : sel) if (auto* k = sq.findClip (i)) k->label = r - 200; }
         if (r >= 300 && r < 400)
