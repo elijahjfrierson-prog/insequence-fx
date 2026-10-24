@@ -105,7 +105,12 @@ struct Clip
     int label = 0;           // label colour index (0 = default)
     FxStack fx;              // per-clip: exposure, contrast, saturation, scale, posX, posY, rotation, flash
     Ticks end() const { return start + length; }
-    Ticks srcAt (Ticks t) const { return srcIn + (Ticks) std::llround ((double) (t - start) * speed); }
+    bool reverse = false;    // plays the same source range backwards
+    Ticks srcAt (Ticks t) const
+    {
+        if (reverse) return srcIn + (Ticks) std::llround ((double) (end() - t) * speed) - 1;
+        return srcIn + (Ticks) std::llround ((double) (t - start) * speed);
+    }
 };
 
 enum class TrackKind { Video = 0, Audio };

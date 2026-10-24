@@ -273,6 +273,7 @@ MainComponent::MainComponent()
     };
     media.onSyncAll = [this] { autoSync(); };
     media.onResync = [this] (const juce::String& id) { autoSync (id); };
+    timeline.onSyncMedia = [this] (const juce::String& id) { autoSync (id); };
     media.onSetSong = [this] (const juce::String& id) { setSong (id); };
     media.onRelink = [this] (const juce::String& id) { relink (id); };
     media.onRemove = [this] (const juce::String& id) { removeMedia (id); };

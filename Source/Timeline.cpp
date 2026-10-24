@@ -620,6 +620,20 @@ void Timeline::clipMenu (const juce::String& id)
     m.addSeparator();
     m.addItem (30, "Speed/Duration...  (Ctrl+R)", ! lk);
     m.addItem (3, "Reset speed to 100%", ! lk && c->speed != 1.0);
+    {
+        const bool hasMedia = c->mediaId.isNotEmpty();
+        m.addItem (34, "Reverse clip", ! lk && hasMedia, c->reverse);
+        juce::PopupMenu slow;
+        const auto* md = st.project.findMedia (c->mediaId);
+        const double srcFps = md != nullptr && md->fps > 0 ? md->fps : 0.0, tlFps = st.project.fps;
+        if (srcFps > tlFps + 1)
+            slow.addItem (35, "Clean slow-mo: every real frame (" + juce::String (juce::roundToInt (srcFps)) + " fps -> "
+                              + juce::String (juce::roundToInt (tlFps)) + " fps = " + juce::String (juce::roundToInt (100 * tlFps / srcFps)) + "%)", ! lk);
+        slow.addItem (39, "75%", ! lk); slow.addItem (36, "50%", ! lk); slow.addItem (38, "33%", ! lk); slow.addItem (37, "25%", ! lk);
+        slow.addSeparator(); slow.addItem (30, "Custom speed...", ! lk);
+        m.addSubMenu ("Slow motion", slow, ! lk && hasMedia);
+        m.addItem (43, "Sync to audio", hasMedia && md != nullptr && md->kind != MediaKind::Image);
+    }
     m.addItem (31, "Add Frame Hold Segment (1 beat)", ! lk && video && st.playhead > c->start && st.playhead < c->end());
     m.addSubMenu ("Transition in", trans, ! lk);
     m.addSubMenu ("Scale / Reframe", scale, video && ! lk);
@@ -675,6 +689,22 @@ void Timeline::clipMenu (const juce::String& id)
         if (r == 14) { st.edit ("Duplicate"); st.selected = duplicateClips (sq, sel); }
         if (r == 2) { st.edit ("Split"); splitAt (sq, st.playhead, { id }); }
         if (r == 3) { st.edit ("Speed"); setClipSpeed (sq, st.project, id, 1.0); }
+        if (r == 34) { st.edit ("Reverse"); bool on = ! cl->reverse; for (auto& i : sel) if (auto* k = sq.findClip (i); k && ! k->locked && k->mediaId.isNotEmpty()) k->reverse = on; }
+        if (r >= 35 && r <= 39)
+        {
+            const auto* md = st.project.findMedia (cl->mediaId);
+            const double srcFps = md != nullptr && md->fps > 0 ? md->fps : 30.0;
+            const double sp = r == 35 ? st.project.fps / srcFps : r == 36 ? 0.5 : r == 37 ? 0.25 : r == 38 ? 1.0 / 3.0 : 0.75;
+            st.edit ("Slow motion");
+            for (auto& i : sel)
+                if (auto* k = sq.findClip (i); k && ! k->locked && k->mediaId.isNotEmpty())
+                {
+                    if (auto* km = st.project.findMedia (k->mediaId); km != nullptr && km->fps > 0)
+                        k->srcIn = quantizeToFrame (k->srcIn, km->fps);   // start on a real frame so every output frame is a real source frame
+                    setClipSpeed (sq, st.project, i, sp);
+                }
+        }
+        if (r == 43 && onSyncMedia) { auto mid = cl->mediaId; juce::MessageManager::callAsync ([this, mid] { onSyncMedia (mid); }); return; }
         if (r == 4) { st.edit ("Lock"); cl->locked = ! cl->locked; }
         if (r == 5) { st.edit ("Delete"); deleteClips (sq, sel, false); st.selected.clear(); }
         if (r == 6) { st.edit ("Ripple Delete"); deleteClips (sq, sel, true); st.selected.clear(); }

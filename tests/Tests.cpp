@@ -658,6 +658,31 @@ static void testAutoCutAndPresets()
     dir.deleteRecursively();
 }
 
+static void testReverseAndSlowMo()
+{
+    Clip c; c.id = "r"; c.mediaId = "m"; c.start = secToTicks (10); c.length = secToTicks (2); c.srcIn = secToTicks (5);
+    Clip f = c; c.reverse = true;
+    CHECK (std::abs (ticksToSec (c.srcAt (c.start)) - 7.0) < 1e-3 && std::abs (ticksToSec (c.srcAt (c.end() - secToTicks (0.5))) - 5.5) < 1e-3,
+           "reversed clip plays its source range backwards");
+    Sequence s; s.tracks.push_back ({}); s.clips.push_back (c);
+    const Ticks cutT = secToTicks (10.5);
+    const Ticks before = c.srcAt (cutT - 1), after = c.srcAt (cutT);
+    splitAt (s, cutT, {});
+    s.sortClips();
+    CHECK (s.clips.size() == 2 && std::llabs (s.clips[0].srcAt (cutT - 1) - before) <= 1 && std::llabs (s.clips[1].srcAt (cutT) - after) <= 1
+           && std::llabs (s.clips[0].srcAt (s.clips[0].start) - c.srcAt (c.start)) <= 1,
+           "splitting a reversed clip keeps every frame where it was");
+    // 60 fps source at 50% on a 30 fps timeline: output frame n shows source frame n exactly (no repeats, no blends)
+    f.speed = 0.5; f.srcIn = quantizeToFrame (secToTicks (5.01), 60.0);
+    bool clean = true;
+    for (int n = 0; n < 120; ++n)
+    {
+        auto src = f.srcAt (f.start + frameToTicks (n, 30.0));
+        clean = clean && ticksToFrame (src + secToTicks (1.0 / 240), 60.0) == ticksToFrame (f.srcIn, 60.0) + n;
+    }
+    CHECK (clean, "clean slow-mo: 60 fps at 50% on a 30 fps timeline uses every real frame once");
+}
+
 static long rssMB()
 {
     auto s = juce::File ("/proc/self/status").loadFileAsString();
@@ -732,6 +757,7 @@ int main (int argc, char** argv)
     testRender();
     testAutoCutAndPresets();
     testLayoutsStacksAndLayers();
+    testReverseAndSlowMo();
     std::cout << (failures == 0 ? "ALL TESTS PASSED" : "FAILURES: ") << (failures ? juce::String (failures) : juce::String()) << "\n";
     return failures;
 }

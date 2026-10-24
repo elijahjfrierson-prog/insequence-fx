@@ -38,7 +38,7 @@ void mixSequence (const Sequence& s, const AudioCache& cache, juce::int64 start,
         const int fade = kMixRate / 200;
         for (juce::int64 i = a; i < b; ++i)
         {
-            double sp = srcBase + (double) (i - c0) * c.speed;
+            double sp = srcBase + (double) (c.reverse ? c1 - 1 - i : i - c0) * c.speed;
             juce::int64 si = (juce::int64) sp;
             if (si < 0 || si + 1 >= frames) continue;
             float fr = (float) (sp - (double) si);

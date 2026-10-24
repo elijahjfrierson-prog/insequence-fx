@@ -146,6 +146,7 @@ public:
     explicit Timeline (AppState& s);
     std::function<void (const juce::Array<juce::File>&, int track, Ticks at)> onFilesDropped;   // from Finder/Explorer
     std::function<void (const juce::String& title, const juce::String& def, std::function<void (juce::String)>)> onAskText;
+    std::function<void (const juce::String& mediaId)> onSyncMedia;   // right-click Sync to audio
     bool isInterestedInFileDrag (const juce::StringArray&) override { return true; }
     void filesDropped (const juce::StringArray&, int x, int y) override;
     std::function<void()> onEdited;          // after any edit
