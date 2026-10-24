@@ -429,7 +429,7 @@ FxLibrary::~FxLibrary()
 void FxLibrary::resized()
 {
     auto r = getLocalBounds().reduced (6).withTrimmedTop (20);
-    exArea = r.getHeight() > 240 ? r.removeFromBottom (juce::jmin (150, r.getHeight() / 3)) : juce::Rectangle<int>();
+    exArea = r.getHeight() > 150 ? r.removeFromBottom (juce::jlimit (90, 150, r.getHeight() * 2 / 5)) : juce::Rectangle<int>();
     list.setBounds (r);
 }
 
