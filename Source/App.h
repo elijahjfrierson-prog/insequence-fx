@@ -69,10 +69,12 @@ public:
     bool isPlaying() const { return playing.load(); }
     Ticks position() const { return secToTicks (posSec.load()); }
     void setSequence (const Sequence& s) { const juce::ScopedLock sl (lock); seq = s; }
+    void setTrackFx (TrackFxHost* h) { const juce::ScopedLock sl (lock); trackFx = h; }
     static constexpr int kBlock = 512;
 private:
     AppState& st;
     PluginRack& rack;
+    TrackFxHost* trackFx = nullptr;
     juce::CriticalSection lock;
     Sequence seq;
     std::atomic<bool> playing { false }, restart { false };
@@ -146,7 +148,8 @@ public:
     explicit Timeline (AppState& s);
     std::function<void (const juce::Array<juce::File>&, int track, Ticks at)> onFilesDropped;   // from Finder/Explorer
     std::function<void (const juce::String& title, const juce::String& def, std::function<void (juce::String)>)> onAskText;
-    std::function<void (const juce::StringArray& clipIds)> onSyncClips;   // right-click Sync clip(s) to audio
+    std::function<void (const juce::StringArray& clipIds)> onSyncClips;
+    std::function<void (int track)> onTrackPlugins;                       // right-click an audio track header   // right-click Sync clip(s) to audio
     bool isInterestedInFileDrag (const juce::StringArray&) override { return true; }
     void filesDropped (const juce::StringArray&, int x, int y) override;
     std::function<void()> onEdited;          // after any edit

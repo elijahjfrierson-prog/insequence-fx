@@ -296,6 +296,8 @@ MainComponent::MainComponent()
     media.onSyncAll = [this] { autoSync(); };
     media.onResync = [this] (const juce::String& id) { autoSync (id); };
     timeline.onSyncClips = [this] (const juce::StringArray& ids) { syncClips (ids); };
+    timeline.onTrackPlugins = [this] (int tr) { trackPluginsMenu (tr); };
+    player.setTrackFx (&trackRacks);
     media.onSetSong = [this] (const juce::String& id) { setSong (id); };
     media.onRelink = [this] (const juce::String& id) { relink (id); };
     media.onRemove = [this] (const juce::String& id) { removeMedia (id); };
@@ -875,6 +877,7 @@ void MainComponent::save (bool as, std::function<void()> after)
     {
         if (f.getFileExtension() != ".isfx") f = f.withFileExtension ("isfx");
         st.project.plugins = rack.toVar();
+        trackRacks.store (st.project);
         juce::String err;
         if (! saveProject (st.project, f, err)) { showMsg ("Save failed", err); return; }
         st.file = f; st.dirty = false;
@@ -897,6 +900,7 @@ void MainComponent::openFile (const juce::File& f)
     st.project = p; st.file = f; st.dirty = false; st.history.clear(); st.selected.clear(); st.playhead = 0;
     st.thumbs.clear(); st.waves.clear(); songMono.reset();
     juce::StringArray perr; rack.fromVar (p.plugins, perr); rack.prepare (kMixRate, Player::kBlock);
+    trackRacks.load (st.project, perr);
     int missing = 0; for (auto& m : p.media) missing += m.missing;
     juce::String msg;
     if (missing) msg << missing << " media file(s) are missing (red). Right-click them in Media > Locate. ";
@@ -1064,6 +1068,44 @@ void MainComponent::pluginsMenu()
     });
 }
 
+void MainComponent::trackPluginsMenu (int tr)
+{
+    auto& seq = st.project.seq();
+    if (tr < 0 || tr >= (int) seq.tracks.size()) return;
+    if (seq.tracks[(size_t) tr].id.isEmpty()) seq.tracks[(size_t) tr].id = newId();
+    const juce::String id = seq.tracks[(size_t) tr].id;
+    auto& r = trackRacks.get (id);
+    juce::PopupMenu add;
+    auto types = rack.known().getTypes();
+    for (int i = 0; i < types.size(); ++i) add.addItem (1000 + i, types[i].name + "  (" + types[i].manufacturerName + ", " + types[i].pluginFormatName + ")");
+    juce::PopupMenu m;
+    m.addSectionHeader ("Track plug-ins: " + (seq.tracks[(size_t) tr].name.isNotEmpty() ? seq.tracks[(size_t) tr].name : "Track " + juce::String (tr + 1)));
+    if (types.isEmpty()) m.addItem (999, "No plug-ins yet: use Plug-ins > Scan first", false);
+    else m.addSubMenu ("Add VST3 / AU effect", add);
+    for (int i = 0; i < r.size(); ++i)
+    {
+        juce::PopupMenu s;
+        s.addItem (2000 + i, "Open editor");
+        s.addItem (3000 + i, "Bypass", true, r.bypassed (i));
+        s.addItem (4000 + i, "Remove");
+        m.addSubMenu (juce::String (i + 1) + ". " + r.name (i) + (r.bypassed (i) ? "  (bypassed)" : ""), s);
+    }
+    m.showMenuAsync (juce::PopupMenu::Options().withMousePosition(), [this, id, types] (int res)
+    {
+        auto& rk = trackRacks.get (id);
+        if (res >= 1000 && res < 2000 && res - 1000 < types.size())
+        {
+            juce::String err;
+            if (! rk.add (types[res - 1000], err)) showMsg ("Plug-in", types[res - 1000].name + " could not be loaded: " + err);
+            else if (auto* inst = rk.instance (rk.size() - 1)) pluginWindows.push_back (std::make_unique<PluginWindow> (*inst));
+        }
+        if (res >= 2000 && res < 3000) if (auto* inst = rk.instance (res - 2000)) pluginWindows.push_back (std::make_unique<PluginWindow> (*inst));
+        if (res >= 3000 && res < 4000) rk.setBypass (res - 3000, ! rk.bypassed (res - 3000));
+        if (res >= 4000 && res < 5000) { pluginWindows.clear(); rk.remove (res - 4000); }
+        if (res > 0) { st.dirty = true; trackRacks.store (st.project); refresh (false); }
+    });
+}
+
 // ============================================================ export
 bool MainComponent::exportSequence (const Project& p, int seqIndex, const ExportJob& jobIn, ProgressCb progress, std::function<bool()> cancelled, juce::String& err)
 {
@@ -1073,6 +1115,8 @@ bool MainComponent::exportSequence (const Project& p, int seqIndex, const Export
     ExportJob job = jobIn;
     rack.reset();
     job.audioFx = [this] (float* L, float* R, int n) { rack.process (L, R, n); };
+    trackRacks.reset();
+    job.trackFx = &trackRacks;
     juce::String codec;
     bool ok = runExport (s, st.audio, job, [&] (Ticks t, std::vector<juce::uint8>& px)
     {

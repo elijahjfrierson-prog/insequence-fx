@@ -118,4 +118,49 @@ void PluginRack::fromVar (const juce::var& v, juce::StringArray& errors)
         slots.back().bypass = (bool) e["bypass"];
     }
 }
+
+PluginRack& TrackRacks::get (const juce::String& id)
+{
+    const juce::ScopedLock sl (lock);
+    auto& r = racks[id];
+    if (r == nullptr) { r = std::make_unique<PluginRack>(); r->prepare (kMixRate, 512); }
+    return *r;
+}
+bool TrackRacks::has (const juce::String& id) const
+{
+    const juce::ScopedLock sl (lock);
+    auto it = racks.find (id);
+    return it != racks.end() && it->second->size() > 0;
+}
+void TrackRacks::process (const juce::String& id, float* L, float* R, int n)
+{
+    const juce::ScopedLock sl (lock);
+    auto it = racks.find (id);
+    if (it != racks.end()) it->second->process (L, R, n);
+}
+void TrackRacks::reset() { const juce::ScopedLock sl (lock); for (auto& r : racks) r.second->reset(); }
+void TrackRacks::clear() { std::map<juce::String, std::unique_ptr<PluginRack>> old; { const juce::ScopedLock sl (lock); old.swap (racks); } }
+void TrackRacks::load (const Project& p, juce::StringArray& errors)
+{
+    clear();
+    for (auto& s : p.sequences)
+        for (auto& t : s.tracks)
+            if (t.id.isNotEmpty() && t.plugins.isArray() && t.plugins.size() > 0)
+            {
+                auto r = std::make_unique<PluginRack>();
+                r->prepare (kMixRate, 512); r->fromVar (t.plugins, errors); r->prepare (kMixRate, 512);
+                const juce::ScopedLock sl (lock); racks[t.id] = std::move (r);
+            }
+}
+void TrackRacks::store (Project& p) const
+{
+    const juce::ScopedLock sl (lock);
+    for (auto& s : p.sequences)
+        for (auto& t : s.tracks)
+            if (t.id.isNotEmpty())
+            {
+                auto it = racks.find (t.id);
+                t.plugins = it != racks.end() ? it->second->toVar() : juce::var();
+            }
+}
 }

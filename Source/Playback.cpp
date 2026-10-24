@@ -21,13 +21,14 @@ void Player::audioDeviceIOCallbackWithContext (const float* const*, int, float* 
         fL.clear(); fR.clear(); readPos = 0;
         fifoStart = mixPos = startSample.load();
         rack.reset();
+        if (trackFx) if (auto* tr = dynamic_cast<TrackRacks*> (trackFx)) tr->reset();
     }
     const double ratio = kMixRate / rate;
     const double need = readPos + n * ratio + 2;
     bL.resize (kBlock); bR.resize (kBlock);
     while ((double) fL.size() < need)
     {
-        mixSequence (seq, st.audio, mixPos, kBlock, bL.data(), bR.data());
+        mixSequence (seq, st.audio, mixPos, kBlock, bL.data(), bR.data(), trackFx);
         rack.process (bL.data(), bR.data(), kBlock);
         fL.insert (fL.end(), bL.begin(), bL.end()); fR.insert (fR.end(), bR.begin(), bR.end());
         mixPos += kBlock;
