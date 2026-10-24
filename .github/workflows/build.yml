@@ -137,7 +137,8 @@ jobs:
           if ((Get-Item $exe).Length -lt 1MB) { throw "installer too small" }
           Start-Process -Wait -FilePath $exe -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART'
           $app = "$env:ProgramFiles\HumHouse\InSequence FX"
-          foreach ($p in @("$app\InSequence FX.exe", "$app\LICENSE.txt", "$app\avcodec-61.dll")) {
+          if (-not (Get-ChildItem -Path $app -Filter 'avcodec-*.dll')) { throw "missing avcodec dll" }
+          foreach ($p in @("$app\InSequence FX.exe", "$app\LICENSE.txt")) {
             if (-not (Test-Path -LiteralPath $p)) { throw "missing $p" }
           }
           $p = Start-Process -Wait -PassThru -FilePath "$app\InSequence FX.exe" -ArgumentList '--selftest'
