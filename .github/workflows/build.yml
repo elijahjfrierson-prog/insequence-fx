@@ -55,7 +55,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $u = 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n7.1-latest-win64-lgpl-shared-7.1.zip'
+          $u = 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.1-latest-win64-lgpl-shared-8.1.zip'
           Invoke-WebRequest -Uri $u -OutFile ff.zip
           Expand-Archive ff.zip -DestinationPath fftmp
           $d = Get-ChildItem fftmp | Select-Object -First 1
