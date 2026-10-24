@@ -36,10 +36,12 @@ void Preview::requestFrame (Ticks t)
     if (auto* d = juce::Desktop::getInstance().getDisplays().getDisplayForRect (getScreenBounds())) scale = d->scale;
     int phys = (int) std::round (std::min (fa.getWidth(), fa.getHeight()) * scale);
     // playback renders a light preview from proxy-sized decodes; a paused frame renders sharp at screen resolution
-    int sh = live ? juce::jlimit (90, 540, phys) : juce::jlimit (90, 1080, phys);
+    // Fixed decode tiers (1080/div) so resizing the window never opens extra decoders; 1/2 and below read the proxy.
+    const int tier = live ? std::max (90, 1080 / std::max (1, quality.load())) : 1080;
+    int sh = juce::jlimit (90, tier, phys);
     int W, H; outputSize (st.project, sh, W, H);
     const juce::ScopedLock sl (lock);
-    want = t; lastReq = t; wantW = W; wantH = H; wantDecodeH = live ? std::min (H, 540) : std::min (H, 1080);
+    want = t; lastReq = t; wantW = W; wantH = H; wantDecodeH = tier;
     wake.signal();
 }
 
@@ -59,7 +61,9 @@ void Preview::run()
         if (clearReq.exchange (false)) renderer.clearSources();
         auto t0 = juce::Time::getMillisecondCounterHiRes();
         renderer.render (*p, p->seq(), t, W, H, px, decH);
-        lastMs = juce::Time::getMillisecondCounterHiRes() - t0;
+        const double ms = juce::Time::getMillisecondCounterHiRes() - t0;
+        lastMs = ms;
+        avgMs = avgMs.load() <= 0 ? ms : avgMs.load() * 0.85 + ms * 0.15;   // steady readout, no flicker
         juce::Image im (juce::Image::ARGB, W, H, false);
         {
             juce::Image::BitmapData bd (im, juce::Image::BitmapData::writeOnly);
@@ -253,6 +257,15 @@ bool Preview::keyPressed (const juce::KeyPress& k)
     return true;
 }
 
+void Preview::handleAsyncUpdate()
+{
+    const double now = juce::Time::getMillisecondCounterHiRes();
+    if (! live) { fps = 0; fpsCount = 0; fpsT0 = 0; }
+    else if (fpsT0 <= 0) { fpsT0 = now; fpsCount = 0; }
+    else if (++fpsCount, now - fpsT0 >= 500) { fps = fpsCount * 1000.0 / (now - fpsT0); fpsCount = 0; fpsT0 = now; }
+    repaint();
+}
+
 void Preview::paint (juce::Graphics& g)
 {
     g.fillAll (juce::Colour (0xff07080a));
@@ -305,7 +318,12 @@ void Preview::paint (juce::Graphics& g)
     if (st.project.song.valid) info << "   bar " << (st.project.song.barAt (st.playhead) + 1) << "   " << juce::String (st.project.song.bpm, 1) << " BPM";
     info << "   " << st.project.aspectW << ":" << st.project.aspectH << "   " << st.project.seq().name;
     g.drawText (info, getLocalBounds().removeFromBottom (20).reduced (10, 0), juce::Justification::centredLeft);
-    g.drawText (juce::String (lastMs, 0) + " ms", getLocalBounds().removeFromBottom (20).reduced (10, 0), juce::Justification::centredRight);
+    {
+        const int q = quality.load();
+        juce::String info = live ? juce::String (fps, 0) + " fps   " + juce::String (avgMs.load(), 0) + " ms   " + (q <= 1 ? juce::String ("Full") : "1/" + juce::String (q))
+                                 : juce::String (lastMs.load(), 0) + " ms";
+        g.drawText (info, getLocalBounds().removeFromBottom (20).reduced (10, 0), juce::Justification::centredRight);
+    }
     if (st.project.seq().clips.empty())
     {
         g.setColour (theme::dim); g.setFont (15.0f);

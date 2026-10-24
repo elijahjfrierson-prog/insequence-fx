@@ -198,13 +198,37 @@ void Timeline::paint (juce::Graphics& g)
         int y = trackY (i);
         g.setColour (text); g.setFont (12.0f);
         g.drawText (tr.name, 6, y + 4, kHeader - 10, 14, juce::Justification::left);
-        const char* lab[3] = { tr.kind == TrackKind::Audio ? "M" : "H", "L", "" };
-        bool on[2] = { tr.kind == TrackKind::Audio ? tr.mute : tr.hidden, tr.locked };
-        for (int k = 0; k < 2; ++k)
+        // Premiere-style toggles. Video: eye (visible) + lock. Audio: speaker (mute) + S (solo) + lock.
+        const bool audio = tr.kind == TrackKind::Audio;
+        for (int k = 0; k < (audio ? 3 : 2); ++k)
         {
-            juce::Rectangle<int> b (6 + k * 22, y + 22, 18, 16);
-            g.setColour (on[k] ? accent : line); g.fillRoundedRectangle (b.toFloat(), 3);
-            g.setColour (text); g.setFont (10.0f); g.drawText (lab[k], b, juce::Justification::centred);
+            auto b = juce::Rectangle<int> (6 + k * 22, y + 22, 18, 16).toFloat();
+            const int kind = audio ? k + 1 : (k == 0 ? 0 : 3);   // 0 eye, 1 speaker, 2 solo, 3 lock
+            const bool active = kind == 0 ? ! tr.hidden : kind == 1 ? ! tr.mute : kind == 2 ? tr.solo : tr.locked;
+            const bool warn = (kind == 0 && tr.hidden) || (kind == 1 && tr.mute);
+            g.setColour (warn ? juce::Colour (0xff5a1e24) : (kind >= 2 && active) ? accent : line); g.fillRoundedRectangle (b, 3);
+            g.setColour (active || warn ? juce::Colours::white : dim);
+            auto c = b.getCentre();
+            if (kind == 0)
+            {
+                juce::Path eye; eye.startNewSubPath (c.x - 6, c.y); eye.quadraticTo (c.x, c.y - 6, c.x + 6, c.y); eye.quadraticTo (c.x, c.y + 6, c.x - 6, c.y);
+                g.strokePath (eye, juce::PathStrokeType (1.3f)); g.fillEllipse (c.x - 2, c.y - 2, 4, 4);
+            }
+            else if (kind == 1)
+            {
+                juce::Path sp; sp.addRectangle (c.x - 5, c.y - 2, 3, 4);
+                sp.addTriangle (c.x - 2, c.y - 2, c.x + 2, c.y - 5.5f, c.x + 2, c.y + 5.5f); sp.addTriangle (c.x - 2, c.y - 2, c.x + 2, c.y + 5.5f, c.x - 2, c.y + 2);
+                g.fillPath (sp);
+                if (! tr.mute) g.drawLine (c.x + 4, c.y - 3, c.x + 4, c.y + 3, 1.2f);
+            }
+            else if (kind == 2) { g.setFont (10.0f); g.drawText ("S", b, juce::Justification::centred); }
+            else
+            {
+                g.drawRect (juce::Rectangle<float> (c.x - 4, c.y - 1, 8, 6), 1.2f);
+                juce::Path sh; sh.addCentredArc (c.x, c.y - 1, 2.6f, 3.0f, 0, -juce::MathConstants<float>::halfPi, juce::MathConstants<float>::halfPi, true);
+                g.strokePath (sh, juce::PathStrokeType (1.2f));
+            }
+            if (warn) g.drawLine (b.getX() + 3, b.getBottom() - 3, b.getRight() - 3, b.getY() + 3, 1.4f);
         }
         g.setColour (line); g.drawHorizontalLine (y + tr.height - 1, 0, (float) kHeader);
     }
@@ -282,11 +306,15 @@ void Timeline::mouseDown (const juce::MouseEvent& e)
     {
         int tr = trackAt (pos.y); if (tr < 0) return;
         int k = (pos.x - 6) / 22; int y = trackY (tr);
-        if (pos.y >= y + 22 && pos.y < y + 38 && k >= 0 && k < 2)
+        const bool audio = s.tracks[(size_t) tr].kind == TrackKind::Audio;
+        if (pos.y >= y + 22 && pos.y < y + 38 && k >= 0 && k < (audio ? 3 : 2))
         {
             st.edit ("Track toggle");
             auto& T = s.tracks[(size_t) tr];
-            if (k == 0) { if (T.kind == TrackKind::Audio) T.mute = ! T.mute; else T.hidden = ! T.hidden; }
+            const int kind = audio ? k + 1 : (k == 0 ? 0 : 3);
+            if (kind == 0) T.hidden = ! T.hidden;
+            else if (kind == 1) T.mute = ! T.mute;
+            else if (kind == 2) T.solo = ! T.solo;
             else T.locked = ! T.locked;
             if (onEdited) onEdited();
         }

@@ -84,7 +84,11 @@ private:
     Inspector inspector { st };
     juce::TooltipWindow tips { this, 450 };
     juce::ScrollBar hscroll { false };
-    juce::TextButton fileBtn { "File" }, undoBtn { "Undo" }, redoBtn { "Redo" }, importBtn { "Import" }, presetsBtn { "Presets" },
+    juce::ShapeButton undoBtn { "Undo", juce::Colour (0xffc9ced8), juce::Colours::white, juce::Colour (0xff2aa8ff) },
+        redoBtn { "Redo", juce::Colour (0xffc9ced8), juce::Colours::white, juce::Colour (0xff2aa8ff) },
+        startBtn { "Go to start", juce::Colour (0xffc9ced8), juce::Colours::white, juce::Colour (0xff2aa8ff) };
+    juce::ComboBox qualityBox;
+    juce::TextButton fileBtn { "File" }, importBtn { "Import" }, presetsBtn { "Presets" },
         pluginsBtn { "Plug-ins" }, playBtn { "Play" }, exportBtn { "EXPORT" },
         toolBtn[4] { juce::TextButton ("E Select"), juce::TextButton ("P Paint"), juce::TextButton ("D Delete"), juce::TextButton ("C Cut") },
         snapBtn { "S Snap" }, rippleBtn { "R Ripple" }, magnetBtn { "Magnet" }, gridBtn { "B Grid" }, chopBtn { "CHOP" }, genBtn { "GENERATE 3 EDITS" },

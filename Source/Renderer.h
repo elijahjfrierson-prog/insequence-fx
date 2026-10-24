@@ -47,7 +47,8 @@ private:
         juce::uint32 used = 0;
         int opaque = -1;    // stills: -1 unknown, 0 has transparency, 1 opaque
     };
-    static constexpr size_t kMaxOpenSources = 24;
+    static constexpr size_t kMaxOpenSources = 8;   // each 4K decoder holds ~100+ MB of frame pools
+    juce::uint32 renderStart = 0;
     juce::uint32 useClock = 0;
     const Frame* frameFor (const Project& p, const juce::String& mediaId, Ticks srcT, int decodeH, int& rotation, bool* opaque = nullptr);
     std::shared_ptr<Lut3D> lutFor (const juce::String& path);

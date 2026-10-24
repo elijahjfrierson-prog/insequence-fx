@@ -114,7 +114,7 @@ struct Track
 {
     juce::String name;
     TrackKind kind = TrackKind::Video;
-    bool mute = false, hidden = false, locked = false;
+    bool mute = false, hidden = false, locked = false, solo = false;
     int height = 64;
 };
 

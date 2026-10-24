@@ -160,7 +160,7 @@ juce::var toVar (const Project& p)
         {
             auto* to = new juce::DynamicObject();
             to->setProperty ("name", t.name); to->setProperty ("kind", (int) t.kind); to->setProperty ("mute", t.mute);
-            to->setProperty ("hidden", t.hidden); to->setProperty ("locked", t.locked); to->setProperty ("height", t.height);
+            to->setProperty ("hidden", t.hidden); to->setProperty ("solo", t.solo); to->setProperty ("locked", t.locked); to->setProperty ("height", t.height);
             tr.add (juce::var (to));
         }
         o->setProperty ("tracks", tr);
@@ -234,7 +234,7 @@ bool fromVar (const juce::var& v, Project& p, juce::String& error)
                 for (auto& tv : *tr)
                 {
                     Track t; t.name = tv["name"].toString(); t.kind = (TrackKind) (int) tv["kind"];
-                    t.mute = (bool) tv["mute"]; t.hidden = (bool) tv["hidden"]; t.locked = (bool) tv["locked"];
+                    t.mute = (bool) tv["mute"]; t.hidden = (bool) tv["hidden"]; t.solo = (bool) tv["solo"]; t.locked = (bool) tv["locked"];
                     t.height = tv.hasProperty ("height") ? (int) tv["height"] : 64;
                     s.tracks.push_back (t);
                 }

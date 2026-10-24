@@ -154,6 +154,28 @@ MainComponent::MainComponent()
     presetsBtn.onClick = [this] { presetsMenu(); };
     pluginsBtn.onClick = [this] { pluginsMenu(); };
     playBtn.onClick = [this] { togglePlay(); };
+    {
+        auto arrow = [] (bool redo)
+        {
+            juce::Path arc, p;
+            arc.addCentredArc (12, 14, 7, 6, 0, -1.45f, 1.9f, true);
+            juce::PathStrokeType (2.2f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded).createStrokedPath (p, arc);
+            p.addTriangle (1.0f, 10.0f, 10.0f, 10.0f, 5.0f, 16.5f);
+            if (redo) p.applyTransform (juce::AffineTransform::scale (-1.0f, 1.0f, 12.0f, 0.0f));
+            return p;
+        };
+        undoBtn.setShape (arrow (false), false, true, false);
+        redoBtn.setShape (arrow (true), false, true, false);
+        juce::Path st; st.addRectangle (0, 0, 2.5f, 14); st.addTriangle (14, 0, 14, 14, 3.5f, 7);
+        startBtn.setShape (st, false, true, false);
+        startBtn.onClick = [this] { seek (0); };
+        startBtn.setTooltip ("Go to start (Home)");
+        qualityBox.addItem ("Full", 1); qualityBox.addItem ("1/2", 2); qualityBox.addItem ("1/4", 4); qualityBox.addItem ("1/8", 8);
+        qualityBox.setSelectedId (2, juce::dontSendNotification);
+        qualityBox.onChange = [this] { preview.setQuality (qualityBox.getSelectedId()); };
+        qualityBox.setTooltip ("Playback resolution (like Premiere): lower = less CPU and smoother playback. Paused frames and export are always full quality.");
+        addAndMakeVisible (startBtn); addAndMakeVisible (qualityBox);
+    }
     exportBtn.onClick = [this] { exportDialog(); };
     genBtn.onClick = [this] { generate(); };
     chopBtn.onClick = [this] { chop(); };
@@ -283,19 +305,21 @@ void MainComponent::paint (juce::Graphics& g)
     g.fillAll (theme::bg);
     g.setGradientFill (juce::ColourGradient (juce::Colours::black, 0, 0, theme::panel, 0, 44, false)); g.fillRect (0, 0, getWidth(), 44);
     g.setColour (theme::line); g.fillRect (0, 43, getWidth(), 1);
-    drawLogo (g, { 12.0f, 0.0f, 232.0f, 44.0f });
+    drawLogo (g, { 12.0f, 0.0f, 40.0f, 44.0f });
 }
 
 void MainComponent::resized()
 {
     auto r = getLocalBounds();
     auto top = r.removeFromTop (44).reduced (6, 7);
-    top.removeFromLeft (246);
+    top.removeFromLeft (50);
     auto place = [] (juce::Rectangle<int>& row, juce::Component& c, int w) { c.setBounds (row.removeFromLeft (w)); row.removeFromLeft (5); };
-    place (top, fileBtn, 56); place (top, undoBtn, 56); place (top, redoBtn, 56); place (top, importBtn, 70); place (top, presetsBtn, 76); place (top, pluginsBtn, 80);
+    place (top, fileBtn, 56); place (top, undoBtn, 30); place (top, redoBtn, 30); place (top, importBtn, 70); place (top, presetsBtn, 76); place (top, pluginsBtn, 80);
     top.removeFromLeft (6); place (top, mediaTgl, 58); place (top, inspTgl, 72); place (top, maxPrevBtn, 92); place (top, maxTlBtn, 98);
     exportBtn.setBounds (top.removeFromRight (110)); top.removeFromRight (6);
-    playBtn.setBounds (top.removeFromRight (70)); top.removeFromRight (10);
+    playBtn.setBounds (top.removeFromRight (70)); top.removeFromRight (4);
+    startBtn.setBounds (top.removeFromRight (26).reduced (3, 6)); top.removeFromRight (6);
+    qualityBox.setBounds (top.removeFromRight (70)); top.removeFromRight (10);
     aspectBox.setBounds (top.removeFromRight (230)); top.removeFromRight (6);
     seqBox.setBounds (top.removeFromRight (240)); top.removeFromRight (6);
     status.setBounds (top);

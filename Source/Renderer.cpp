@@ -398,11 +398,16 @@ const Frame* Renderer::frameFor (const Project& p, const juce::String& mediaId, 
     const bool useProxy = m->kind == MediaKind::Video && decodeH > 0 && decodeH <= kProxyHeight
                           && m->proxyPath.isNotEmpty() && juce::File (m->proxyPath).existsAsFile();
     auto key = mediaId + "@" + juce::String (decodeH) + (useProxy ? "p" : "");
+    // Free decoders that haven't been on screen for a while (RAM), and keep the open count bounded. Never evict a
+    // source used during this render: its frame may still be waiting to be composited.
+    if ((useClock & 63) == 0)
+        for (auto it = sources.begin(); it != sources.end();)
+            it = (it->second->used < renderStart && useClock - it->second->used > 900) ? sources.erase (it) : std::next (it);
     if (sources.size() >= kMaxOpenSources && sources.find (key) == sources.end())
     {
         auto oldest = sources.begin();
         for (auto it = sources.begin(); it != sources.end(); ++it) if (it->second->used < oldest->second->used) oldest = it;
-        sources.erase (oldest);
+        if (oldest->second->used < renderStart) sources.erase (oldest);
     }
     auto& src = sources[key];
     if (src == nullptr)
@@ -473,6 +478,7 @@ std::shared_ptr<Lut3D> Renderer::lutFor (const juce::String& path)
 // ---------------------------------------------------------------- render
 bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int H, std::vector<juce::uint8>& rgba, int decodeH)
 {
+    renderStart = ++useClock;
     if (W <= 0 || H <= 0) return false;
     const size_t NP = (size_t) W * H;
     std::vector<float> img (NP * 3, 0.0f);

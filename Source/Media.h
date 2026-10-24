@@ -52,6 +52,8 @@ public:
     double fps() const { return frameRate; }
 private:
     bool decodeNext (Frame& out);
+    bool receive (AVFrame* into, Ticks& pts);
+    void convert (const AVFrame* src, Frame& out);
     bool seekTo (Ticks t);
     AVFormatContext* fmt = nullptr;
     AVCodecContext* dec = nullptr;
@@ -61,7 +63,10 @@ private:
     int stream = -1, outW = 0, outH = 0, rot = 0, maxH = 0;
     double frameRate = 30.0, tb = 0;
     Frame cur, next;
-    bool eof = false, haveNext = false;
+    AVFrame* curAv = nullptr;   // decoded but not yet converted: frames we skip past never pay for RGBA conversion
+    AVFrame* nextAv = nullptr;
+    Ticks curPts = -1, nextPts = -1;
+    bool eof = false, haveNext = false, curConverted = false, fastScale = false;
 };
 
 juce::Image frameToImage (const Frame& f, int rotation);

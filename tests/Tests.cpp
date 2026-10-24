@@ -658,8 +658,66 @@ static void testAutoCutAndPresets()
     dir.deleteRecursively();
 }
 
+static long rssMB()
+{
+    auto s = juce::File ("/proc/self/status").loadFileAsString();
+    auto i = s.indexOf ("VmRSS:");
+    return i < 0 ? 0 : s.substring (i + 6).trim().getLargeIntValue() / 1024;
+}
+
+// ISFX_BENCH="a.mp4:b.mov:c.mov": real-time playback of 3 stacked layers (no proxies), like the app's preview
+static void benchPlayback (const juce::String& files, int W, int H, int decodeH, bool look, bool proxy)
+{
+    Project p = Project::makeNew();
+    auto& s = p.seq();
+    int track = 0;
+    for (auto& f : juce::StringArray::fromTokens (files, ":", ""))
+    {
+        auto pr = probeMedia (juce::File (f));
+        if (! pr.ok) { std::cout << "bench: cannot open " << f << "\n"; continue; }
+        MediaItem m; m.id = newId(); m.path = f; m.name = juce::File (f).getFileName(); m.kind = MediaKind::Video;
+        m.duration = pr.duration; m.fps = pr.fps; m.width = pr.width; m.height = pr.height; m.rotation = pr.rotation;
+        if (proxy)
+        {
+            auto pf = proxyFileFor (juce::File (f), 540); juce::String err;
+            if (! pf.existsAsFile()) makeProxy (juce::File (f), pf, 540, ticksToSec (pr.duration), [] (double) { return true; }, err);
+            m.proxyPath = pf.getFullPathName();
+        }
+        p.media.push_back (m);
+        if (track > 0) track = insertVideoTrack (s);
+        Clip c; c.id = newId(); c.mediaId = m.id; c.track = track; c.start = 0; c.length = std::min<Ticks> (pr.duration, secToTicks (8));
+        if (track > 0) { c.fx.set ("scale", 0.55f); c.fx.set ("posX", track == 1 ? -0.4f : 0.4f); }
+        s.clips.push_back (c); s.sortClips();
+        ++track;
+    }
+    if (look && ! lookLibrary().empty()) applyLook (s.fx, lookLibrary()[0], 1.0f);
+    Renderer r; std::vector<juce::uint8> o;
+    const long rss0 = rssMB();
+    double worst = 0, sum = 0; int n = 0;
+    const double t0 = juce::Time::getMillisecondCounterHiRes();
+    double now = 0;
+    while ((now = (juce::Time::getMillisecondCounterHiRes() - t0) / 1000.0) < 6.0)
+    {
+        double a = juce::Time::getMillisecondCounterHiRes();
+        r.render (p, s, secToTicks (now), W, H, o, decodeH);
+        double ms = juce::Time::getMillisecondCounterHiRes() - a;
+        worst = std::max (worst, ms); sum += ms; ++n;
+    }
+    std::cout << "BENCH " << (look ? "look " : "plain ") << (proxy ? "proxy " : "orig ") << W << "x" << H << " dec " << decodeH << ": " << n << " frames in 6 s (" << juce::String (n / 6.0, 1)
+              << " fps), avg " << juce::String (sum / std::max (1, n), 1) << " ms, worst " << juce::String (worst, 1)
+              << " ms, RSS " << rss0 << " -> " << rssMB() << " MB\n";
+}
+
 int main (int argc, char** argv)
 {
+    if (auto b = juce::SystemStats::getEnvironmentVariable ("ISFX_BENCH", {}); b.isNotEmpty())
+    {
+        benchPlayback (b, 960, 540, 540, true, false);
+        benchPlayback (b, 960, 540, 540, false, false);
+        benchPlayback (b, 480, 270, 270, true, false);
+        benchPlayback (b, 960, 540, 540, true, true);
+        return 0;
+    }
     juce::ignoreUnused (argc, argv);
     testTiming();
     testAnalysis();

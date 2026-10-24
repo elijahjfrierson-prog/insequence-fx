@@ -20,11 +20,13 @@ void mixSequence (const Sequence& s, const AudioCache& cache, juce::int64 start,
 {
     std::fill (L, L + n, 0.0f); std::fill (R, R + n, 0.0f);
     const double toSamp = (double) kMixRate / (double) kFlicks;
+    bool anySolo = false;
+    for (auto& t : s.tracks) anySolo = anySolo || t.solo;
     for (auto& c : s.clips)
     {
         if (c.track < 0 || c.track >= (int) s.tracks.size()) continue;
         auto& tr = s.tracks[(size_t) c.track];
-        if (tr.mute || ! c.enabled || c.volume <= 0.0f) continue;
+        if (tr.mute || (anySolo && ! tr.solo) || ! c.enabled || c.volume <= 0.0f) continue;
         juce::int64 c0 = (juce::int64) std::llround ((double) c.start * toSamp), c1 = (juce::int64) std::llround ((double) c.end() * toSamp);
         juce::int64 a = std::max (start, c0), b = std::min (start + n, c1);
         if (a >= b) continue;
