@@ -58,6 +58,7 @@ private:
     void setSong (const juce::String& id);
     void autoSync (const juce::String& onlyId = {});
     void syncClips (const juce::StringArray& clipIds);
+    void sliceAtCuts (const juce::StringArray& clipIds);   // background cut detection -> splits at every edit inside the clip
     void stabilizeClips (const juce::StringArray& clipIds, float smoothSec);   // background motion analysis -> position keyframes   // each clip matched to the song by its own sound
     void relink (const juce::String& id);
     void removeMedia (const juce::String& id);

@@ -1,4 +1,5 @@
 #include "Media.h"
+#include <limits>
 extern "C" {
 #include <libavformat/avformat.h>
 #include <libavcodec/avcodec.h>
@@ -400,10 +401,56 @@ std::shared_ptr<const Frame> PrefetchDecoder::get (Ticks t, int waitMs)
     }
 }
 
+void PrefetchDecoder::runReverse (Ticks t)
+{
+    const size_t chunk = (size_t) juce::jlimit (4, 16, frameBytes > 0 ? (int) (64000000 / frameBytes) : 8);
+    Ticks end = -1; bool reseek = false;
+    {
+        const juce::ScopedLock sl (lock);
+        while (q.size() > 1 && q.back()->pts > t + frameDur / 4) { pool.push_back (q.back()); q.pop_back(); }   // passed (backwards)
+        const bool jumped = q.empty() || t > q.back()->pts + frameDur || t < q.front()->pts - secToTicks (1.0);
+        if (jumped) { for (auto& f : q) pool.push_back (f); q.clear(); reseek = true; end = t; }
+        else if (q.size() < chunk && q.front()->pts > 0) end = q.front()->pts - frameDur;
+    }
+    if (end < 0) { wake.wait (20); return; }
+    const Ticks start = std::max<Ticks> (0, end - (Ticks) (chunk - 1) * frameDur);
+    std::vector<std::shared_ptr<Frame>> got;
+    dec.seekTo (start);
+    for (Ticks x = start; x <= end + frameDur / 4 && ! threadShouldExit(); x += frameDur)
+    {
+        const Frame* fr = dec.frameRef (x);
+        if (fr == nullptr || ! fr->valid()) break;
+        if (fr->pts > end + frameDur / 4) break;
+        if (! got.empty() && fr->pts <= got.back()->pts) continue;
+        std::shared_ptr<Frame> slot;
+        { const juce::ScopedLock sl (lock); if (! pool.empty()) { slot = pool.back(); pool.pop_back(); } }
+        if (slot == nullptr) slot = std::make_shared<Frame>();
+        slot->w = fr->w; slot->h = fr->h; slot->pts = fr->pts; slot->rgba.assign (fr->rgba.begin(), fr->rgba.end());
+        frameBytes = slot->rgba.size();
+        got.push_back (std::move (slot));
+    }
+    {
+        const juce::ScopedLock sl (lock);
+        if (reseek) { for (auto& f : q) pool.push_back (f); q.clear(); }
+        const Ticks lim = q.empty() ? std::numeric_limits<Ticks>::max() : q.front()->pts;
+        for (auto it = got.rbegin(); it != got.rend(); ++it)
+            if ((*it)->pts < lim) q.push_front (*it); else pool.push_back (*it);
+        if (got.empty() && q.empty()) atEnd = true;
+    }
+    ready.signal();
+    if (got.empty()) wake.wait (20);
+}
+
 void PrefetchDecoder::run()
 {
     while (! threadShouldExit())
     {
+        if (reverse)
+        {
+            Ticks t; { const juce::ScopedLock sl (lock); t = target; }
+            if (t < 0) wake.wait (20); else runReverse (t);
+            continue;
+        }
         Ticks from = -1; bool reseek = false; std::shared_ptr<Frame> slot;
         {
             const juce::ScopedLock sl (lock);

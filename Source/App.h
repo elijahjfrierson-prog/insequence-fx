@@ -152,6 +152,7 @@ public:
     std::function<void (const juce::String& title, const juce::String& def, std::function<void (juce::String)>)> onAskText;
     std::function<void (const juce::StringArray& clipIds)> onSyncClips;
     std::function<void (const juce::StringArray& clipIds, float smoothSec)> onStabilize;
+    std::function<void (const juce::StringArray& clipIds)> onSliceCuts;
     std::function<void (const juce::String&)> onStatus;
     std::function<void (int track)> onTrackPlugins;                       // right-click an audio track header   // right-click Sync clip(s) to audio
     bool isInterestedInFileDrag (const juce::StringArray&) override { return true; }
@@ -251,6 +252,7 @@ private:
     float exFrac = 0.4f;
     bool dragDiv = false;
     juce::TextButton popBtn { "Pop out" };
+    juce::TextEditor search;
     std::unique_ptr<juce::DocumentWindow> exWin;
     // folder tree like Premiere's Effects panel: Video Transitions / Video Effects / Sound FX, each with subfolders
     struct Row { juce::String label, desc, help; bool header = false; int level = 0; juce::String folder, parent; int count = 0; };

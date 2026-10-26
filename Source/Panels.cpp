@@ -417,6 +417,11 @@ FxLibrary::FxLibrary (AppState& s) : juce::Thread ("ISFX fx examples"), st (s)
     list.setModel (this); list.setRowHeight (22);
     list.setColour (juce::ListBox::backgroundColourId, theme::panel);
     addAndMakeVisible (list);
+    search.setTextToShowWhenEmpty ("Search effects, transitions, presets...", juce::Colours::grey);
+    search.setColour (juce::TextEditor::backgroundColourId, theme::panel.darker (0.3f));
+    search.onTextChange = [this] { refilter(); };
+    search.onEscapeKey = [this] { search.clear(); refilter(); };
+    addAndMakeVisible (search);
     addChildComponent (popBtn);
     popBtn.setTooltip ("Open the example in its own window you can move and resize (or dock it back).");
     popBtn.onClick = [this] { popOut (exWin == nullptr); };
@@ -485,6 +490,7 @@ void FxLibrary::resized()
     }
     else popBtn.setBounds (getWidth() - 70, 3, 62, 16);
     popBtn.setVisible (exWin != nullptr || ! exArea.isEmpty());
+    search.setBounds (r.removeFromTop (22)); r.removeFromTop (4);
     list.setBounds (r);
 }
 
@@ -597,7 +603,20 @@ void FxLibrary::refilter()
         return true;
     };
     rows.clear();
-    for (auto& r : all) if (shown (r.parent)) rows.push_back (r);
+    const auto q = search.getText().trim();
+    if (q.isNotEmpty())
+    {
+        juce::StringArray words; words.addTokens (q, " ", ""); words.removeEmptyStrings();
+        for (auto& r : all)
+        {
+            if (r.header) continue;
+            bool hit = true;
+            for (auto& w : words) hit = hit && (r.label.containsIgnoreCase (w) || r.parent.fromLastOccurrenceOf (":", false, false).containsIgnoreCase (w));
+            if (hit) { auto x = r; x.level = 1; rows.push_back (x); }
+        }
+    }
+    else
+        for (auto& r : all) if (shown (r.parent)) rows.push_back (r);
     list.updateContent(); list.repaint();
 }
 

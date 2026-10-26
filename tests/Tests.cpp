@@ -1,3 +1,4 @@
+#include <limits>
 // Headless tests: run with `ISFXTests` (ctest). Every check prints PASS/FAIL; exit code = failures.
 #include "../Source/Model.h"
 #include "../Source/Media.h"
@@ -507,7 +508,7 @@ static void testRender()
     for (auto& d : sequenceParams())
     {
         juce::String id (d.id);
-        if (id == "lutMix" || id == "grainSize" || id == "trails" || id == "sharpen" || id == "letterboxRatio") continue;   // modifiers / need motion or texture (tested below)
+        if (id == "lutMix" || id == "bf2Warp" || id == "grainSize" || id == "trails" || id == "sharpen" || id == "letterboxRatio") continue;   // modifiers / need motion or texture (tested below)
         Sequence sq = s; float v = d.def > 0.5f * (d.min + d.max) ? d.min : d.max;
         if (id == "contrast" || id == "saturation") v = d.max;
         sq.fx.set (id, v);
@@ -1069,7 +1070,6 @@ static void testStabilizeAndAudio()
     CHECK (cx > 0.8, "stabilizer moves the image against the shake (corr " << cx << ")");
     CHECK (cr > 0.6, "stabilizer counter-rotates against the wobble (corr " << cr << ")");
     CHECK (fix.zoom > 1.0f && fix.zoom < 1.4f, "stabilizer crop-in " << fix.zoom);
-    job.output.deleteFile();
 
     // audio: fades and a volume line shape the gain; auto-duck drops other sound under the song
     Clip a; a.length = secToTicks (4); a.volume = 1.0f; a.fadeIn = secToTicks (1); a.fadeOut = secToTicks (1);
@@ -1093,6 +1093,30 @@ static void testStabilizeAndAudio()
     const float ducked = L[100];
     CHECK (both > songOnly * 1.9f && std::abs (ducked - songOnly * (1.0f + std::pow (10.0f, -12.0f / 20.0f))) < 0.01f,
            "auto-duck: video sound drops 12 dB under the song (" << songOnly << " / " << both << " / " << ducked << ")");
+}
+
+static void testReversePlayback()
+{
+    // reversed clip in live playback: frames come back in descending order, close to the request, without per-frame GOP re-decodes
+    auto file = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("isfx_shake.mp4");
+    PrefetchDecoder pre; pre.reverse = true; juce::String err;
+    CHECK (pre.open (file, 180, err), "open reverse decoder " << err);
+    const Ticks fd = secToTicks (1.0 / 24);
+    int good = 0, n = 0; double worst = 0; Ticks last = std::numeric_limits<Ticks>::max(); bool mono = true;
+    const double t0 = juce::Time::getMillisecondCounterHiRes();
+    for (Ticks t = secToTicks (2.9); t > 0; t -= fd, ++n)
+    {
+        const double a = juce::Time::getMillisecondCounterHiRes();
+        auto f = pre.get (t, 40);
+        worst = std::max (worst, juce::Time::getMillisecondCounterHiRes() - a);
+        if (f != nullptr && std::llabs (f->pts - t) <= fd) ++good;
+        if (f != nullptr) { mono = mono && f->pts <= last; last = f->pts; }
+        juce::Thread::sleep (5);
+    }
+    const double ms = juce::Time::getMillisecondCounterHiRes() - t0;
+    CHECK (mono && good >= n * 9 / 10, "reverse playback serves frames backwards (" << good << "/" << n << " on time)");
+    file.deleteFile();
+    CHECK (ms < n * 25.0, "reverse playback keeps up (" << ms / n << " ms/frame, worst wait " << worst << " ms)");
 }
 
 int main (int argc, char** argv)
@@ -1145,6 +1169,7 @@ int main (int argc, char** argv)
     testLut();
     testExport();
     testStabilizeAndAudio();
+    testReversePlayback();
     testTextClip();
     testRender();
     testAutoCutAndPresets();

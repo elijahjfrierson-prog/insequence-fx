@@ -362,6 +362,7 @@ MainComponent::MainComponent()
     timeline.onSyncClips = [this] (const juce::StringArray& ids) { syncClips (ids); };
     timeline.onTrackPlugins = [this] (int tr) { trackPluginsMenu (tr); };
     timeline.onStabilize = [this] (const juce::StringArray& ids, float sm) { stabilizeClips (ids, sm); };
+    timeline.onSliceCuts = [this] (const juce::StringArray& ids) { sliceAtCuts (ids); };
     player.setTrackFx (&trackRacks);
     media.onSetSong = [this] (const juce::String& id) { setSong (id); };
     media.onRelink = [this] (const juce::String& id) { relink (id); };
@@ -840,6 +841,63 @@ void MainComponent::syncClips (const juce::StringArray& ids)
                         + (weak > 0 ? ", " + juce::String (weak) + " not confidently matched (left in place)" : juce::String())
                         + (skipped > 0 ? ", " + juce::String (skipped) + " skipped (no sound, locked, reversed or speed changed)" : juce::String()),
                         juce::dontSendNotification);
+        refresh (true);
+    });
+}
+
+void MainComponent::sliceAtCuts (const juce::StringArray& ids)
+{
+    struct Job { juce::String clipId; juce::File file; Ticks a, b; };
+    std::vector<Job> jobs;
+    for (auto& id : ids)
+        if (auto* c = st.project.seq().findClip (id))
+        {
+            auto* m = st.project.findMedia (c->mediaId);
+            if (m == nullptr || m->missing || m->kind != MediaKind::Video || c->locked || c->ramped() || c->text.isNotEmpty()) continue;
+            const Ticks a = (Ticks) std::llround (c->srcPos (c->start)), b = (Ticks) std::llround (c->srcPos (c->end()));
+            jobs.push_back ({ c->id, juce::File (m->path), std::min (a, b), std::max (a, b) });
+        }
+    if (jobs.empty()) { showMsg ("Slice at cuts", "Pick video clips (not locked or speed-ramped)."); return; }
+    auto out = std::make_shared<std::vector<std::pair<juce::String, std::vector<Ticks>>>>();
+    runTask ("Finding cuts", [jobs, out] (ProgressCb prog, std::function<bool()> cancel)
+    {
+        for (size_t ji = 0; ji < jobs.size() && ! cancel(); ++ji)
+        {
+            auto& j = jobs[ji];
+            const auto label = "Finding cuts in clip " + juce::String ((int) ji + 1) + " of " + juce::String ((int) jobs.size());
+            out->push_back ({ j.clipId, detectCuts (j.file, j.a, j.b, cancel, [&] (double x) { prog (((double) ji + x) / (double) jobs.size(), label); }) });
+        }
+    }, [this, out]
+    {
+        st.edit ("Slice at cuts");
+        auto& S = st.project.seq();
+        int pieces = 0;
+        for (auto& [id, cuts] : *out)
+        {
+            auto* c = S.findClip (id);
+            if (c == nullptr || cuts.empty()) continue;
+            const int track = c->track; const Ticks c0 = c->start, c1 = c->end();
+            const double s0 = c->srcPos (c0), s1 = c->srcPos (c1);
+            std::vector<Ticks> at;
+            for (auto src : cuts)
+            {
+                const double f = (src - s0) / (s1 - s0);
+                const Ticks t = quantizeToFrame (c0 + (Ticks) std::llround (f * (double) (c1 - c0)), st.project.fps);
+                if (t > c0 && t < c1) at.push_back (t);
+            }
+            std::sort (at.begin(), at.end());
+            at.erase (std::unique (at.begin(), at.end()), at.end());
+            for (auto t : at)
+                for (auto& k : S.clips)
+                    if (k.track == track && k.start < t && k.end() > t && k.start >= c0 && k.end() <= c1)
+                    {
+                        if (splitAt (S, t, { k.id })) ++pieces;
+                        break;
+                    }
+        }
+        S.sortClips();
+        status.setText (pieces > 0 ? juce::String (pieces) + " cuts found and sliced. Every shot is its own clip now."
+                                   : juce::String ("No hard cuts found in that clip."), juce::dontSendNotification);
         refresh (true);
     });
 }

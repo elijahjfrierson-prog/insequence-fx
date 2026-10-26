@@ -1237,7 +1237,14 @@ void Timeline::clipMenu (const juce::String& id)
         au.addItem (709, "Mute clip sound", ! lk && c->volume > 0.0f);
         au.addSeparator();
         au.addItem (710, "Auto-duck all other sound under the song (-12 dB)", st.project.songId.isNotEmpty(), st.project.seq().duckDb < 0.0f);
+        if (am->kind == MediaKind::Video && video)
+        {
+            au.addSeparator();
+            au.addItem (711, "Separate audio onto its own track (video goes silent)", ! lk);
+        }
         m.addSubMenu (many ? "Audio (" + juce::String (st.selected.size()) + " clips)" : juce::String ("Audio"), au);
+        if (am->kind == MediaKind::Video && video)
+            m.addItem (712, "Slice at its cuts (finds the edits inside this video)", ! lk && ! c->ramped());
     }
     {
         juce::PopupMenu stab;
@@ -1401,6 +1408,52 @@ void Timeline::clipMenu (const juce::String& id)
                 st.selected.clear();
             }
             else st.selected = keep;
+            if (onEdited) onEdited();
+            repaint();
+            return;
+        }
+        if (r == 712 && onSliceCuts)
+        {
+            auto ids = sel;
+            juce::MessageManager::callAsync ([this, ids] { onSliceCuts (ids); });
+            return;
+        }
+        if (r == 711)
+        {
+            st.edit ("Separate audio");
+            std::vector<Clip> adds;
+            for (auto& i : sel)
+                if (auto* k = sq.findClip (i); k != nullptr && ! k->locked && k->text.isEmpty())
+                    if (auto* md = st.project.findMedia (k->mediaId); md != nullptr && md->kind == MediaKind::Video && md->hasAudio
+                        && k->track >= 0 && k->track < (int) sq.tracks.size() && sq.tracks[(size_t) k->track].kind == TrackKind::Video)
+                    {
+                        Clip a = *k; a.id = newId(); a.fx = {}; a.group = 0; a.transIn = TransitionType::Cut; a.transLen = 0;
+                        for (auto it = a.keys.begin(); it != a.keys.end();) it = (it->first == "speed" || it->first == "volume") ? std::next (it) : a.keys.erase (it);
+                        a.name = (k->name.isNotEmpty() ? k->name : md->name) + " (audio)";
+                        k->volume = 0.0f; k->keys.erase ("volume"); k->fadeIn = k->fadeOut = 0;
+                        adds.push_back (a);
+                    }
+            for (auto& a : adds)
+            {
+                int tr = -1;
+                for (int ti = 0; ti < (int) sq.tracks.size() && tr < 0; ++ti)
+                {
+                    if (sq.tracks[(size_t) ti].kind != TrackKind::Audio || ti == 0 && st.project.songId.isNotEmpty()) continue;
+                    bool free = true;
+                    for (auto& o : sq.clips) if (o.track == ti && o.start < a.end() && a.start < o.end()) { free = false; break; }
+                    for (auto& o : adds) if (&o != &a && o.track == ti && o.start < a.end() && a.start < o.end()) { free = false; break; }
+                    if (free) tr = ti;
+                }
+                if (tr < 0)
+                {
+                    int n = 0; for (auto& T : sq.tracks) if (T.kind == TrackKind::Audio) ++n;
+                    Track t; t.kind = TrackKind::Audio; t.name = "A" + juce::String (n + 1);
+                    sq.tracks.push_back (t); tr = (int) sq.tracks.size() - 1;
+                }
+                a.track = tr;
+            }
+            for (auto& a : adds) sq.clips.push_back (a);
+            sq.sortClips();
             if (onEdited) onEdited();
             repaint();
             return;

@@ -532,7 +532,7 @@ void interpolateFrames (const Frame& a, const Frame& b, float f, bool flow, Fram
 }
 
 const Frame* Renderer::frameFor (const Project& p, const juce::String& mediaId, Ticks srcT, int decodeH, int& rotation, bool* opaque, bool primeOnly,
-                                 const Frame** after)
+                                 const Frame** after, bool reverse)
 {
     if (after) *after = nullptr;
     auto* m = p.findMedia (mediaId);
@@ -540,7 +540,8 @@ const Frame* Renderer::frameFor (const Project& p, const juce::String& mediaId, 
     const bool useProxy = m->kind == MediaKind::Video && decodeH > 0 && decodeH <= kProxyHeight
                           && m->proxyPath.isNotEmpty() && juce::File (m->proxyPath).existsAsFile();
     const bool async = live && m->kind == MediaKind::Video;
-    auto key = mediaId + "@" + juce::String (decodeH) + (useProxy ? "p" : "") + (async ? "L" : "");
+    reverse = reverse && async;
+    auto key = mediaId + "@" + juce::String (decodeH) + (useProxy ? "p" : "") + (async ? "L" : "") + (reverse ? "R" : "");
     // Free decoders that haven't been on screen for a while (RAM), and keep the open count bounded. Never evict a
     // source used during this render: its frame may still be waiting to be composited.
     if ((useClock & 63) == 0)
@@ -582,12 +583,14 @@ const Frame* Renderer::frameFor (const Project& p, const juce::String& mediaId, 
         else if (async)
         {
             src->pre = std::make_unique<PrefetchDecoder>();
+            src->pre->reverse = reverse;
             src->fps = m->fps > 0 ? m->fps : 30.0;
             juce::String err;
             if (useProxy && src->pre->open (juce::File (m->proxyPath), decodeH, err)) src->rotation = m->rotation;
             else
             {
                 src->pre = std::make_unique<PrefetchDecoder>();
+                src->pre->reverse = reverse;
                 if (! src->pre->open (f, decodeH, err)) src->failed = true;
                 else src->rotation = src->pre->rotation();
             }
@@ -746,7 +749,7 @@ bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int 
     const float minWH = (float) std::min (W, H);
 
     // global "camera": kick zoom + shake
-    float camZoom = 1.0f + sv ("kickZoom") * 0.07f * be.kick;
+    float camZoom = (1.0f + sv ("kickZoom") * 0.07f * be.kick) * (1.0f + sv ("shrinkGrow") * 0.22f * (be.kick - 0.3f));
     float shakeAmt = sv ("shake") * be.kick;
     float camX = (hash3 (be.kickIdx, 1, 3) - 0.5f) * 0.035f * W * shakeAmt;
     float camY = (hash3 (be.kickIdx, 2, 5) - 0.5f) * 0.035f * H * shakeAmt;
@@ -775,7 +778,7 @@ bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int 
                 soon.push_back (&c);
         std::sort (soon.begin(), soon.end(), [] (const Clip* a, const Clip* b) { return a->start < b->start; });
         int rr = 0;
-        for (size_t i = 0; i < soon.size() && i < 3; ++i) frameFor (p, soon[i]->mediaId, soon[i]->srcAt (soon[i]->start), decodeH, rr, nullptr, true);
+        for (size_t i = 0; i < soon.size() && i < 3; ++i) frameFor (p, soon[i]->mediaId, soon[i]->srcAt (soon[i]->start), soon[i]->reverse ? std::min (decodeH, kProxyHeight) : decodeH, rr, nullptr, true, nullptr, soon[i]->reverse);
     }
     {
         // a full-frame opaque layer hides everything under it: skip decoding/drawing those (keeps deep stacks cheap)
@@ -784,14 +787,14 @@ bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int 
         {
             auto* m = p.findMedia (c.mediaId);
             if (m == nullptr || m->missing || m->kind == MediaKind::Audio || c.opacity < 1.0f) return false;
-            if (fxValue (c.fx, CPo, "opacity") < 1.0f || fxValue (c.fx, CPo, "lensCurve") != 0 || ! c.keys.empty()) return false;
+            if (fxValue (c.fx, CPo, "opacity") < 1.0f || fxValue (c.fx, CPo, "lensCurve") != 0 || fxValue (c.fx, CPo, "xfRipple") > 0 || fxValue (c.fx, CPo, "xfWarble") > 0 || fxValue (c.fx, CPo, "xfTwist") != 0 || ! c.keys.empty()) return false;
             if (c.transIn != TransitionType::Cut && c.transLen > 0 && t < c.start + c.transLen) return false;
             auto v = [&] (const char* id) { return fxValue (c.fx, CPo, id); };
             int rf = (int) std::lround (v ("reframe"));
             return (rf == 0 || rf == 2) && v ("blend") < 0.5f && v ("chromaKey") <= 0 && v ("lumaKey") <= 0 && v ("maskShape") < 0.5f
                 && v ("scale") >= 1 && v ("scaleX") >= 1 && v ("scaleY") >= 1 && v ("posX") == 0 && v ("posY") == 0 && v ("rotation") == 0
                 && v ("cropL") <= 0 && v ("cropR") <= 0 && v ("cropT") <= 0 && v ("cropB") <= 0
-                && [&] { int rr = 0; bool op = false; return frameFor (p, c.mediaId, c.srcAt (t), decodeH, rr, &op) != nullptr && op; }();
+                && [&] { int rr = 0; bool op = false; return frameFor (p, c.mediaId, c.srcAt (t), c.reverse && live ? std::min (decodeH, kProxyHeight) : decodeH, rr, &op, false, nullptr, c.reverse) != nullptr && op; }();
         };
         for (int i = (int) active.size() - 1; i > 0; --i)
             if (covers (*active[(size_t) i])) { active.erase (active.begin(), active.begin() + i); break; }
@@ -812,7 +815,7 @@ bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int 
         const float postT = fxValue (c.fx, clipParams(), "posterizeTime");
         const Ticks tq = postT >= 1 ? c.start + (t - c.start) / (Ticks) (kFlicks / postT) * (Ticks) (kFlicks / postT) : t;
         const double srcPosT = c.srcPos (tq);
-        const Frame* fr = c.text.isNotEmpty() ? textFrame (c, W, H) : frameFor (p, c.mediaId, (Ticks) std::llround (srcPosT), decodeH, rot, nullptr, false, slowMo ? &fB : nullptr);
+        const Frame* fr = c.text.isNotEmpty() ? textFrame (c, W, H) : frameFor (p, c.mediaId, (Ticks) std::llround (srcPosT), c.reverse && live ? std::min (decodeH, kProxyHeight) : decodeH, rot, nullptr, false, slowMo ? &fB : nullptr, c.reverse);
         if (fr == nullptr) return;
         Frame tween;
         if (fB != nullptr && fr->pts >= 0 && fB->pts > fr->pts && fB->w == fr->w && fB->h == fr->h)
@@ -835,7 +838,8 @@ bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int 
             }
             fr = &styl;
         }
-        const float lens = cv ("lensCurve");
+        const float lens = cv ("lensCurve"), xRip = cv ("xfRipple"), xWar = cv ("xfWarble"), xTw = cv ("xfTwist");
+        const bool xform = xRip > 0 || xWar > 0 || xTw != 0;
         float rw = (float) (rot == 90 || rot == 270 ? fr->h : fr->w), rh = (float) (rot == 90 || rot == 270 ? fr->w : fr->h);
         int reframe = (int) std::lround (cv ("reframe"));
         float sFill = std::max (W / rw, H / rh), sFit = std::min (W / rw, H / rh);
@@ -894,6 +898,21 @@ bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int 
                     {
                         const float nx = ux / (rw * 0.5f), ny = uy / (rh * 0.5f), k = 1.0f - lens * 0.5f * (nx * nx + ny * ny);
                         ux *= k; uy *= k;
+                    }
+                    if (xform)
+                    {
+                        const float nx = ux / (rh * 0.5f), ny = uy / (rh * 0.5f), rr = std::sqrt (nx * nx + ny * ny);
+                        if (xTw != 0)
+                        {
+                            const float an = xTw * 2.5f * std::max (0.0f, 1.0f - rr * 0.8f), ca = std::cos (an), sa = std::sin (an);
+                            const float tx = ux * ca - uy * sa; uy = ux * sa + uy * ca; ux = tx;
+                        }
+                        if (xRip > 0) { const float d = 1.0f + std::sin (rr * 22.0f - (float) T * 7.0f) * xRip * 0.05f; ux *= d; uy *= d; }
+                        if (xWar > 0)
+                        {
+                            const float wx = std::sin (uy / rh * 28.0f + (float) T * 11.0f) * xWar * 0.02f * rw;
+                            uy += std::cos (ux / rw * 23.0f + (float) T * 9.0f) * xWar * 0.015f * rh; ux += wx;
+                        }
                     }
                     if (trMirror > 0) { float f = trDir < 2 ? std::abs (ux) : ux; ux = mixf (ux, f, trMirror); if (trDir >= 2) uy = mixf (uy, std::abs (uy), trMirror); }
                     if (cropped)
@@ -1048,7 +1067,12 @@ bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int 
 
     // ---- warps: kaleidoscope + liquid
     float kal = sv ("kaleido"), liq = sv ("liquid");
-    if (kal > 0 || liq > 0)
+    float bfw = 0;   // Black Flash 2: ripple + warp punch riding the snare strobe
+    if (const float bf2 = sv ("blackFlash2"); bf2 > 0 && be.sinceSnare < 0.3)
+        bfw = bf2 * (0.3f + 1.4f * sv ("bf2Warp")) * (float) std::exp (-be.sinceSnare / 0.12);
+    const float sRip = sv ("xfRipple"), sWar = sv ("xfWarble"), sTw = sv ("xfTwist"), sLens = sv ("xfLens");
+    const bool sXf = sRip > 0 || sWar > 0 || sTw != 0 || sLens != 0;
+    if (kal > 0 || liq > 0 || bfw > 0.002f || sXf)
     {
         auto src = img;
         float spin = (float) T * 0.25f;
@@ -1061,6 +1085,32 @@ bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int 
                     float k = liq * (1 + be.kick);
                     sx += std::sin ((float) y / H * 11 + (float) T * 2.1f) * k * 0.025f * W;
                     sy += std::cos ((float) x / W * 9 + (float) T * 1.7f) * k * 0.02f * H;
+                }
+                if (sXf)
+                {
+                    float dx = sx - W * 0.5f, dy = sy - H * 0.5f;
+                    const float rr = std::sqrt (dx * dx + dy * dy) / (minWH * 0.5f);
+                    if (sTw != 0)
+                    {
+                        const float an = sTw * 2.5f * std::max (0.0f, 1.0f - rr * 0.8f), ca = std::cos (an), sa = std::sin (an);
+                        const float tx = dx * ca - dy * sa; dy = dx * sa + dy * ca; dx = tx;
+                    }
+                    float k = 1.0f - sLens * 0.35f * std::max (0.0f, 1.0f - rr * rr * 0.5f);
+                    if (sRip > 0) k *= 1.0f + std::sin (rr * 22.0f - (float) T * 7.0f) * sRip * 0.05f;
+                    dx *= k; dy *= k;
+                    if (sWar > 0)
+                    {
+                        const float wx = std::sin (dy / H * 28.0f + (float) T * 11.0f) * sWar * 0.02f * W;
+                        dy += std::cos (dx / W * 23.0f + (float) T * 9.0f) * sWar * 0.015f * H; dx += wx;
+                    }
+                    sx = W * 0.5f + dx; sy = H * 0.5f + dy;
+                }
+                if (bfw > 0.002f)
+                {
+                    const float dx = sx - W * 0.5f, dy = sy - H * 0.5f, rr = std::sqrt (dx * dx + dy * dy) / minWH;
+                    const float k = 1.0f - bfw * 0.1f + std::sin (rr * 34.0f - (float) be.sinceSnare * 55.0f) * bfw * 0.035f
+                                    + bfw * 0.06f * rr * rr;
+                    sx = W * 0.5f + dx * k; sy = H * 0.5f + dy * k;
                 }
                 float out[3]; sampleBuf (src, W, H, sx, sy, out);
                 if (kal > 0)

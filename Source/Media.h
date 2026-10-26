@@ -47,6 +47,7 @@ public:
     bool isOpen() const { return fmt != nullptr; }
     // returns the frame showing at source time t (the last frame with pts <= t)
     bool frameAt (Ticks t, Frame& out);
+    bool seekTo (Ticks t);
     const Frame* frameRef (Ticks t);  // valid until the next call
     const Frame* peekNext();          // the frame after the last frameRef (no seek), for slow-motion interpolation
     bool readNext (Frame& out) { return isOpen() && ! eof && decodeNext (out); }
@@ -58,7 +59,6 @@ private:
     bool decodeNext (Frame& out);
     bool receive (AVFrame* into, Ticks& pts);
     void convert (const AVFrame* src, Frame& out);
-    bool seekTo (Ticks t);
     AVFormatContext* fmt = nullptr;
     AVCodecContext* dec = nullptr;
     AVFrame* frame = nullptr;
@@ -104,6 +104,12 @@ private:
     Ticks target = -1;
     bool atEnd = false;
     size_t maxAhead = 6;     // shrinks for big frames so RAM stays bounded (~48 MB per source)
+    size_t frameBytes = 0;
+    void runReverse (Ticks t);
+public:
+    // Reversed clips: decode in short forward chunks just below the playhead and serve them backwards, so a long-GOP
+    // file costs one seek per chunk instead of one seek + GOP re-decode per frame.
+    bool reverse = false;
 };
 
 juce::Image frameToImage (const Frame& f, int rotation);

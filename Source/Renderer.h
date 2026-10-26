@@ -69,7 +69,7 @@ private:
     int late = 0;
     juce::uint32 useClock = 0;
     const Frame* frameFor (const Project& p, const juce::String& mediaId, Ticks srcT, int decodeH, int& rotation, bool* opaque = nullptr,
-                          bool primeOnly = false, const Frame** after = nullptr);
+                          bool primeOnly = false, const Frame** after = nullptr, bool reverse = false);
     std::shared_ptr<Lut3D> lutFor (const juce::String& path);
 
     std::map<juce::String, std::unique_ptr<Source>> sources;
