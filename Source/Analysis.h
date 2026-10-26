@@ -38,4 +38,6 @@ SyncResult syncSegment (const std::vector<float>& song, const std::vector<float>
 
 // Shot quality 0..1 from a few decoded frames (sharpness + exposure); used by the generator.
 float scoreShotQuality (const juce::File& video);
+// "best moments" curve at 4 Hz: motion energy + sharpness, normalised per video to 0..1 (background thread)
+std::vector<float> scoreMoments (const juce::File& video, std::function<bool()> cancel = {});
 }

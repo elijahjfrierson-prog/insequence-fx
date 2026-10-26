@@ -10,6 +10,7 @@ struct ImportResult
     std::map<juce::String, Waveform> waves;
     std::map<juce::String, std::shared_ptr<const std::vector<float>>> stereo;
     std::map<juce::String, juce::String> proxies;
+    std::map<juce::String, std::vector<float>> moments;
     juce::String newSongId;
     SongAnalysis song;
     std::shared_ptr<std::vector<float>> songMono;

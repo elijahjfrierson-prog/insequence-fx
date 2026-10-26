@@ -32,6 +32,9 @@ struct ClipGeom
 };
 bool clipGeometry (const Project&, const Clip&, float W, float H, ClipGeom&);
 void applyLayout (const Project& p, Clip& c, int slot);
+void applyLayoutRect (const Project& p, Clip& c, float x, float y, float w, float h);   // fit the clip into a frame rectangle (0..1) and mask to it
+// collages over the given clips (top track first): 0 = 3x3 grid, 1 = auto grid, 2 = picture-in-picture, 3 = film strip
+void applyCollage (const Project& p, std::vector<Clip*> clips, int kind);
 
 // Composites a sequence frame: tracks + transforms + keys/masks + blend modes, then grade, LUT, film,
 // beat-reactive, acid and generated overlay FX. Preview and export use this same code path.

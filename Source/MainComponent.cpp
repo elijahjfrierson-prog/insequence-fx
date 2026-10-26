@@ -59,6 +59,7 @@ ImportResult decodeFiles (const juce::Array<juce::File>& files, const juce::Stri
         {
             r.thumbs[m.id] = makeThumbnail (f, secToTicks (std::min (1.0, ticksToSec (m.duration) / 2)), 72);
             m.quality = scoreShotQuality (f);
+            m.moments = scoreMoments (f);
             if (m.hasAudio)
             {
                 std::vector<float> mono;
@@ -855,74 +856,18 @@ void MainComponent::stabilizeClips (const juce::StringArray& ids, float smoothSe
             jobs.push_back ({ c->id, juce::File (m->path), c->srcIn, (Ticks) ((double) c->length * c->speed), c->speed });
         }
     if (jobs.empty()) { showMsg ("Warp Stabilizer", "Pick video clips (not reversed, locked or speed-ramped)."); return; }
-    struct Res { juce::String clipId; std::vector<std::pair<Ticks, juce::Point<float>>> pts; float zoom = 1; };
+    struct Res { juce::String clipId; ShakeFix fix; };
     auto out = std::make_shared<std::vector<Res>>();
     runTask ("Warp Stabilizer", [jobs, out, smoothSec] (ProgressCb prog, std::function<bool()> cancel)
     {
         for (size_t ji = 0; ji < jobs.size() && ! cancel(); ++ji)
         {
             auto& j = jobs[ji];
-            VideoDecoder d; juce::String err;
-            if (! d.open (j.file, 180, err)) continue;
-            const int AW = 160, AH = 90;
-            auto gray = [&] (const Frame& f, std::vector<float>& g)
-            {
-                g.assign ((size_t) AW * AH, 0);
-                for (int y = 0; y < AH; ++y)
-                    for (int x = 0; x < AW; ++x)
-                    {
-                        const auto* px = &f.rgba[((size_t) (y * f.h / AH) * f.w + (size_t) (x * f.w / AW)) * 4];
-                        g[(size_t) y * AW + x] = 0.299f * px[0] + 0.587f * px[1] + 0.114f * px[2];
-                    }
-            };
-            // integer shift of b relative to a: coarse +-8 px every 2nd pixel, then +-1 refine at full sampling
-            auto shift = [&] (const std::vector<float>& a, const std::vector<float>& b, int& bx, int& by)
-            {
-                auto sad = [&] (int dx, int dy, int step)
-                {
-                    double s = 0;
-                    for (int y = 12; y < AH - 12; y += step)
-                        for (int x = 12; x < AW - 12; x += step)
-                            s += std::abs (a[(size_t) y * AW + x] - b[(size_t) (y + dy) * AW + x + dx]);
-                    return s;
-                };
-                double best = 1e30; bx = by = 0;
-                for (int dy = -8; dy <= 8; dy += 2) for (int dx = -8; dx <= 8; dx += 2) if (auto s = sad (dx, dy, 2); s < best) { best = s; bx = dx; by = dy; }
-                const int cx = bx, cy = by; best = 1e30;
-                for (int dy = cy - 1; dy <= cy + 1; ++dy) for (int dx = cx - 1; dx <= cx + 1; ++dx) if (auto s = sad (dx, dy, 1); s < best) { best = s; bx = dx; by = dy; }
-            };
-            Frame f; std::vector<float> prev, cur;
-            std::vector<Ticks> ts; std::vector<float> px, py;
-            if (! d.frameAt (j.srcIn, f)) continue;
-            gray (f, prev); ts.push_back (f.pts); px.push_back (0); py.push_back (0);
-            while (! cancel() && d.readNext (f))
-            {
-                if (f.pts > j.srcIn + j.srcLen) break;
-                gray (f, cur);
-                int dx = 0, dy = 0; shift (prev, cur, dx, dy);
-                ts.push_back (f.pts); px.push_back (px.back() - (float) dx); py.push_back (py.back() - (float) dy);
-                std::swap (prev, cur);
-                prog (((double) ji + (double) (f.pts - j.srcIn) / std::max<Ticks> (1, j.srcLen)) / jobs.size(),
-                      "Stabilizing clip " + juce::String ((int) ji + 1) + " of " + juce::String ((int) jobs.size()));
-            }
-            if (ts.size() < 3) continue;
-            const double fps = (double) (ts.size() - 1) / std::max (1e-6, ticksToSec (ts.back() - ts.front()));
-            const int R = std::max (1, (int) std::lround (smoothSec * fps / 2));
-            const int n = (int) ts.size();
             Res res; res.clipId = j.clipId;
-            float mx = 0, my = 0;
-            std::vector<juce::Point<float>> corr ((size_t) n);
-            for (int i = 0; i < n; ++i)
-            {
-                double sx = 0, sy = 0; int c = 0;
-                for (int k = std::max (0, i - R); k <= std::min (n - 1, i + R); ++k) { sx += px[(size_t) k]; sy += py[(size_t) k]; ++c; }
-                corr[(size_t) i] = { (float) (sx / c - px[(size_t) i]) / AW, (float) (sy / c - py[(size_t) i]) / AH };
-                mx = std::max (mx, std::abs (corr[(size_t) i].x)); my = std::max (my, std::abs (corr[(size_t) i].y));
-            }
-            res.zoom = juce::jlimit (1.0f, 1.35f, 1.0f + 2.0f * std::max (mx, my) + 0.01f);
-            for (int i = 0; i < n; i += 2)
-                res.pts.push_back ({ (Ticks) ((double) (ts[(size_t) i] - j.srcIn) / j.speed), corr[(size_t) i] });
-            out->push_back (std::move (res));
+            const auto label = "Stabilizing clip " + juce::String ((int) ji + 1) + " of " + juce::String ((int) jobs.size());
+            if (analyzeShake (j.file, j.srcIn, j.srcLen, j.speed, smoothSec, res.fix, cancel,
+                              [&] (double x) { prog (((double) ji + x) / (double) jobs.size(), label); }))
+                out->push_back (std::move (res));
         }
     }, [this, out]
     {
@@ -933,15 +878,18 @@ void MainComponent::stabilizeClips (const juce::StringArray& ids, float smoothSe
             auto* c = st.project.seq().findClip (r.clipId);
             if (c == nullptr) continue;
             const float old = c->fx.get ("stabZoom", 1.0f);
-            const float sc = c->fx.get ("scale", 1.0f) / std::max (0.01f, old) * r.zoom;
-            c->fx.set ("scale", sc); c->fx.set ("stabZoom", r.zoom); c->fx.set ("stab", 1.0f);
-            auto& kx = c->keys["posX"]; auto& ky = c->keys["posY"]; kx.clear(); ky.clear();
-            for (auto& [t, v] : r.pts)
+            const float sc = c->fx.get ("scale", 1.0f) / std::max (0.01f, old) * r.fix.zoom;
+            c->fx.set ("scale", sc); c->fx.set ("stabZoom", r.fix.zoom); c->fx.set ("stab", 1.0f);
+            auto& kx = c->keys["posX"]; auto& ky = c->keys["posY"]; auto& kr = c->keys["rotation"]; kx.clear(); ky.clear(); kr.clear();
+            const float baseRot = c->fx.get ("rotation", 0.0f);
+            for (size_t i = 0; i < r.fix.t.size(); i += 2)
             {
+                const Ticks t = r.fix.t[i];
                 if (t < 0 || t > c->length) continue;
                 Clip::Key a; a.t = t; a.interp = 0;
-                a.v = juce::jlimit (-1.0f, 1.0f, 2.0f * sc * v.x); kx.push_back (a);
-                a.v = juce::jlimit (-1.0f, 1.0f, 2.0f * sc * v.y); ky.push_back (a);
+                a.v = juce::jlimit (-1.0f, 1.0f, 2.0f * sc * r.fix.dx[i]); kx.push_back (a);
+                a.v = juce::jlimit (-1.0f, 1.0f, 2.0f * sc * r.fix.dy[i]); ky.push_back (a);
+                a.v = baseRot + r.fix.rot[i]; kr.push_back (a);
             }
             ++ok;
         }
@@ -964,11 +912,18 @@ static bool writeFcpXml (const Project& p, const Sequence& s, double fps, int W,
     {
         auto* m = p.findMedia (c.mediaId);
         if (m == nullptr) return juce::String();
+        // speed / reverse / ramps: source range actually used, plus Premiere's Time Remap speed (ramps become their average speed)
+        const double sA = c.srcPos (c.start), sB = c.srcPos (c.end());
+        const juce::int64 durF = std::max<juce::int64> (1, fr (c.end()) - fr (c.start));
+        const juce::int64 srcIn = fr ((Ticks) std::min (sA, sB));
+        const juce::int64 srcOut = std::max (srcIn + 1, fr ((Ticks) std::max (sA, sB)));
+        const double spd = (double) (srcOut - srcIn) / (double) durF * 100.0;
+        const bool rev = sB < sA;
         juce::String x;
         x << "<clipitem id=\"ci" << ++ci << "\"><name>" << esc (m->name) << "</name><enabled>" << (c.enabled ? "TRUE" : "FALSE") << "</enabled>"
           << "<duration>" << fr (m->duration) << "</duration>" << rate
           << "<start>" << fr (c.start) << "</start><end>" << fr (c.end()) << "</end>"
-          << "<in>" << fr (c.srcIn) << "</in><out>" << fr (c.srcIn) + (fr (c.end()) - fr (c.start)) << "</out>";
+          << "<in>" << srcIn << "</in><out>" << srcOut << "</out>";
         if (written.insert (m->id).second)
             x << "<file id=\"f-" << esc (m->id) << "\"><name>" << esc (m->name) << "</name><pathurl>" << esc (juce::URL (juce::File (m->path)).toString (false))
               << "</pathurl>" << rate << "<duration>" << fr (m->duration) << "</duration><media>"
@@ -977,6 +932,15 @@ static bool writeFcpXml (const Project& p, const Sequence& s, double fps, int W,
         else
             x << "<file id=\"f-" << esc (m->id) << "\"/>";
         if (audio) x << "<sourcetrack><mediatype>audio</mediatype><trackindex>1</trackindex></sourcetrack>";
+        if (std::abs (spd - 100.0) > 0.5 || rev)
+            x << "<filter><effect><name>Time Remap</name><effectid>timeremap</effectid><effectcategory>motion</effectcategory><effecttype>motion</effecttype>"
+              << "<mediatype>" << (audio ? "audio" : "video") << "</mediatype>"
+              << "<parameter authoringApp=\"PremierePro\"><parameterid>variablespeed</parameterid><name>variablespeed</name><valuemin>0</valuemin><valuemax>1</valuemax><value>0</value></parameter>"
+              << "<parameter authoringApp=\"PremierePro\"><parameterid>speed</parameterid><name>speed</name><valuemin>-100000</valuemin><valuemax>100000</valuemax><value>"
+              << juce::String (rev ? -spd : spd, 2) << "</value></parameter>"
+              << "<parameter authoringApp=\"PremierePro\"><parameterid>reverse</parameterid><name>reverse</name><value>" << (rev ? "TRUE" : "FALSE") << "</value></parameter>"
+              << "<parameter authoringApp=\"PremierePro\"><parameterid>frameblending</parameterid><name>frameblending</name><value>" << (c.frameInterp > 0 ? "TRUE" : "FALSE") << "</value></parameter>"
+              << "</effect></filter>";
         x << "</clipitem>";
         return x;
     };
@@ -1017,6 +981,7 @@ void MainComponent::loadMediaCaches()
             else
             {
                 res->thumbs[m.id] = makeThumbnail (f, m.kind == MediaKind::Video ? secToTicks (std::min (1.0, ticksToSec (m.duration) / 2)) : 0, 72);
+                if (m.kind == MediaKind::Video && m.moments.empty() && m.id != songId) res->moments[m.id] = scoreMoments (f, cancel);
                 std::vector<float> mono;
                 if (m.kind == MediaKind::Video && m.hasAudio && decodeAudio (f, kAnalysisRate, 1, mono, e)) res->waves[m.id] = buildWaveform (mono, kAnalysisRate);
                 if (m.kind == MediaKind::Video && std::min (m.width, m.height) > kProxyHeight)
@@ -1035,6 +1000,7 @@ void MainComponent::loadMediaCaches()
     }, [this, res]
     {
         for (auto& [k, v] : res->proxies) if (auto* mi = st.project.findMedia (k)) mi->proxyPath = v;
+        for (auto& [k, v] : res->moments) if (auto* mi = st.project.findMedia (k)) mi->moments = v;
         for (auto& [k, v] : res->thumbs) st.thumbs[k] = v;
         for (auto& [k, v] : res->waves) st.waves[k] = v;
         for (auto& [k, v] : res->stereo) st.audio.put (k, v);

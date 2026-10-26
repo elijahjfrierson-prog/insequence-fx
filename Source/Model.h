@@ -85,6 +85,7 @@ struct MediaItem
     float quality = 0.5f;      // shot score 0..1 (sharpness/exposure)
     SyncInfo sync;
     bool missing = false;
+    std::vector<float> moments;   // 4 per second: how good each moment is (motion + sharpness, 0..1); SEQ picks the best ones
 };
 
 // ---- timeline -----------------------------------------------------------------------
@@ -114,6 +115,7 @@ struct Clip
     Ticks end() const { return start + length; }
     bool reverse = false;    // plays the same source range backwards
     bool keep = false;       // pinned: Randomize shot leaves it alone
+    Ticks fadeIn = 0, fadeOut = 0;   // audio fades at the clip edges
     juce::String text, font; // text clip (no media): rendered as a layer, so transforms, effects and keyframes apply
     int frameInterp = 1;     // slow motion between source frames: 0 = nearest frame, 1 = frame blending, 2 = optical flow
     bool ramped() const { auto it = keys.find ("speed"); return it != keys.end() && ! it->second.empty(); }
@@ -129,6 +131,8 @@ struct Clip
 
 // value of a keyframed param at clip-relative time rel (clamped to first/last key)
 float keyValue (const std::vector<Clip::Key>& k, Ticks rel);
+// clip gain at rel: volume (or its "volume" keyframe line) times the edge fades
+float volumeGain (const Clip& c, Ticks rel);
 // writes every keyframed param of c into c.fx at timeline time t
 void applyKeyframes (Clip& c, Ticks t);
 void setKey (Clip& c, const juce::String& param, Ticks rel, float v, int interp = 0);
@@ -156,6 +160,8 @@ struct Sequence
     FxStack fx;              // sequence-wide grade / FX (adjustment layer)
     juce::String style;      // generator style that produced it ("" = manual)
     juce::uint32 seed = 1;
+    float duckDb = 0.0f;      // < 0: every other clip's sound drops by this while a duckKey (song) clip plays
+    juce::String duckKey;
 
     Ticks duration() const;
     Clip* findClip (const juce::String& id);

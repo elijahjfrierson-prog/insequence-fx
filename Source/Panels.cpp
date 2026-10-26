@@ -454,6 +454,7 @@ void FxLibrary::popOut (bool on)
         w->setUsingNativeTitleBar (true);
         w->setContentOwned (new ExampleView (*this), false);
         w->setResizable (true, false);
+        w->setAlwaysOnTop (true);   // clicking back into the editor must not hide it behind the main window
         w->setResizeLimits (240, 160, 4000, 3000);
         w->centreWithSize (760, 460);
         juce::Component::SafePointer<FxLibrary> safe (this);

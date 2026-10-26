@@ -140,6 +140,21 @@ void Timeline::paint (juce::Graphics& g)
                 }
             }
         }
+        if (audio && c.mediaId.isNotEmpty() && r.getWidth() > 6)
+        {   // volume line: 0..2x gain, unity at half height; fades bend it down at the edges
+            juce::Path pl;
+            const float top = (float) r.getY() + 2, hh = (float) r.getHeight() - 4;
+            auto yOf = [&] (float gn) { return top + hh * (1.0f - juce::jlimit (0.0f, 1.0f, gn * 0.5f)); };
+            for (int x = std::max (r.getX(), kHeader); x <= std::min (r.getRight(), W); x += 2)
+            {
+                const Ticks rel = juce::jlimit<Ticks> (0, c.length, secToTicks (xToSec (x)) - c.start);
+                if (pl.isEmpty()) pl.startNewSubPath ((float) x, yOf (volumeGain (c, rel))); else pl.lineTo ((float) x, yOf (volumeGain (c, rel)));
+            }
+            g.setColour (juce::Colours::yellow.withAlpha (0.85f)); g.strokePath (pl, juce::PathStrokeType (1.2f));
+            if (auto it = c.keys.find ("volume"); it != c.keys.end())
+                for (auto& k : it->second)
+                    g.fillEllipse ((float) secToX (ticksToSec (c.start + k.t)) - 3.0f, yOf (k.v) - 3.0f, 6.0f, 6.0f);
+        }
         if (c.transIn != TransitionType::Cut && c.transLen > 0)
         {   // transition span: drag its right edge to make it longer/shorter
             const int xe = std::min (r.getRight(), secToX (ticksToSec (c.start + c.transLen)));
@@ -539,6 +554,29 @@ void Timeline::mouseDown (const juce::MouseEvent& e)
                 return;
             }
 
+    if (e.mods.isAltDown() && ! e.mods.isPopupMenu() && pos.x >= kHeader && pos.y >= kRuler)
+    {   // Alt-click an audio clip's yellow volume line: add a point (or grab the one under the mouse) and drag it
+        int edge = 0;
+        if (auto* hc = clipAt (pos, edge); hc != nullptr && ! hc->locked && hc->mediaId.isNotEmpty() && hc->track >= 0
+                                           && hc->track < (int) s.tracks.size() && s.tracks[(size_t) hc->track].kind == TrackKind::Audio)
+        {
+            st.edit ("Volume point");
+            auto* k = s.findClip (hc->id);
+            const float top = (float) trackY (k->track) + 4, hh = (float) s.tracks[(size_t) k->track].height - 9;
+            const float v = juce::jlimit (0.0f, 2.0f, 2.0f * (1.0f - ((float) pos.y - top) / std::max (1.0f, hh)));
+            Ticks rel = juce::jlimit<Ticks> (0, k->length, t - k->start);
+            auto& ks = k->keys["volume"];
+            if (ks.empty()) setKey (*k, "volume", 0, k->volume, 0), setKey (*k, "volume", k->length, k->volume, 0);
+            for (auto& q : k->keys["volume"])
+                if (std::abs (secToX (ticksToSec (k->start + q.t)) - pos.x) <= 5) { rel = q.t; break; }
+            setKey (*k, "volume", rel, v, 0);
+            dragClip = k->id; dragOrig = rel; drag = Drag::Vol;
+            if (onEdited) onEdited();
+            repaint();
+            return;
+        }
+    }
+
     if (pos.x < kHeader && pos.y >= kRuler)   // track header buttons
     {
         int tr = trackAt (pos.y); if (tr < 0) return;
@@ -830,6 +868,20 @@ void Timeline::mouseDrag (const juce::MouseEvent& e)
                 k->transLen = juce::jlimit (fr, std::max (fr, k->length), dragOrig + (t - dragStart));
                 if (onStatus) onStatus ("Transition " + juce::String (ticksToSec (k->transLen), 2) + " s");
                 if (onEdited) onEdited();
+            }
+            break;
+        case Drag::Vol:
+            if (auto* k = st.project.seq().findClip (dragClip))
+            {
+                auto& ks = k->keys["volume"];
+                ks.erase (std::remove_if (ks.begin(), ks.end(), [&] (const Clip::Key& q) { return q.t == dragOrig; }), ks.end());
+                const float top = (float) trackY (k->track) + 4, hh = (float) st.project.seq().tracks[(size_t) k->track].height - 9;
+                const float v = juce::jlimit (0.0f, 2.0f, 2.0f * (1.0f - ((float) pos.y - top) / std::max (1.0f, hh)));
+                dragOrig = juce::jlimit<Ticks> (0, k->length, t - k->start);
+                setKey (*k, "volume", dragOrig, v, 0);
+                if (onStatus) onStatus ("Volume " + juce::String (20.0f * std::log10 (std::max (1e-4f, v)), 1) + " dB");
+                if (onEdited) onEdited();
+                repaint();
             }
             break;
         case Drag::None: break;
@@ -1158,6 +1210,10 @@ void Timeline::clipMenu (const juce::String& id)
     juce::PopupMenu lay; auto lns = layoutNames();
     for (int i = 0; i < lns.size(); ++i) lay.addItem (400 + i, lns[i], video && ! lk);
     lay.addSeparator(); lay.addItem (420, "Stack selected clips (top to bottom)", video && ! lk && many);
+    lay.addItem (421, "Collage: 3x3 grid (up to 9 clips)", video && ! lk && many);
+    lay.addItem (422, "Collage: auto grid (any number of clips)", video && ! lk && many);
+    lay.addItem (423, "Collage: picture-in-picture (top clip in the corner)", video && ! lk && many);
+    lay.addItem (424, "Collage: film strip", video && ! lk && many);
     m.addSubMenu ("Layout / Split screen", lay, video && ! lk);
     juce::StringArray fxNames;
     {
@@ -1168,6 +1224,20 @@ void Timeline::clipMenu (const juce::String& id)
         for (auto& [k, ks] : c->keys)
             if (! ks.empty() && ! fxNames.contains (k)) { fxNames.add (k); fxM.addItem (5000 + fxNames.size() - 1, "Trash  " + k + " keyframes", ! lk); }
         m.addSubMenu ("Effects on clip (" + juce::String (fxNames.size()) + ")", fxM, fxNames.size() > 0);
+    }
+    if (auto* am = st.project.findMedia (c->mediaId); am != nullptr && c->text.isEmpty() && (am->kind == MediaKind::Audio || am->hasAudio))
+    {
+        juce::PopupMenu au;
+        au.addItem (700, "Fade in: short (0.25 s)", ! lk); au.addItem (701, "Fade in: 1 beat", ! lk); au.addItem (702, "Fade in: 1 bar", ! lk);
+        au.addItem (703, "Fade out: short (0.25 s)", ! lk); au.addItem (704, "Fade out: 1 beat", ! lk); au.addItem (705, "Fade out: 1 bar", ! lk);
+        au.addItem (706, "Remove fades", ! lk && (c->fadeIn > 0 || c->fadeOut > 0));
+        au.addSeparator();
+        au.addItem (707, "Add volume point at playhead (or Alt-click the yellow line)", ! lk);
+        au.addItem (708, "Clear volume points", ! lk && c->keys.count ("volume") > 0);
+        au.addItem (709, "Mute clip sound", ! lk && c->volume > 0.0f);
+        au.addSeparator();
+        au.addItem (710, "Auto-duck all other sound under the song (-12 dB)", st.project.songId.isNotEmpty(), st.project.seq().duckDb < 0.0f);
+        m.addSubMenu (many ? "Audio (" + juce::String (st.selected.size()) + " clips)" : juce::String ("Audio"), au);
     }
     {
         juce::PopupMenu stab;
@@ -1263,6 +1333,13 @@ void Timeline::clipMenu (const juce::String& id)
             const int* slots = v.size() == 2 ? two : v.size() == 3 ? three : four;
             for (size_t k = 0; k < v.size() && k < 4; ++k) applyLayout (st.project, *v[k], slots[k]);
         }
+        if (r >= 421 && r <= 424)
+        {
+            st.edit ("Collage");
+            std::vector<Clip*> v; for (auto& i : sel) if (auto* k = sq.findClip (i); k && ! k->locked && k->text.isEmpty()) v.push_back (k);
+            std::sort (v.begin(), v.end(), [] (const Clip* a, const Clip* b) { return a->track != b->track ? a->track > b->track : a->start < b->start; });
+            applyCollage (st.project, v, r - 421);
+        }
         if (r >= 40 && r <= 42) { st.edit ("Scale to frame"); for (auto& i : sel) if (auto* k = sq.findClip (i)) k->fx.set ("reframe", (float) (r - 40)); }
         if (r == 10) { st.clipboard = copyClips (sq, sel); st.edit ("Cut"); deleteClips (sq, sel, false); st.selected.clear(); }
         if (r == 11) st.clipboard = copyClips (sq, sel);
@@ -1328,6 +1405,33 @@ void Timeline::clipMenu (const juce::String& id)
             repaint();
             return;
         }
+        if (r >= 700 && r <= 710)
+        {
+            auto& S = st.project.seq();
+            const Ticks beat = st.project.song.valid ? secToTicks (st.project.song.beatSec()) : secToTicks (0.5);
+            const Ticks len[] { secToTicks (0.25), beat, beat * (st.project.song.valid ? st.project.song.beatsPerBar : 4) };
+            st.edit ("Audio");
+            if (r == 710) { if (S.duckDb < 0.0f) S.duckDb = 0.0f; else { S.duckDb = -12.0f; S.duckKey = st.project.songId; } }
+            else
+                for (auto& i : sel)
+                    if (auto* k = S.findClip (i); k != nullptr && ! k->locked)
+                    {
+                        if (r <= 702) k->fadeIn = std::min (k->length / 2, len[r - 700]);
+                        else if (r <= 705) k->fadeOut = std::min (k->length / 2, len[r - 703]);
+                        else if (r == 706) k->fadeIn = k->fadeOut = 0;
+                        else if (r == 707)
+                        {
+                            const Ticks rel = juce::jlimit<Ticks> (0, k->length, st.playhead - k->start);
+                            auto it = k->keys.find ("volume");
+                            setKey (*k, "volume", rel, it != k->keys.end() && ! it->second.empty() ? keyValue (it->second, rel) : k->volume, 0);
+                        }
+                        else if (r == 708) k->keys.erase ("volume");
+                        else if (r == 709) k->volume = 0.0f;
+                    }
+            if (onEdited) onEdited();
+            repaint();
+            return;
+        }
         if (r >= 600 && r <= 602 && onStabilize)
         {
             auto ids = sel; const float sm = r == 600 ? 0.5f : r == 601 ? 1.5f : 4.0f;
@@ -1340,7 +1444,7 @@ void Timeline::clipMenu (const juce::String& id)
             for (auto& i : sel)
                 if (auto* k = sq.findClip (i); k && ! k->locked && k->fx.p.count ("stab") > 0)
                 {
-                    k->keys.erase ("posX"); k->keys.erase ("posY");
+                    k->keys.erase ("posX"); k->keys.erase ("posY"); k->keys.erase ("rotation");
                     k->fx.set ("scale", k->fx.get ("scale", 1.0f) / std::max (0.01f, k->fx.get ("stabZoom", 1.0f)));
                     k->fx.p.erase ("stab"); k->fx.p.erase ("stabZoom"); k->fx.p.erase ("posX"); k->fx.p.erase ("posY");
                 }

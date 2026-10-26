@@ -342,10 +342,19 @@ void applyLayout (const Project& p, Clip& c, int slot)
                                 { 0, 0, 1, 1 / 3.f }, { 0, 1 / 3.f, 1, 1 / 3.f }, { 0, 2 / 3.f, 1, 1 / 3.f },
                                 { 0, 0, .5f, .5f }, { .5f, 0, .5f, .5f }, { 0, .5f, .5f, .5f }, { .5f, .5f, .5f, .5f } };
     slot = juce::jlimit (0, 11, slot);
+    if (slot == 0)
+    {
+        for (auto* id : { "scale", "scaleX", "scaleY", "posX", "posY", "rotation", "cropL", "cropR", "cropT", "cropB", "maskShape", "maskW", "maskH", "maskFeather", "maskInvert" })
+            c.fx.p.erase (id);
+        c.fx.set ("reframe", 0); return;
+    }
+    applyLayoutRect (p, c, r[slot][0], r[slot][1], r[slot][2], r[slot][3]);
+}
+
+void applyLayoutRect (const Project& p, Clip& c, float x, float y, float w, float h)
+{
     for (auto* id : { "scale", "scaleX", "scaleY", "posX", "posY", "rotation", "cropL", "cropR", "cropT", "cropB", "maskShape", "maskW", "maskH", "maskFeather", "maskInvert" })
         c.fx.p.erase (id);
-    if (slot == 0) { c.fx.set ("reframe", 0); return; }
-    float x = r[slot][0], y = r[slot][1], w = r[slot][2], h = r[slot][3];
     int W = 1920, H = 1080; outputSize (p, 1080, W, H);
     float mw = 16, mh = 9;
     if (auto* m = p.findMedia (c.mediaId); m != nullptr && m->width > 0 && m->height > 0)
@@ -383,6 +392,31 @@ bool clipGeometry (const Project& p, const Clip& c, float W, float H, ClipGeom& 
     g.x0 = -g.hx + 2 * g.hx * cL; g.x1 = g.hx - 2 * g.hx * cR;
     g.y0 = -g.hy + 2 * g.hy * cv ("cropT"); g.y1 = g.hy - 2 * g.hy * cv ("cropB");
     return true;
+}
+
+void applyCollage (const Project& p, std::vector<Clip*> v, int kind)
+{
+    const int n = (int) v.size();
+    if (n == 0) return;
+    const float gap = 0.008f;
+    auto cell = [&] (Clip& c, float x, float y, float w, float h) { applyLayoutRect (p, c, x + gap, y + gap, std::max (0.02f, w - 2 * gap), std::max (0.02f, h - 2 * gap)); };
+    if (kind == 0 || kind == 1)
+    {   // 0: 3x3 grid, 1: auto grid sized to the clip count
+        const int cols = kind == 0 ? 3 : (int) std::ceil (std::sqrt ((double) n));
+        const int rows = kind == 0 ? 3 : (int) std::ceil ((double) n / cols);
+        for (int i = 0; i < n && i < cols * rows; ++i)
+            cell (*v[(size_t) i], (float) (i % cols) / cols, (float) (i / cols) / rows, 1.0f / cols, 1.0f / rows);
+    }
+    else if (kind == 2)
+    {   // picture-in-picture: the top clip small in the bottom-right corner, the rest full frame underneath
+        applyLayoutRect (p, *v[0], 0.63f, 0.63f, 0.33f, 0.33f);
+        for (int i = 1; i < n; ++i) applyLayout (p, *v[(size_t) i], 0);
+    }
+    else
+    {   // film strip: one row across the middle
+        const float w = 1.0f / n, h = std::min (1.0f, w * 1.6f);
+        for (int i = 0; i < n; ++i) cell (*v[(size_t) i], i * w, 0.5f - h * 0.5f, w, h);
+    }
 }
 
 juce::StringArray layoutNames()

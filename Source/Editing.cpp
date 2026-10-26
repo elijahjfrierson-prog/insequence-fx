@@ -694,6 +694,31 @@ int buildSeqEdit (Project& p, juce::uint32 seed)
     std::map<juce::String, Ticks> cursor;
     for (auto* m : vids) cursor[m->id] = (Ticks) (rng.nextDouble() * 0.3 * (double) m->duration);
     juce::String prev;
+    // smart pick from each video's moments curve: hooks put the biggest motion hit right on the cut,
+    // verses take steady sharp shots; footage already used is avoided
+    std::map<juce::String, std::vector<std::pair<Ticks, Ticks>>> used;
+    auto pick = [&] (const MediaItem& m, Ticks len, int sec) -> Ticks
+    {
+        const auto& mo = m.moments; const double hz = 4.0;
+        const int n = (int) mo.size(), w = std::max (1, (int) std::ceil (ticksToSec (len) * hz));
+        auto& u = used[m.id];
+        double best = -1e9; int bi = -1;
+        for (int i = 0; i + w <= n; ++i)
+        {
+            const Ticks s0 = secToTicks (i / hz);
+            if (s0 + len > m.duration) break;
+            double sc = 0; for (int k = i; k < i + w; ++k) sc += mo[(size_t) k]; sc /= w;
+            if (sec == 2) sc = 0.4 * sc + 0.6 * mo[(size_t) i];
+            else if (sec == 0) sc = 1.0 - std::abs (sc - 0.45);
+            for (auto& [a0, a1] : u) if (s0 < a1 && s0 + len > a0) sc -= 0.6;
+            sc += rng.nextDouble() * 0.15;
+            if (sc > best) { best = sc; bi = i; }
+        }
+        if (bi < 0) return -1;
+        const Ticks s0 = secToTicks (bi / hz);
+        u.push_back ({ s0, s0 + len });
+        return s0;
+    };
     for (size_t i = 0; i + 1 < cuts.size(); ++i)
     {
         const Ticks c0 = cuts[i], c1 = cuts[i + 1];
@@ -707,8 +732,13 @@ int buildSeqEdit (Project& p, juce::uint32 seed)
         const MediaItem* m = deck.back(); deck.pop_back();
         Clip c; c.id = newId(); c.mediaId = m->id; c.track = 0; c.start = c0; c.length = std::min (c1 - c0, m->duration); c.volume = 0.0f;
         Ticks& cur = cursor[m->id];
-        if (cur + c.length > m->duration) cur = 0;
-        c.srcIn = cur; cur += c.length;
+        if (const Ticks sp = m->moments.empty() ? -1 : pick (*m, c.length, juce::jlimit (0, 2, a.sectionAt (c0 + 1))); sp >= 0)
+            c.srcIn = sp;
+        else
+        {
+            if (cur + c.length > m->duration) cur = 0;
+            c.srcIn = cur; cur += c.length;
+        }
         s.clips.push_back (c);
         prev = m->id;
     }

@@ -395,4 +395,46 @@ float scoreShotQuality (const juce::File& video)
     if (n == 0) return 0.5f;
     return (float) juce::jlimit (0.0, 1.0, 0.6 * juce::jlimit (0.0, 1.0, sharp / n / 12.0) + 0.4 * expo / n);
 }
+
+std::vector<float> scoreMoments (const juce::File& video, std::function<bool()> cancel)
+{
+    VideoDecoder d; juce::String err;
+    if (! d.open (video, 180, err)) return {};
+    const int AW = 64, AH = 36; const double hz = 4.0;
+    std::vector<float> prev, cur, motion, sharp;
+    Frame f; Ticks next = 0;
+    while (! (cancel && cancel()) && d.readNext (f))
+    {
+        if (f.pts < next || ! f.valid()) continue;
+        next = secToTicks ((double) (motion.size() + 1) / hz);
+        cur.assign ((size_t) AW * AH, 0);
+        for (int y = 0; y < AH; ++y)
+            for (int x = 0; x < AW; ++x)
+            {
+                const auto* p = &f.rgba[((size_t) (y * f.h / AH) * f.w + (size_t) (x * f.w / AW)) * 4];
+                cur[(size_t) y * AW + x] = 0.299f * p[0] + 0.587f * p[1] + 0.114f * p[2];
+            }
+        double mo = 0, la = 0;
+        for (int y = 1; y < AH - 1; ++y)
+            for (int x = 1; x < AW - 1; ++x)
+            {
+                const size_t k = (size_t) y * AW + x;
+                if (! prev.empty()) mo += std::abs (cur[k] - prev[k]);
+                la += std::abs (4 * cur[k] - cur[k - 1] - cur[k + 1] - cur[k - AW] - cur[k + AW]);
+            }
+        motion.push_back ((float) mo); sharp.push_back ((float) la);
+        std::swap (prev, cur);
+    }
+    if (motion.size() > 1) motion[0] = motion[1];
+    auto norm = [] (std::vector<float>& v)
+    {
+        auto s = v; std::sort (s.begin(), s.end());
+        const float hi = s.empty() ? 1.0f : std::max (1e-3f, s[(size_t) (0.95 * (s.size() - 1))]);
+        for (auto& x : v) x = juce::jlimit (0.0f, 1.0f, x / hi);
+    };
+    norm (motion); norm (sharp);
+    std::vector<float> out (motion.size());
+    for (size_t i = 0; i < out.size(); ++i) out[i] = 0.6f * motion[i] + 0.4f * sharp[i];
+    return out;
+}
 }

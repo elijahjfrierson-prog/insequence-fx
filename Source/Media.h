@@ -120,4 +120,9 @@ struct Waveform
     double bucketsPerSec = 200.0;
 };
 Waveform buildWaveform (const std::vector<float>& mono, int rate, double bucketsPerSec = 200.0);
+// Warp Stabilizer analysis: per analysed frame, the correction to apply (dx/dy = image shift as a fraction of the frame,
+// positive = right/down; rot = degrees, positive = clockwise) at clip-relative timeline ticks. Background thread only.
+struct ShakeFix { std::vector<Ticks> t; std::vector<float> dx, dy, rot; float zoom = 1.0f; };
+bool analyzeShake (const juce::File& file, Ticks srcIn, Ticks srcLen, double speed, float smoothSec, ShakeFix& out,
+                   std::function<bool()> cancel = {}, std::function<void (double)> progress = {});
 }

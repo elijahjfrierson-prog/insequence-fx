@@ -554,4 +554,83 @@ Waveform buildWaveform (const std::vector<float>& mono, int rate, double bps)
         w.peaks[i / per] = std::max (w.peaks[i / per], std::abs (mono[i]));
     return w;
 }
+
+bool analyzeShake (const juce::File& file, Ticks srcIn, Ticks srcLen, double speed, float smoothSec, ShakeFix& out,
+                   std::function<bool()> cancel, std::function<void (double)> progress)
+{
+    out = {};
+    VideoDecoder d; juce::String err;
+    if (! d.open (file, 180, err)) return false;
+    const int AW = 160, AH = 90;
+    auto gray = [&] (const Frame& f, std::vector<float>& g)
+    {
+        g.assign ((size_t) AW * AH, 0);
+        for (int y = 0; y < AH; ++y)
+            for (int x = 0; x < AW; ++x)
+            {
+                const auto* px = &f.rgba[((size_t) (y * f.h / AH) * f.w + (size_t) (x * f.w / AW)) * 4];
+                g[(size_t) y * AW + x] = 0.299f * px[0] + 0.587f * px[1] + 0.114f * px[2];
+            }
+    };
+    // content motion from a to b inside the column band [xa, xb): coarse +-8 px, +-1 refine, parabolic sub-pixel
+    auto shift = [&] (const std::vector<float>& a, const std::vector<float>& b, int xa, int xb, float& sx, float& sy)
+    {
+        auto sad = [&] (int dx, int dy, int step)
+        {
+            double s = 0;
+            for (int y = 12; y < AH - 12; y += step)
+                for (int x = xa; x < xb; x += step)
+                    s += std::abs (a[(size_t) y * AW + x] - b[(size_t) (y + dy) * AW + x + dx]);
+            return s;
+        };
+        double best = 1e30; int bx = 0, by = 0;
+        for (int dy = -8; dy <= 8; dy += 2) for (int dx = -8; dx <= 8; dx += 2) if (auto s = sad (dx, dy, 2); s < best) { best = s; bx = dx; by = dy; }
+        const int cx = bx, cy = by; best = 1e30;
+        for (int dy = cy - 1; dy <= cy + 1; ++dy) for (int dx = cx - 1; dx <= cx + 1; ++dx) if (auto s = sad (dx, dy, 1); s < best) { best = s; bx = dx; by = dy; }
+        auto para = [] (double m, double c, double p) { const double den = m - 2 * c + p; return den > 1e-9 ? juce::jlimit (-0.5, 0.5, 0.5 * (m - p) / den) : 0.0; };
+        const double c0 = sad (bx, by, 1);
+        sx = (float) (bx + para (sad (bx - 1, by, 1), c0, sad (bx + 1, by, 1)));
+        sy = (float) (by + para (sad (bx, by - 1, 1), c0, sad (bx, by + 1, 1)));
+    };
+    const int xL0 = 12, xL1 = AW / 2 - 6, xR0 = AW / 2 + 6, xR1 = AW - 12;
+    const float bandDist = (float) ((xR0 + xR1) - (xL0 + xL1)) * 0.5f;
+    Frame f; std::vector<float> prev, cur;
+    std::vector<Ticks> ts; std::vector<float> px, py, pa;   // cumulative content motion (analysis px) and angle (rad, clockwise)
+    if (! d.frameAt (srcIn, f) || ! f.valid()) return false;
+    const float aspect = (float) f.h / (float) AH / ((float) f.w / (float) AW);   // analysis-y pixel in analysis-x pixel units
+    gray (f, prev); ts.push_back (f.pts); px.push_back (0); py.push_back (0); pa.push_back (0);
+    while (! (cancel && cancel()) && d.readNext (f))
+    {
+        if (f.pts > srcIn + srcLen) break;
+        gray (f, cur);
+        float lx, ly, rx, ry;
+        shift (prev, cur, xL0, xL1, lx, ly);
+        shift (prev, cur, xR0, xR1, rx, ry);
+        ts.push_back (f.pts);
+        px.push_back (px.back() + 0.5f * (lx + rx)); py.push_back (py.back() + 0.5f * (ly + ry));
+        pa.push_back (pa.back() + std::atan ((ry - ly) * aspect / bandDist));
+        std::swap (prev, cur);
+        if (progress) progress ((double) (f.pts - srcIn) / (double) std::max<Ticks> (1, srcLen));
+    }
+    if (ts.size() < 3) return false;
+    const double fps = (double) (ts.size() - 1) / std::max (1e-6, ticksToSec (ts.back() - ts.front()));
+    const int R = std::max (1, (int) std::lround (smoothSec * fps / 2));
+    const int n = (int) ts.size();
+    float mx = 0, my = 0, mr = 0;
+    for (int i = 0; i < n; ++i)
+    {
+        double sx = 0, sy = 0, sa = 0; int c = 0;
+        for (int k = std::max (0, i - R); k <= std::min (n - 1, i + R); ++k) { sx += px[(size_t) k]; sy += py[(size_t) k]; sa += pa[(size_t) k]; ++c; }
+        // move the image back onto the smoothed path
+        const float dx = (float) (sx / c - px[(size_t) i]) / AW, dy = (float) (sy / c - py[(size_t) i]) / AH;
+        const float dr = (float) (sa / c - pa[(size_t) i]);
+        mx = std::max (mx, std::abs (dx)); my = std::max (my, std::abs (dy)); mr = std::max (mr, std::abs (dr));
+        out.t.push_back ((Ticks) ((double) (ts[(size_t) i] - srcIn) / speed));
+        out.dx.push_back (dx); out.dy.push_back (dy); out.rot.push_back (dr * 180.0f / juce::MathConstants<float>::pi);
+    }
+    // crop in far enough to hide the moved / rotated edges
+    const float ar = (float) f.w / (float) std::max (1, f.h);
+    out.zoom = juce::jlimit (1.0f, 1.4f, 1.0f + 2.0f * std::max (mx, my) + std::sin (mr) * std::max (ar, 1.0f / ar) + 0.01f);
+    return true;
+}
 }

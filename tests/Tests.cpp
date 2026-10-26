@@ -1022,6 +1022,79 @@ static void soakPlayback (const juce::String& files, int q, double secs)
               << " | RSS start " << rss0 << " MB, end " << rssMB() << " MB, peak " << rssPeak << " MB\n";
 }
 
+static void testStabilizeAndAudio()
+{
+    // synthetic shaky clip: texture shifted by m(f) px and rotated by th(f) rad (clockwise), encoded with our exporter
+    const int W = 320, H = 180;
+    auto mx = [] (int f) { return 6.0 * std::sin (f * 1.3); };
+    auto th = [] (int f) { return 0.03 * std::sin (f * 0.9 + 1.0); };
+    auto tex = [] (double x, double y) { return 128 + 55 * std::sin (x * 0.11) * std::cos (y * 0.13) + 45 * std::sin ((x + 2 * y) * 0.05); };
+    Sequence s = Project::makeDefaultSequence ("x");
+    AudioCache cache;
+    ExportJob job; job.width = W; job.height = H; job.fps = 24; job.mbps = 8;
+    job.output = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("isfx_shake.mp4");
+    Clip c; c.id = "v"; c.mediaId = "none"; c.track = 0; c.start = 0; c.length = secToTicks (3); s.clips.push_back (c);
+    std::atomic<bool> cancel { false }; juce::String err, codec;
+    bool ok = runExport (s, cache, job, [&] (Ticks t, std::vector<juce::uint8>& px)
+    {
+        const int f = (int) ticksToFrame (t, 24);
+        const double cr = std::cos (th (f)), sr = std::sin (th (f));
+        for (int y = 0; y < H; ++y)
+            for (int x = 0; x < W; ++x)
+            {
+                const double ox = x - W / 2.0 - mx (f), oy = y - H / 2.0;
+                const double u = ox * cr + oy * sr, v = -ox * sr + oy * cr;   // inverse of a clockwise rotation (y down)
+                const auto g = (juce::uint8) juce::jlimit (0.0, 255.0, tex (u, v));
+                auto* p = &px[((size_t) y * W + x) * 4]; p[0] = p[1] = p[2] = g; p[3] = 255;
+            }
+        return true;
+    }, nullptr, cancel, err, &codec);
+    CHECK (ok, "write shaky test clip " << err);
+    ShakeFix fix;
+    CHECK (analyzeShake (job.output, 0, secToTicks (3), 1.0, 1.0f, fix) && fix.t.size() > 60, "stabilizer analyses the shaky clip (" << fix.t.size() << " frames)");
+    auto corr = [] (const std::vector<double>& a, const std::vector<double>& b)
+    {
+        double ma = 0, mb = 0; for (size_t i = 0; i < a.size(); ++i) { ma += a[i]; mb += b[i]; } ma /= a.size(); mb /= b.size();
+        double sab = 0, saa = 0, sbb = 0; for (size_t i = 0; i < a.size(); ++i) { sab += (a[i] - ma) * (b[i] - mb); saa += (a[i] - ma) * (a[i] - ma); sbb += (b[i] - mb) * (b[i] - mb); }
+        return sab / std::sqrt (std::max (1e-12, saa * sbb));
+    };
+    std::vector<double> gx, wx, gr, wr;
+    for (size_t i = 15; i + 15 < fix.t.size(); ++i)
+    {
+        const int f = (int) ticksToFrame (fix.t[i], 24);
+        gx.push_back (fix.dx[i]); wx.push_back (-mx (f) / W);
+        gr.push_back (fix.rot[i]); wr.push_back (-th (f) * 180 / 3.14159);
+    }
+    const double cx = gx.empty() ? 0 : corr (gx, wx), cr = gr.empty() ? 0 : corr (gr, wr);
+    CHECK (cx > 0.8, "stabilizer moves the image against the shake (corr " << cx << ")");
+    CHECK (cr > 0.6, "stabilizer counter-rotates against the wobble (corr " << cr << ")");
+    CHECK (fix.zoom > 1.0f && fix.zoom < 1.4f, "stabilizer crop-in " << fix.zoom);
+    job.output.deleteFile();
+
+    // audio: fades and a volume line shape the gain; auto-duck drops other sound under the song
+    Clip a; a.length = secToTicks (4); a.volume = 1.0f; a.fadeIn = secToTicks (1); a.fadeOut = secToTicks (1);
+    CHECK (std::abs (volumeGain (a, 0)) < 1e-4 && std::abs (volumeGain (a, secToTicks (0.5)) - 0.5f) < 0.01f
+           && std::abs (volumeGain (a, secToTicks (2)) - 1.0f) < 1e-4 && volumeGain (a, secToTicks (3.5)) < 0.51f, "audio fade in/out ramps");
+    a.fadeIn = a.fadeOut = 0;
+    setKey (a, "volume", 0, 1.0f, 0); setKey (a, "volume", secToTicks (4), 0.0f, 0);
+    CHECK (std::abs (volumeGain (a, secToTicks (2)) - 0.5f) < 0.05f, "volume keyframe line " << volumeGain (a, secToTicks (2)));
+    Sequence q = Project::makeDefaultSequence ("d");
+    auto one = std::make_shared<std::vector<float>> ((size_t) kMixRate * 2 * 2, 0.25f);
+    cache.put ("song", one); cache.put ("vid", one);
+    Clip sc; sc.id = "s"; sc.mediaId = "song"; sc.track = (int) q.tracks.size() - 1; sc.length = secToTicks (2); q.clips.push_back (sc);
+    std::vector<float> L (512), R (512);
+    mixSequence (q, cache, kMixRate / 2, 512, L.data(), R.data(), nullptr);
+    const float songOnly = L[100];
+    Clip vc = sc; vc.id = "v"; vc.mediaId = "vid"; vc.track = 0; q.clips.push_back (vc);
+    mixSequence (q, cache, kMixRate / 2, 512, L.data(), R.data(), nullptr);
+    const float both = L[100];
+    q.duckDb = -12.0f; q.duckKey = "song";
+    mixSequence (q, cache, kMixRate / 2, 512, L.data(), R.data(), nullptr);
+    const float ducked = L[100];
+    CHECK (both > songOnly * 1.9f && std::abs (ducked - songOnly * (1.0f + std::pow (10.0f, -12.0f / 20.0f))) < 0.01f,
+           "auto-duck: video sound drops 12 dB under the song (" << songOnly << " / " << both << " / " << ducked << ")");
+}
+
 int main (int argc, char** argv)
 {
     if (auto b = juce::SystemStats::getEnvironmentVariable ("ISFX_PRFPSET_IN", {}); b.isNotEmpty())
@@ -1071,6 +1144,7 @@ int main (int argc, char** argv)
     testPersistence();
     testLut();
     testExport();
+    testStabilizeAndAudio();
     testTextClip();
     testRender();
     testAutoCutAndPresets();

@@ -126,6 +126,7 @@ juce::var toVar (const Project& p)
         o->setProperty ("fps", m.fps); o->setProperty ("w", m.width); o->setProperty ("h", m.height);
         o->setProperty ("rot", m.rotation); o->setProperty ("proxy", m.proxyPath); o->setProperty ("audio", m.hasAudio); o->setProperty ("fav", m.favorite);
         o->setProperty ("quality", m.quality);
+        if (! m.moments.empty()) { juce::String mo; for (auto v : m.moments) mo << juce::String (v, 2) << ","; o->setProperty ("moments", mo); }
         o->setProperty ("syncStatus", (int) m.sync.status); o->setProperty ("syncOffset", t2s (m.sync.offset));
         o->setProperty ("syncConf", m.sync.confidence); o->setProperty ("syncNote", m.sync.note);
         media.add (juce::var (o));
@@ -154,6 +155,7 @@ juce::var toVar (const Project& p)
     {
         auto* o = new juce::DynamicObject();
         o->setProperty ("id", s.id); o->setProperty ("name", s.name); o->setProperty ("style", s.style);
+        if (s.duckDb < 0) { o->setProperty ("duckDb", s.duckDb); o->setProperty ("duckKey", s.duckKey); }
         o->setProperty ("seed", (int) s.seed); o->setProperty ("fx", fxToVar (s.fx));
         juce::Array<juce::var> tr;
         for (auto& t : s.tracks)
@@ -193,6 +195,8 @@ juce::var toVar (const Project& p)
             if (c.label != 0) co->setProperty ("label", c.label);
             if (c.keep) co->setProperty ("keep", true);
             if (c.frameInterp != 1) co->setProperty ("frameInterp", c.frameInterp);
+            if (c.fadeIn > 0) co->setProperty ("fadeIn", t2s (c.fadeIn));
+            if (c.fadeOut > 0) co->setProperty ("fadeOut", t2s (c.fadeOut));
             if (c.text.isNotEmpty()) { co->setProperty ("text", c.text); co->setProperty ("font", c.font); }
             cl.add (juce::var (co));
         }
@@ -227,6 +231,7 @@ bool fromVar (const juce::var& v, Project& p, juce::String& error)
             mi.kind = (MediaKind) (int) m["kind"]; mi.duration = s2t (m["duration"]); mi.fps = (double) m["fps"];
             mi.width = (int) m["w"]; mi.height = (int) m["h"]; mi.rotation = (int) m["rot"]; mi.proxyPath = m["proxy"].toString(); mi.hasAudio = (bool) m["audio"];
             mi.favorite = (bool) m["fav"]; mi.quality = (float) (double) m["quality"];
+            for (auto& tk : juce::StringArray::fromTokens (m["moments"].toString(), ",", "")) if (tk.isNotEmpty()) mi.moments.push_back (tk.getFloatValue());
             mi.sync.status = (SyncInfo::Status) (int) m["syncStatus"]; mi.sync.offset = s2t (m["syncOffset"]);
             mi.sync.confidence = (float) (double) m["syncConf"]; mi.sync.note = m["syncNote"].toString();
             r.media.push_back (mi);
@@ -246,6 +251,7 @@ bool fromVar (const juce::var& v, Project& p, juce::String& error)
         {
             Sequence s;
             s.id = sv["id"].toString(); s.name = sv["name"].toString(); s.style = sv["style"].toString();
+            s.duckDb = (float) (double) sv["duckDb"]; s.duckKey = sv["duckKey"].toString();
             s.seed = (juce::uint32) (int) sv["seed"]; fxFromVar (sv["fx"], s.fx);
             if (auto* tr = sv["tracks"].getArray())
                 for (auto& tv : *tr)
@@ -273,6 +279,8 @@ bool fromVar (const juce::var& v, Project& p, juce::String& error)
                                     if (k.size() >= 2) setKey (c, pr.name.toString(), s2t (k[0]), (float) (double) k[1], k.size() > 2 ? (int) k[2] : 0);
                     c.name = cv["name"].toString(); c.enabled = cv.hasProperty ("enabled") ? (bool) cv["enabled"] : true; c.reverse = (bool) cv["reverse"]; c.label = (int) cv["label"]; c.keep = (bool) cv["keep"];
                     c.frameInterp = cv.hasProperty ("frameInterp") ? (int) cv["frameInterp"] : 1;
+                    c.fadeIn = cv.hasProperty ("fadeIn") ? s2t (cv["fadeIn"]) : 0;
+                    c.fadeOut = cv.hasProperty ("fadeOut") ? s2t (cv["fadeOut"]) : 0;
                     c.text = cv["text"].toString(); c.font = cv["font"].toString();
                     if (c.track >= 0 && c.track < (int) s.tracks.size()) s.clips.push_back (c);
                 }
@@ -339,6 +347,15 @@ bool History::redo (Project& p)
     p = std::move (redoStack.back().first); redoStack.pop_back();
     return true;
 }
+float volumeGain (const Clip& c, Ticks rel)
+{
+    float g = c.volume;
+    if (auto it = c.keys.find ("volume"); it != c.keys.end() && ! it->second.empty()) g = keyValue (it->second, rel);
+    if (c.fadeIn > 0 && rel < c.fadeIn) g *= (float) std::max<Ticks> (0, rel) / (float) c.fadeIn;
+    if (c.fadeOut > 0 && c.length - rel < c.fadeOut) g *= (float) std::max<Ticks> (0, c.length - rel) / (float) c.fadeOut;
+    return g;
+}
+
 float keyValue (const std::vector<Clip::Key>& k, Ticks rel)
 {
     if (k.empty()) return 0;
