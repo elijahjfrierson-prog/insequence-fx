@@ -40,6 +40,9 @@ void applyCollage (const Project& p, std::vector<Clip*> clips, int kind);
 // beat-reactive, acid and generated overlay FX. Preview and export use this same code path.
 constexpr int kProxyHeight = 540;
 
+// Clips whose live frame is expensive (reverse, optical flow, warps, effect layers): shown red in the ruler until rendered
+bool needsRender (const Project&, const Sequence&, const Clip&);
+
 class Renderer
 {
 public:

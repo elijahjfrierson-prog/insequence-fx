@@ -363,6 +363,7 @@ MainComponent::MainComponent()
     timeline.onTrackPlugins = [this] (int tr) { trackPluginsMenu (tr); };
     timeline.onStabilize = [this] (const juce::StringArray& ids, float sm) { stabilizeClips (ids, sm); };
     timeline.onSliceCuts = [this] (const juce::StringArray& ids) { sliceAtCuts (ids); };
+    preview.onCacheChanged = [this] { timeline.repaint(); };
     player.setTrackFx (&trackRacks);
     media.onSetSong = [this] (const juce::String& id) { setSong (id); };
     media.onRelink = [this] (const juce::String& id) { relink (id); };
@@ -610,6 +611,12 @@ bool MainComponent::keyPressed (const juce::KeyPress& k)
     if (ch == '+' || ch == '=') { zoomIn.onClick(); return true; }
     if (ch == '-') { zoomOut.onClick(); return true; }
     if (c == juce::KeyPress::spaceKey) { togglePlay(); return true; }
+    if (c == juce::KeyPress::returnKey)
+    {
+        preview.renderRed();
+        status.setText ("Rendering the red sections in the background. Green = rendered: Space plays them full quality in real time.", juce::dontSendNotification);
+        return true;
+    }
     if (c == juce::KeyPress::homeKey) { seek (0); return true; }
     if (c == juce::KeyPress::leftKey || c == juce::KeyPress::rightKey)
     {

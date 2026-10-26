@@ -12,12 +12,85 @@ Preview::Preview (AppState& s) : juce::Thread ("ISFX preview"), st (s)
     startThread();
 }
 
-Preview::~Preview() { signalThreadShouldExit(); wake.signal(); stopThread (4000); }
+Preview::~Preview() { if (baker) baker->stopThread (6000); signalThreadShouldExit(); wake.signal(); stopThread (4000); }
 
 void Preview::setProject (const Project& p)
 {
     auto n = std::make_shared<const Project> (p);
+    const auto sig = juce::JSON::toString (toVar (p), true).hashCode64();
+    if (sig != st.rcache.sig.load())
+    {
+        const juce::ScopedLock cl (st.rcache.lock);
+        st.rcache.frames.clear(); st.rcache.bytes = 0; st.rcache.sig = sig;
+    }
     const juce::ScopedLock sl (lock); snap = n;
+}
+
+static juce::Image toImageRGBA (const std::vector<juce::uint8>& px, int W, int H)
+{
+    juce::Image im (juce::Image::ARGB, W, H, false);
+    juce::Image::BitmapData bd (im, juce::Image::BitmapData::writeOnly);
+    for (int y = 0; y < H; ++y)
+    {
+        auto* src = px.data() + (size_t) y * W * 4;
+        auto* dst = reinterpret_cast<juce::PixelARGB*> (bd.getLinePointer (y));
+        for (int x = 0; x < W; ++x, src += 4) dst[x].setARGB (255, src[0], src[1], src[2]);
+    }
+    return im;
+}
+
+void Preview::renderRed()
+{
+    if (rendering()) return;
+    baker = std::make_unique<Baker> (*this);
+    baker->startThread (juce::Thread::Priority::low);
+}
+
+void Preview::bake()
+{
+    std::shared_ptr<const Project> p; int W, H;
+    { const juce::ScopedLock sl (lock); p = snap; W = pausedW; H = pausedH; }
+    if (p == nullptr) return;
+    if (W <= 0 || H <= 0) outputSize (*p, 720, W, H);
+    const auto sig = st.rcache.sig.load();
+    {
+        const juce::ScopedLock cl (st.rcache.lock);
+        if (st.rcache.w != W || st.rcache.h != H) { st.rcache.frames.clear(); st.rcache.bytes = 0; st.rcache.w = W; st.rcache.h = H; }
+    }
+    auto& s = p->seq();
+    const double fr = p->fps;
+    std::vector<juce::int64> todo;
+    for (auto& c : s.clips)
+        if (needsRender (*p, s, c))
+        {
+            const auto f0 = (juce::int64) std::ceil (ticksToSec (c.start) * fr - 1e-6), f1 = (juce::int64) std::ceil (ticksToSec (c.end()) * fr - 1e-6);
+            for (auto f = f0; f < f1; ++f) todo.push_back (f);
+        }
+    std::sort (todo.begin(), todo.end());
+    todo.erase (std::unique (todo.begin(), todo.end()), todo.end());
+    juce::Component::SafePointer<Preview> safe (this);
+    auto ping = [safe] { juce::MessageManager::callAsync ([safe] { if (safe && safe->onCacheChanged) safe->onCacheChanged(); }); };
+    std::vector<juce::uint8> px;
+    juce::JPEGImageFormat jpg; jpg.setQuality (0.92f);
+    bakeRenderer.setLive (false);
+    int done = 0;
+    for (auto f : todo)
+    {
+        if (juce::Thread::currentThreadShouldExit() || st.rcache.sig.load() != sig) break;
+        { const juce::ScopedLock cl (st.rcache.lock); if (st.rcache.frames.count (f) || st.rcache.bytes > ((size_t) 2 << 30)) continue; }
+        if (! bakeRenderer.render (*p, s, frameToTicks (f, fr), W, H, px, 1080)) continue;
+        juce::MemoryOutputStream mo;
+        if (! jpg.writeImageToStream (toImageRGBA (px, W, H), mo)) continue;
+        {
+            const juce::ScopedLock cl (st.rcache.lock);
+            if (st.rcache.sig.load() != sig) break;
+            st.rcache.bytes += mo.getDataSize();
+            st.rcache.frames[f] = mo.getMemoryBlock();
+        }
+        if (++done % 10 == 0) ping();
+    }
+    bakeRenderer.clearSources();
+    ping();
 }
 
 juce::Rectangle<int> Preview::frameArea() const
@@ -49,6 +122,7 @@ void Preview::requestFrame (Ticks t)
     int W, H; outputSize (st.project, sh, W, H);
     const juce::ScopedLock sl (lock);
     want = t; lastReq = t; wantW = W; wantH = H; wantDecodeH = tier;
+    if (! live) { pausedW = W; pausedH = H; }
     wake.signal();
 }
 
@@ -66,23 +140,29 @@ void Preview::run()
         }
         if (W <= 0 || H <= 0 || p == nullptr) continue;
         if (clearReq.exchange (false)) renderer.clearSources();
+        if (live.load())
+        {   // rendered (green) section: show the full-quality cached frame, no render at all
+            const auto f = (juce::int64) std::floor (ticksToSec (t) * p->fps + 1e-6);
+            juce::MemoryBlock mb;
+            {
+                const juce::ScopedLock cl (st.rcache.lock);
+                if (auto it = st.rcache.frames.find (f); it != st.rcache.frames.end()) mb = it->second;
+            }
+            if (mb.getSize() > 0)
+                if (auto im = juce::ImageFileFormat::loadFrom (mb.getData(), mb.getSize()); im.isValid())
+                {
+                    { const juce::ScopedLock sl (lock); shown = im; }
+                    triggerAsyncUpdate();
+                    continue;
+                }
+        }
         auto t0 = juce::Time::getMillisecondCounterHiRes();
         renderer.setLive (live.load());
         renderer.render (*p, p->seq(), t, W, H, px, decH);
         const double ms = juce::Time::getMillisecondCounterHiRes() - t0;
         lastMs = ms;
         avgMs = avgMs.load() <= 0 ? ms : avgMs.load() * 0.85 + ms * 0.15;   // steady readout, no flicker
-        juce::Image im (juce::Image::ARGB, W, H, false);
-        {
-            juce::Image::BitmapData bd (im, juce::Image::BitmapData::writeOnly);
-            for (int y = 0; y < H; ++y)
-            {
-                auto* src = px.data() + (size_t) y * W * 4;
-                auto* dst = reinterpret_cast<juce::PixelARGB*> (bd.getLinePointer (y));
-                for (int x = 0; x < W; ++x, src += 4)
-                    dst[x].setARGB (255, src[0], src[1], src[2]);
-            }
-        }
+        auto im = toImageRGBA (px, W, H);
         { const juce::ScopedLock sl (lock); shown = im; }
         triggerAsyncUpdate();
     }

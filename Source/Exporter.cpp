@@ -1,4 +1,5 @@
 #include "Exporter.h"
+#include <future>
 extern "C" {
 #include <libavformat/avformat.h>
 #include <libavcodec/avcodec.h>
@@ -71,7 +72,7 @@ bool VideoEncoder::open (const juce::File& f, int w, int h, double fps, int mbps
         venc->bit_rate = (int64_t) mbps * 1000000; venc->gop_size = (int) std::lround (fps * 2);
         venc->max_b_frames = 0;
         if (fmt->oformat->flags & AVFMT_GLOBALHEADER) venc->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
-        if (n == "libx264" && codec == "h264") av_opt_set (venc->priv_data, "preset", "medium", 0);
+        if (n == "libx264" && codec == "h264") av_opt_set (venc->priv_data, "preset", "fast", 0);
         if (n == "mpeg4") { venc->qmax = 6; venc->bit_rate = (int64_t) mbps * 1500000; }
         if (codec == "h264_lossless")
         {
@@ -227,28 +228,38 @@ bool runExport (const Sequence& s, const AudioCache& audio, const ExportJob& job
         if (! enc.open (tmp, job.width, job.height, job.fps, job.mbps, true, error, job.codec)) { tmp.deleteFile(); return false; }
         if (codecUsed) *codecUsed = enc.codecName();
         const juce::int64 frames = (juce::int64) std::ceil (ticksToSec (b - a) * job.fps - 1e-9);
-        std::vector<juce::uint8> rgba ((size_t) (job.width * job.height * 4));
+        std::vector<juce::uint8> bufs[2] = { std::vector<juce::uint8> ((size_t) (job.width * job.height * 4)),
+                                             std::vector<juce::uint8> ((size_t) (job.width * job.height * 4)) };
+        std::future<bool> pend;
         std::vector<float> L, R;
         const juce::int64 aStart = (juce::int64) std::llround (ticksToSec (a) * kMixRate);
         juce::int64 audioDone = 0;
         for (juce::int64 f = 0; f < frames; ++f)
         {
-            if (cancel.load()) { error = "Export cancelled"; enc.finish (error); tmp.deleteFile(); error = "Export cancelled"; return false; }
+            if (cancel.load()) { if (pend.valid()) pend.wait(); error = "Export cancelled"; enc.finish (error); tmp.deleteFile(); error = "Export cancelled"; return false; }
             Ticks t = a + frameToTicks (f, job.fps);   // exact frame time, no accumulation
-            if (! render (t, rgba)) { error = "Render failed at frame " + juce::String (f); tmp.deleteFile(); return false; }
-            if (! enc.writeVideo (rgba.data(), f)) { error = "Video encode failed"; tmp.deleteFile(); return false; }
-            juce::int64 audioTarget = (juce::int64) std::llround ((double) (f + 1) / job.fps * kMixRate);
-            int n = (int) (audioTarget - audioDone);
-            if (n > 0)
+            auto& buf = bufs[f & 1];
+            if (! render (t, buf)) { if (pend.valid()) pend.wait(); error = "Render failed at frame " + juce::String (f); tmp.deleteFile(); return false; }
+            if (pend.valid() && ! pend.get()) { error = "Video encode failed"; tmp.deleteFile(); return false; }
+            const auto* data = buf.data();
+            pend = std::async (std::launch::async, [&, f, data]
             {
-                L.resize ((size_t) n); R.resize ((size_t) n);
-                mixSequence (s, audio, aStart + audioDone, n, L.data(), R.data(), job.trackFx);
-                if (job.audioFx) job.audioFx (L.data(), R.data(), n);
-                enc.writeAudio (L.data(), R.data(), n);
-                audioDone = audioTarget;
-            }
+                if (! enc.writeVideo (data, f)) return false;
+                juce::int64 audioTarget = (juce::int64) std::llround ((double) (f + 1) / job.fps * kMixRate);
+                int n = (int) (audioTarget - audioDone);
+                if (n > 0)
+                {
+                    L.resize ((size_t) n); R.resize ((size_t) n);
+                    mixSequence (s, audio, aStart + audioDone, n, L.data(), R.data(), job.trackFx);
+                    if (job.audioFx) job.audioFx (L.data(), R.data(), n);
+                    enc.writeAudio (L.data(), R.data(), n);
+                    audioDone = audioTarget;
+                }
+                return true;
+            });
             if (progress && (f % 5 == 0 || f == frames - 1)) progress ((double) (f + 1) / (double) frames);
         }
+        if (pend.valid() && ! pend.get()) { error = "Video encode failed"; tmp.deleteFile(); return false; }
         if (! enc.finish (error)) { tmp.deleteFile(); return false; }
     }
     job.output.deleteFile();

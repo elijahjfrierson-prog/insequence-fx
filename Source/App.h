@@ -51,6 +51,13 @@ struct AppState
     bool snapOn = true, ripple = false, showGrid = true, magnetic = true;
     std::vector<Clip> clipboard;
     juce::ChangeBroadcaster changed;   // project edited -> repaint everything
+    struct RenderCache   // Enter renders red sections to JPEG frames; live playback shows them instead of rendering
+    {
+        juce::CriticalSection lock;
+        std::map<juce::int64, juce::MemoryBlock> frames;
+        std::atomic<juce::int64> sig { 0 };
+        int w = 0, h = 0; size_t bytes = 0;
+    } rcache;
 
     void edit (const juce::String& what) { history.push (project, what); dirty = true; }
     void notify() { changed.sendChangeMessage(); }
@@ -104,6 +111,9 @@ public:
     void setQuality (int div) { quality = juce::jmax (1, div); requestFrame (lastReq); }
     int getQuality() const { return quality; }
     void setLive (bool b) { if (live.exchange (b) && ! b) requestFrame (lastReq); }
+    void renderRed();                      // Enter: render every red section in the background at full quality
+    bool rendering() const { return baker != nullptr && baker->isThreadRunning(); }
+    std::function<void()> onCacheChanged;
     // on-video transform: drag inside = move, corners = scale (Shift = free X/Y), edges = crop, knob = rotate (Shift = 15 deg)
     std::function<void()> onEdited, onSelect;
     void mouseDown (const juce::MouseEvent&) override;
@@ -139,6 +149,11 @@ private:
     std::atomic<double> lastMs { 0 }, avgMs { 0 };
     std::atomic<int> quality { 2 };
     double fps = 0, fpsT0 = 0; int fpsCount = 0;
+    int pausedW = 0, pausedH = 0;
+    void bake();
+    struct Baker : juce::Thread { explicit Baker (Preview& p) : juce::Thread ("ISFX render"), owner (p) {} void run() override { owner.bake(); } Preview& owner; };
+    Renderer bakeRenderer;
+    std::unique_ptr<Baker> baker;
 };
 
 // ---- timeline

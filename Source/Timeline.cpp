@@ -243,6 +243,29 @@ void Timeline::paint (juce::Graphics& g)
 
     // ruler
     g.setColour (panel2); g.fillRect (0, 0, W, kRuler);
+    {   // render bar: red = needs render (Enter), green = rendered, plays full quality in real time
+        auto& rs = p.seq();
+        const int ry = kRuler - 5;
+        g.setColour (juce::Colour (0xffd8342c));
+        for (auto& c : rs.clips)
+            if (needsRender (p, rs, c))
+            {
+                const int x0 = std::max (kHeader, secToX (ticksToSec (c.start))), x1 = std::min (W, secToX (ticksToSec (c.end())));
+                if (x1 > x0) g.fillRect (x0, ry, x1 - x0, 5);
+            }
+        g.setColour (juce::Colour (0xff34c46a));
+        const double fr = p.fps;
+        juce::int64 a = -2, b = -2;
+        auto flush = [&]
+        {
+            if (a < 0) return;
+            const int x0 = std::max (kHeader, secToX ((double) a / fr)), x1 = std::min (W, secToX ((double) (b + 1) / fr));
+            if (x1 > x0) g.fillRect (x0, ry, std::max (1, x1 - x0), 5);
+        };
+        const juce::ScopedLock cl (st.rcache.lock);
+        for (auto& kv : st.rcache.frames) { if (kv.first == b + 1) b = kv.first; else { flush(); a = b = kv.first; } }
+        flush();
+    }
     g.setColour (dim); g.setFont (10.0f);
     if (p.song.valid && st.snap < SnapMode::Sec1)
     {

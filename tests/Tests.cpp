@@ -1095,6 +1095,17 @@ static void testStabilizeAndAudio()
            "auto-duck: video sound drops 12 dB under the song (" << songOnly << " / " << both << " / " << ducked << ")");
 }
 
+static void testDetectCuts()
+{
+    using namespace isfx;
+    const juce::File f ("/tmp/isfx_cuts.mp4");   // red 1s | testsrc 1s | blue 1s (made with ffmpeg CLI when available)
+    if (! f.existsAsFile()) return;
+    auto cuts = detectCuts (f, 0, secToTicks (3.0));
+    std::cout << "cuts:"; for (auto c : cuts) std::cout << " " << ticksToSec (c); std::cout << "\n";
+    CHECK (cuts.size() == 2 && std::abs (ticksToSec (cuts[0]) - 1.0) < 0.02 && std::abs (ticksToSec (cuts[1]) - 2.0) < 0.02,
+           "slice-at-cuts finds the 2 hard cuts frame-exact");
+}
+
 static void testReversePlayback()
 {
     // reversed clip in live playback: frames come back in descending order, close to the request, without per-frame GOP re-decodes
@@ -1102,18 +1113,18 @@ static void testReversePlayback()
     PrefetchDecoder pre; pre.reverse = true; juce::String err;
     CHECK (pre.open (file, 180, err), "open reverse decoder " << err);
     const Ticks fd = secToTicks (1.0 / 24);
-    int good = 0, n = 0; double worst = 0; Ticks last = std::numeric_limits<Ticks>::max(); bool mono = true;
-    const double t0 = juce::Time::getMillisecondCounterHiRes();
+    int good = 0, n = 0; double worst = 0, inGet = 0; Ticks last = std::numeric_limits<Ticks>::max(); bool mono = true;
     for (Ticks t = secToTicks (2.9); t > 0; t -= fd, ++n)
     {
         const double a = juce::Time::getMillisecondCounterHiRes();
         auto f = pre.get (t, 40);
-        worst = std::max (worst, juce::Time::getMillisecondCounterHiRes() - a);
+        const double w = juce::Time::getMillisecondCounterHiRes() - a;
+        worst = std::max (worst, w); inGet += w;
         if (f != nullptr && std::llabs (f->pts - t) <= fd) ++good;
         if (f != nullptr) { mono = mono && f->pts <= last; last = f->pts; }
         juce::Thread::sleep (5);
     }
-    const double ms = juce::Time::getMillisecondCounterHiRes() - t0;
+    const double ms = inGet;   // time playback spends blocked on the decoder (sleep granularity on CI runners is not ours)
     CHECK (mono && good >= n * 9 / 10, "reverse playback serves frames backwards (" << good << "/" << n << " on time)");
     file.deleteFile();
     CHECK (ms < n * 25.0, "reverse playback keeps up (" << ms / n << " ms/frame, worst wait " << worst << " ms)");
@@ -1170,6 +1181,7 @@ int main (int argc, char** argv)
     testExport();
     testStabilizeAndAudio();
     testReversePlayback();
+    testDetectCuts();
     testTextClip();
     testRender();
     testAutoCutAndPresets();
@@ -1223,8 +1235,8 @@ int main (int argc, char** argv)
         const size_t tracks0 = rs.tracks.size();
         const int layers = addTakeLayers (rp, rs);
         int hiddenTakes = 0;
-        for (auto& c : rs.clips) if (c.id != "a" && c.id != "b" && rs.tracks[(size_t) c.track].hidden && rs.tracks[(size_t) c.track].mute) ++hiddenTakes;
-        CHECK (layers == 3 && rs.tracks.size() == tracks0 + 3 && hiddenTakes == 3, "all takes sit under the edit on hidden, muted tracks");
+        for (auto& c : rs.clips) if (c.id != "a" && c.id != "b" && ! rs.tracks[(size_t) c.track].hidden && rs.tracks[(size_t) c.track].mute) ++hiddenTakes;
+        CHECK (layers == 3 && rs.tracks.size() == tracks0 + 3 && hiddenTakes == 3, "all takes sit under the edit on visible, muted tracks");
         {
             Sequence ls = rs;
             const auto before = ls.findClip ("a")->mediaId;

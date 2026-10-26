@@ -425,6 +425,31 @@ juce::StringArray layoutNames()
              "Grid top-left", "Grid top-right", "Grid bottom-left", "Grid bottom-right" };
 }
 
+bool needsRender (const Project& p, const Sequence& s, const Clip& c)
+{
+    juce::ignoreUnused (p);
+    if (! c.enabled || c.track < 0 || c.track >= (int) s.tracks.size()) return false;
+    auto& tr = s.tracks[(size_t) c.track];
+    if (tr.kind != TrackKind::Video || tr.hidden) return false;
+    if (c.reverse) return true;
+    if (c.frameInterp == 2 && (c.speed < 1.0 || c.ramped())) return true;
+    const bool layer = c.mediaId.isEmpty() && c.text.isEmpty();
+    if (layer && c.fx.lutPath.isNotEmpty()) return true;
+    for (auto& [id, v] : c.fx.p)
+    {
+        if (layer)
+        {
+            if (auto* d = findParam (sequenceParams(), id); d != nullptr && std::abs (v - d->def) > 1e-4f) return true;
+            continue;
+        }
+        auto* d = findParam (clipParams(), id);
+        if (d == nullptr || std::abs (v - d->def) <= 1e-4f) continue;
+        const juce::String g (d->group);
+        if (g == "Stylize" || g == "Transformer" || id == "blur") return true;
+    }
+    return false;
+}
+
 void Renderer::clearSources() { sources.clear(); luts.clear(); trailT = -1; }
 
 // separable box blur (3 passes ~ gaussian) on RGBA, in place
@@ -1000,6 +1025,7 @@ bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int 
                 }
                 if (transKind == (int) TransitionType::DipBlack) for (int q = 0; q < 3; ++q) col[q] *= prog;
                 if (transKind == (int) TransitionType::DipWhite) for (int q = 0; q < 3; ++q) col[q] = mixf (1, col[q], prog);
+                if (transKind == (int) TransitionType::BlackFlash) for (int q = 0; q < 3; ++q) col[q] *= 1.0f - std::min (1.0f, (1 - prog) * (1 - prog) * trAmt);
                 if (transKind == (int) TransitionType::Flash) for (int q = 0; q < 3; ++q) col[q] = mixf (col[q], 1, std::min (1.0f, (1 - prog) * (1 - prog) * trAmt));
                 float* d = &img[((size_t) y * W + x) * 3];
                 float r[3]; blendPixel (blend, d, col, r);
@@ -1217,6 +1243,7 @@ bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int 
         const float d = (float) std::exp (-be.sinceSnare / 0.12);
         shutter = fi % 2 == 0 ? 1.0f - 0.92f * bf2 * d : 1.0f + 1.2f * bf2 * d;
     }
+    shutter *= 1.0f - 0.95f * sv ("flashBlack") * be.kick;
     const float gExp = std::pow (2.0f, sv ("exposure")) * (1 - sv ("hatStrobe") * 0.35f * be.hat) * shutter;
     const float temp = sv ("temperature"), tint = sv ("tint"), con = sv ("contrast"), sat = sv ("saturation");
     const float fade = sv ("fade"), splitT = sv ("splitTone"), crush = sv ("crush"), lutMix = sv ("lutMix");
@@ -1355,7 +1382,7 @@ bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int 
     }
 
     // ---- generated overlays: light leaks, film burn on cuts, dust & scratches, snare flash
-    float leak = sv ("lightLeak"), burn = sv ("filmBurn"), dust = sv ("dust"), flash = sv ("snareFlash") * 0.75f * be.snareFast;
+    float leak = sv ("lightLeak"), burn = sv ("filmBurn"), dust = sv ("dust"), flash = sv ("snareFlash") * 0.75f * be.snareFast + sv ("flashWhite") * 0.9f * be.kick;
     float burnI = 0;
     if (burn > 0)
     {

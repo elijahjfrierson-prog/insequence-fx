@@ -629,7 +629,7 @@ int addTakeLayers (const Project& p, Sequence& s)
         if (m.kind != MediaKind::Video || m.missing || (m.sync.status != SyncInfo::Synced && m.sync.status != SyncInfo::Manual)) continue;
         const int tk = insertVideoTrack (s);
         auto& tr = s.tracks[(size_t) tk];
-        tr.name = m.name; tr.hidden = true; tr.mute = true;
+        tr.name = m.name; tr.mute = true;   // visible: fills any gap in the edit and shows in the timeline; occluded frames are never decoded
         Clip c; c.id = newId(); c.mediaId = m.id; c.track = tk;
         c.start = std::max ((Ticks) 0, m.sync.offset); c.srcIn = c.start - m.sync.offset;
         c.length = m.duration - c.srcIn; c.volume = 0.0f;

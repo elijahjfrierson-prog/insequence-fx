@@ -58,7 +58,7 @@ struct FxStack
 };
 
 enum class TransitionType { Cut = 0, Dissolve, DipBlack, DipWhite, Flash, Zoom, Whip, Glitch,
-                            Spin, RgbSplit, Blur, LumaWipe, InkBurn, Shake, Stretch, Mirror, Prism, LightLeak };
+                            Spin, RgbSplit, Blur, LumaWipe, InkBurn, Shake, Stretch, Mirror, Prism, LightLeak, BlackFlash };
 
 // ---- media ------------------------------------------------------------------------
 enum class MediaKind { Video = 0, Audio, Image };

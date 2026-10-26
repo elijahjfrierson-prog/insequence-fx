@@ -51,6 +51,8 @@ const std::vector<ParamDef>& sequenceParams()
         { "glitch",     "Glitch",       0, 1, 0, "Distort","Block displacement bursts, driven by the beat." },
         { "kickZoom",   "Kick Zoom",    0, 1, 0, "Beat",  "Punch-in on every detected kick." },
         { "snareFlash", "Snare Flash",  0, 1, 0, "Beat",  "White flash on every detected snare." },
+        { "flashWhite", "White Flash",  0, 1, 0, "Beat",  "Simple white flash on every kick. Amount = how bright." },
+        { "flashBlack", "Black Flash",  0, 1, 0, "Beat",  "Simple black flash on every kick. Amount = how dark." },
         { "blackFlash2","Black Flash 2",0, 1, 0, "Beat",  "CapCut-style Black Flash 2: black/white shutter strobe on snares with a ripple and warp punch." },
         { "bf2Warp",    "Black Flash 2 Warp",0, 1, .5f, "Beat", "Strength of the ripple + warp that rides with the Black Flash 2 strobe." },
         { "xfRipple",   "Transformer: Acid Ripple", 0, 1, 0, "Transformer", "Rings rippling out from the centre of the frame." },
@@ -205,14 +207,16 @@ const std::vector<Look>& lookLibrary()
           { { "contrast", 1.22f }, { "saturation", .72f }, { "crush", .3f }, { "grain", .35f }, { "grainSize", 1.15f }, { "vignette", .4f }, { "blackFlash2", .45f } } },
         { "Black Flash 2 (CapCut)", "Beat", "Black/white shutter strobe on every snare with the ripple + warp punch. Set Black Flash 2 Warp for warp strength.",
           { { "blackFlash2", .8f }, { "bf2Warp", .6f } } },
+        { "White Flash", "Beat", "Flashes white on every kick. Set White Flash for strength.", { { "flashWhite", .8f } } },
+        { "Black Flash", "Beat", "Flashes black on every kick. Set Black Flash for strength.", { { "flashBlack", .8f } } },
         { "Shrink & Grow", "Beat", "Frame grows on every kick and shrinks back between them. Set Shrink & Grow for intensity.",
           { { "shrinkGrow", .6f } } },
         { "Transformer: Acid Ripple", "Transformer", "Rippling rings over everything under this layer. Strength in the Inspector.", { { "xfRipple", .5f } } },
         { "Transformer: Warble", "Transformer", "Wobbly warble over everything under this layer.", { { "xfWarble", .5f } } },
         { "Transformer: Twist", "Transformer", "Swirl warp over everything under this layer.", { { "xfTwist", .5f } } },
         { "Transformer: Lens Bulge", "Transformer", "Fisheye bulge over everything under this layer (negative pinches).", { { "xfLens", .5f } } },
-        { "Acid Abstract", "Abstract", "Oversaturated, split channels, strobing.",
-          { { "saturation", 1.8f }, { "rgbSplit", .5f }, { "hatStrobe", .35f }, { "glitch", .25f }, { "bloom", .4f } } },
+        { "Acid Abstract", "Abstract", "Acid Trip style: kaleidoscope mirror, liquid warp and cycling hues.",
+          { { "saturation", 1.6f }, { "kaleido", .35f }, { "liquid", .4f }, { "hueCycle", .4f }, { "bloom", .35f } } },
         { "CRT TV", "VHS", "Curved tube TV: phosphor mask, scanlines and a soft glow.",
           { { "crt", .8f }, { "bloom", .2f }, { "contrast", 1.08f }, { "saturation", 1.1f }, { "vignette", .3f } } },
         { "VHS Camcorder", "VHS", "Home-video tape: chroma bleed, tracking wobble, warm faded blacks.",
@@ -281,7 +285,7 @@ void applyStyleMode (FxStack& s, const juce::String& mode)
 }
 
 juce::StringArray transitionNames() { return { "Cut", "Dissolve", "Dip Black", "Dip White", "White Flash", "Zoom Punch", "Whip Pan", "Glitch",
-                                               "Spin", "RGB Split", "Blur", "Luma Wipe", "Ink Burn", "Shake", "Stretch", "Mirror", "Prism", "Light Leak" }; }
+                                               "Spin", "RGB Split", "Blur", "Luma Wipe", "Ink Burn", "Shake", "Stretch", "Mirror", "Prism", "Light Leak", "Black Flash" }; }
 
 bool Lut3D::load (const juce::File& f, juce::String& error)
 {
