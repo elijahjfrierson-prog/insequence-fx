@@ -1,3 +1,4 @@
+#include <array>
 #include "Editing.h"
 #include "Looks.h"
 #include <algorithm>
@@ -192,10 +193,29 @@ int insertVideoTrack (Sequence& s)
     return at;
 }
 
-juce::String addEffectClip (Sequence& s, const FxStack& fx, const juce::String& name, Ticks at, Ticks len)
+int freeVideoTrack (const Sequence& s, int prefer, Ticks a, Ticks b)
+{
+    const int n = (int) s.tracks.size();
+    auto freeOn = [&] (int k)
+    {
+        if (k < 0 || k >= n || s.tracks[(size_t) k].kind != TrackKind::Video || s.tracks[(size_t) k].locked) return false;
+        for (auto& c : s.clips) if (c.track == k && c.start < b && c.end() > a) return false;
+        return true;
+    };
+    if (prefer < 0 || prefer >= n || s.tracks[(size_t) prefer].kind != TrackKind::Video)
+    {   // no target: the top video layer if it has room
+        int top = -1; for (int k = 0; k < n; ++k) if (s.tracks[(size_t) k].kind == TrackKind::Video) top = k;
+        return freeOn (top) ? top : -1;
+    }
+    for (int k = prefer; k < n; ++k) if (freeOn (k)) return k;   // where it was dropped, else the nearest room above it
+    return -1;
+}
+
+juce::String addEffectClip (Sequence& s, const FxStack& fx, const juce::String& name, Ticks at, Ticks len, int preferTrack)
 {
     if (len <= 0) return {};
-    int tr = insertVideoTrack (s);
+    int tr = freeVideoTrack (s, preferTrack, std::max<Ticks> (0, at), std::max<Ticks> (0, at) + len);
+    if (tr < 0) tr = insertVideoTrack (s);
     Clip c; c.id = newId(); c.track = tr; c.start = std::max<Ticks> (0, at); c.length = len; c.fx = fx; c.name = name;
     s.clips.push_back (c); s.sortClips();
     return c.id;
@@ -457,7 +477,7 @@ static const StyleRules kStyles[3] = {
 static std::vector<TransitionType> stylePalette (const juce::String& n)
 {
     using T = TransitionType;
-    if (n == "Cinematic") return { T::Dissolve, T::DipBlack, T::LightLeak, T::Blur };
+    if (n == "Cinematic") return { T::Dissolve, T::DipBlack, T::Blur, T::Flash };
     if (n == "Underground") return { T::Whip, T::Blur, T::Shake, T::Mirror, T::DipBlack };
     return { T::Flash, T::Zoom, T::Whip, T::Shake, T::Spin };
 }
@@ -469,6 +489,11 @@ static Sequence generateOne (const Project& p, const StyleRules& st, juce::uint3
     juce::Random rng ((juce::int64) seed);
     const auto& a = p.song;
     Ticks songLen = std::min (a.duration, secToTicks (kMaxSongSeconds));
+    // per-generation variation so every press feels different
+    const double paceMul = std::array<double, 4> { 1.0, 0.5, 2.0, 1.0 }[(size_t) rng.nextInt (4)];
+    const double burstMul = 0.5 + rng.nextDouble() * 1.2, transMul = 0.6 + rng.nextDouble() * 0.9, punchMul = 0.5 + rng.nextDouble();
+    const ChopMode burstModes[] = { st.burst, ChopMode::HiHat, ChopMode::Kick, ChopMode::Grid8, ChopMode::Snare };
+    const double flashP = juce::String (st.name) == "Cinematic" ? 0.05 : 0.12;
     int audioTrack = (int) s.tracks.size() - 1;
     if (auto* song = p.song_())
     {
@@ -495,7 +520,7 @@ static Sequence generateOne (const Project& p, const StyleRules& st, juce::uint3
     while (t < songLen)
     {
         int sec = a.sectionAt (t + 1);
-        double segBeats = st.beats[juce::jlimit (0, 2, sec)];
+        double segBeats = std::max (1.0, st.beats[juce::jlimit (0, 2, sec)] * paceMul);
         // align segment to the grid
         double bt = a.beatAt (t);
         double nextBeat = std::floor (bt / segBeats + 1e-6) * segBeats + segBeats;
@@ -504,9 +529,9 @@ static Sequence generateOne (const Project& p, const StyleRules& st, juce::uint3
 
         std::vector<Ticks> cuts { t, t1 };
         // active sequencer: hat rolls always cut, hooks burst often, verses sometimes
-        const double burstP = sec == 2 ? std::max (st.burstChance, 0.55) : sec == 1 ? std::max (st.burstChance, 0.2) * 0.8 : st.burstChance * 0.25;
+        const double burstP = (sec == 2 ? std::max (st.burstChance, 0.55) : sec == 1 ? std::max (st.burstChance, 0.2) * 0.8 : st.burstChance * 0.25) * burstMul;
         if (st.burstChance > 0 && rng.nextDouble() < burstP)
-            for (auto e : chopPoints (a, t, t1, st.burst)) cuts.push_back (e);
+            for (auto e : chopPoints (a, t, t1, burstModes[(size_t) rng.nextInt (5)])) cuts.push_back (e);
         if (st.burstChance > 0 || sec == 2)
             for (auto e : hatRolls (a, t, t1)) cuts.push_back (e);
         {
@@ -543,10 +568,20 @@ static Sequence generateOne (const Project& p, const StyleRules& st, juce::uint3
                 placed.transIn = st.sectionTrans;
                 placed.transLen = secToTicks (std::min (beat, len * 0.5));
             }
+            else if (c0 > 0 && rng.nextDouble() < flashP * (sec + 1))
+            {   // quick 0.2 s white flash on the cut
+                placed.transIn = TransitionType::Flash;
+                placed.transLen = std::min (placed.length / 2, secToTicks (0.2));
+            }
+            else if (c0 > 0 && len >= beat && rng.nextDouble() < 0.04)
+            {   // the odd dissolve
+                placed.transIn = TransitionType::Dissolve;
+                placed.transLen = secToTicks (std::min (beat * 0.5, len * 0.4));
+            }
             else if (c0 > 0 && len >= beat * 0.75)
             {
                 // transitions on a share of ordinary cuts, short and on-grid
-                const double trP = (juce::String (st.name) == "Cinematic" ? 0.12 : 0.25) * (sec + 1);
+                const double trP = (juce::String (st.name) == "Cinematic" ? 0.12 : 0.25) * (sec + 1) * transMul;
                 if (rng.nextDouble() < trP)
                 {
                     auto pal = stylePalette (st.name);
@@ -556,7 +591,7 @@ static Sequence generateOne (const Project& p, const StyleRules& st, juce::uint3
             }
             // punch-in on hits: an eased scale keyframe from 1.1x back to 1x over a quarter beat-ish
             const bool punchy = juce::String (st.name) != "Cinematic";
-            if (punchy && sec >= 1 && len >= 0.2 && rng.nextDouble() < (sec == 2 ? 0.45 : 0.2))
+            if (punchy && sec >= 1 && len >= 0.2 && rng.nextDouble() < (sec == 2 ? 0.45 : 0.2) * punchMul)
             {
                 setKey (placed, "scale", 0, 1.08f + 0.08f * (float) rng.nextDouble(), 2);
                 setKey (placed, "scale", secToTicks (std::min (0.3, len * 0.6)), 1.0f);
@@ -637,6 +672,23 @@ int addTakeLayers (const Project& p, Sequence& s)
     }
     s.sortClips();
     return n;
+}
+
+bool regenerateActive (Project& p, juce::uint32 seed, const juce::String& styleMode)
+{
+    if (! p.song.valid) return false;
+    auto& cur = p.seq();
+    for (auto& rules : kStyles)
+        if (cur.style == rules.name)
+        {
+            auto nm = cur.name;
+            auto s = generateOne (p, rules, seed, styleMode);
+            s.name = nm;
+            cur = s;
+            addTakeLayers (p, cur);
+            return true;
+        }
+    return false;
 }
 
 std::vector<int> generateEdits (Project& p, juce::uint32 seed, const juce::String& styleMode)

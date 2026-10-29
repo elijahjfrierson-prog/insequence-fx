@@ -749,6 +749,16 @@ bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int 
     const auto& SP = sequenceParams();
     // effect clips (no media) on visible layers blend their look into the sequence FX while the playhead is over them
     FxStack postFx = s.fx;
+    float layerZoom = 1.0f, hhAmt = 0.0f;
+    auto motion = [&] (const FxStack& f, double prog, float op)
+    {
+        prog = juce::jlimit (0.0, 1.0, prog);
+        if (float v = f.get ("zoomIn", 0.0f); v != 0) layerZoom *= 1.0f + op * v * 0.4f * (float) prog;
+        if (float v = f.get ("zoomOut", 0.0f); v != 0) layerZoom *= 1.0f + op * v * 0.4f * (float) (1.0 - prog);
+        if (float v = f.get ("shrinkGrow", 0.0f); v != 0) layerZoom *= 1.0f + op * v * 0.3f * (float) std::sin (juce::MathConstants<double>::pi * prog);
+        hhAmt += op * f.get ("handheld", 0.0f);
+    };
+    motion (s.fx, 0.5, 1.0f);
     for (auto& c : s.clips)
         if (c.mediaId.isEmpty() && c.text.isEmpty() && c.enabled && t >= c.start && t < c.end() && c.track >= 0 && c.track < (int) s.tracks.size()
             && ! s.tracks[(size_t) c.track].hidden)
@@ -757,6 +767,7 @@ bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int 
             for (auto& [k, ks] : c.keys) if (! ks.empty() && k != "speed") fx.set (k, keyValue (ks, t - c.start));
             const float op = c.opacity * juce::jlimit (0.0f, 1.0f, fx.get ("opacity", 1.0f));
             fx.p.erase ("opacity");
+            motion (fx, c.length > 0 ? (double) (t - c.start) / (double) c.length : 0.0, op);
             for (auto& [k, v] : fx.p)
             {
                 auto* d = findParam (SP, k);
@@ -774,10 +785,16 @@ bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int 
     const float minWH = (float) std::min (W, H);
 
     // global "camera": kick zoom + shake
-    float camZoom = (1.0f + sv ("kickZoom") * 0.07f * be.kick) * (1.0f + sv ("shrinkGrow") * 0.22f * (be.kick - 0.3f));
+    float camZoom = (1.0f + sv ("kickZoom") * 0.07f * be.kick) * layerZoom;
     float shakeAmt = sv ("shake") * be.kick;
     float camX = (hash3 (be.kickIdx, 1, 3) - 0.5f) * 0.035f * W * shakeAmt;
     float camY = (hash3 (be.kickIdx, 2, 5) - 0.5f) * 0.035f * H * shakeAmt;
+    if (hhAmt > 0)
+    {
+        camX += hhAmt * W * 0.012f * (float) (std::sin (T * 1.3) + 0.5 * std::sin (T * 3.1 + 1.0));
+        camY += hhAmt * H * 0.012f * (float) (std::sin (T * 1.1 + 2.0) + 0.5 * std::sin (T * 2.7));
+        camZoom *= 1.0f + hhAmt * 0.03f;   // cover the drift so no edges show
+    }
     float transGlitch = 0, transSplit = 0, transBlur = 0;
     // per-layer transition state, set just before drawLayer and reset after
     float trRot = 0, trStretch = 1, trShX = 0, trShY = 0, trMirror = 0, trAmt = 1, trPrism = 0, trLeak = 0;
@@ -869,7 +886,10 @@ bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int 
         int reframe = (int) std::lround (cv ("reframe"));
         float sFill = std::max (W / rw, H / rh), sFit = std::min (W / rw, H / rh);
         float base = reframe == 0 ? sFill : sFit;
-        float scale = base * cv ("scale") * camZoom * extraScale;
+        const double cp = c.length > 0 ? juce::jlimit (0.0, 1.0, (double) (t - c.start) / (double) c.length) : 0.0;
+        const float hh = cv ("handheld");
+        float scale = base * cv ("scale") * camZoom * extraScale * (1.0f + cv ("zoomIn") * 0.4f * (float) cp)
+                      * (1.0f + cv ("zoomOut") * 0.4f * (float) (1.0 - cp)) * (1.0f + hh * 0.03f);
         const float sclX = scale * cv ("scaleX"), sclY = scale * cv ("scaleY");
         const float cL = cv ("cropL"), cR = cv ("cropR"), cT = cv ("cropT"), cB = cv ("cropB");
         const bool cropped = cL > 0 || cR > 0 || cT > 0 || cB > 0;
@@ -878,6 +898,12 @@ bool Renderer::render (const Project& p, const Sequence& s, Ticks t, int W, int 
         bool mirror = cv ("mirror") > 0.5f;
         float offX = cv ("posX") * W * 0.5f + camX + (trDir < 2 ? whip * W : 0.0f) + trShX * W;
         float offY = cv ("posY") * H * 0.5f + camY + (trDir >= 2 ? whip * H : 0.0f) + trShY * H;
+        if (hh > 0)
+        {
+            const double ht = T + (double) (c.id.hashCode() & 255);
+            offX += hh * W * 0.012f * (float) (std::sin (ht * 1.3) + 0.5 * std::sin (ht * 3.1 + 1.0));
+            offY += hh * H * 0.012f * (float) (std::sin (ht * 1.1 + 2.0) + 0.5 * std::sin (ht * 2.7));
+        }
         float cExp = std::pow (2.0f, cv ("exposure")), cCon = cv ("contrast"), cSat = cv ("saturation");
         const float cBri = cv ("brightness"), cHi = cv ("highlights"), cSh = cv ("shadows"), cTemp = cv ("temperature"), cTint = cv ("tint");
         const ToneCurve cCurve = makeCurve (c.fx, CP);

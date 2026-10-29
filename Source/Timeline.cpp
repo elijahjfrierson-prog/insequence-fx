@@ -5,11 +5,20 @@ namespace isfx
 {
 Timeline::Timeline (AppState& s) : st (s) { setWantsKeyboardFocus (false); }
 
+std::vector<int> Timeline::rowOrder() const
+{   // Premiere layout: the top video layer is drawn at the top, audio underneath
+    const auto& tr = st.project.seq().tracks;
+    std::vector<int> o;
+    for (int i = (int) tr.size() - 1; i >= 0; --i) if (tr[(size_t) i].kind == TrackKind::Video) o.push_back (i);
+    for (int i = 0; i < (int) tr.size(); ++i) if (tr[(size_t) i].kind != TrackKind::Video) o.push_back (i);
+    return o;
+}
+
 int Timeline::trackY (int i) const
 {
     int y = kRuler - vScroll;
     const auto& tr = st.project.seq().tracks;
-    for (int k = 0; k < i && k < (int) tr.size(); ++k) y += tr[(size_t) k].height;
+    for (int k : rowOrder()) { if (k == i) return y; y += tr[(size_t) k].height; }
     return y;
 }
 
@@ -18,8 +27,9 @@ int Timeline::trackAt (int y) const
     const auto& tr = st.project.seq().tracks;
     if (y < kRuler) return -1;
     int yy = kRuler - vScroll;
-    for (int k = 0; k < (int) tr.size(); ++k) { if (y >= yy && y < yy + tr[(size_t) k].height) return k; yy += tr[(size_t) k].height; }
-    return y < kRuler ? -1 : (int) tr.size() - 1;
+    auto o = rowOrder();
+    for (int k : o) { if (y >= yy && y < yy + tr[(size_t) k].height) return k; yy += tr[(size_t) k].height; }
+    return o.empty() ? -1 : o.back();
 }
 
 const Clip* Timeline::clipAt (juce::Point<int> p, int& edge) const
@@ -57,6 +67,14 @@ void Timeline::paint (juce::Graphics& g)
         int y = trackY (i), h = tr.height;
         g.setColour (i % 2 ? panel : panel.darker (0.15f)); g.fillRect (kHeader, y, W - kHeader, h);
         g.setColour (line); g.drawHorizontalLine (y + h - 1, 0, (float) W);
+    }
+    if (ghost.on)
+    {
+        const int gx0 = secToX (ticksToSec (ghost.at)), gx1 = secToX (ticksToSec (ghost.at + ghost.len));
+        const int gy = ghost.track >= 0 ? trackY (ghost.track) : kRuler, gh = ghost.track >= 0 ? s.tracks[(size_t) ghost.track].height : 10;
+        g.setColour (juce::Colour (0x667a4dff)); g.fillRect (gx0, gy + 2, std::max (3, gx1 - gx0), gh - 4);
+        g.setColour (juce::Colours::white); g.drawRect (gx0, gy + 2, std::max (3, gx1 - gx0), gh - 4, 2);
+        g.setFont (11.0f); g.drawText (ghost.track >= 0 ? "drop here" : "drop here (new track on top)", gx0 + 4, gy + 3, 200, 14, juce::Justification::left);
     }
 
     // beat grid
@@ -612,10 +630,11 @@ void Timeline::mouseDown (const juce::MouseEvent& e)
             bool hasSong = false; int sameKind = 0;
             for (auto& c : s.clips) if (c.track == tr && st.project.songId.isNotEmpty() && c.mediaId == st.project.songId) hasSong = true;
             for (auto& T : s.tracks) if (T.kind == s.tracks[(size_t) tr].kind) ++sameKind;
-            m.addItem (1, "Move track up", canSwap (tr - 1));
-            m.addItem (2, "Move track down", canSwap (tr + 1));
-            m.addItem (4, "Move to top", canSwap (tr - 1));
-            m.addItem (5, "Move to bottom", canSwap (tr + 1));
+            const int up = audio ? -1 : 1;   // video rows are drawn top layer first
+            m.addItem (1, "Move track up", canSwap (tr + up));
+            m.addItem (2, "Move track down", canSwap (tr - up));
+            m.addItem (4, "Move to top", canSwap (tr + up));
+            m.addItem (5, "Move to bottom", canSwap (tr - up));
             m.addSeparator();
             m.addItem (6, audio ? "Add audio track" : "Add video track");
             m.addItem (7, "Delete track (and its clips)", ! hasSong && sameKind > 1);
@@ -634,7 +653,8 @@ void Timeline::mouseDown (const juce::MouseEvent& e)
                 };
                 if (r == 1 || r == 2 || r == 4 || r == 5)
                 {
-                    const int d = (r == 1 || r == 4) ? -1 : 1;
+                    const int up = kind == TrackKind::Audio ? -1 : 1;
+                    const int d = (r == 1 || r == 4) ? up : -up;
                     if (! same (tr + d)) return;
                     st.edit ("Move track");
                     int cur = tr;
@@ -1033,8 +1053,26 @@ void Timeline::ensureVisible (Ticks t)
     if (sec < scrollSec || sec > scrollSec + vis * 0.92) scrollSec = std::max (0.0, sec - vis * 0.1);
 }
 
+void Timeline::updateGhost (const SourceDetails& d)
+{
+    auto desc = d.description.toString();
+    ghost.on = false;
+    if (desc.startsWith ("look:") || desc.startsWith ("preset:") || desc.startsWith ("lut:"))
+    {
+        const Ticks beat = st.project.song.valid ? secToTicks (st.project.song.beatSec()) : secToTicks (0.5);
+        int edge = 0; const Clip* under = clipAt (d.localPosition, edge);
+        ghost.at = under ? under->start : magnetSnap (secToTicks (std::max (0.0, xToSec (d.localPosition.x))), 0);
+        ghost.len = under ? under->length : beat * st.project.song.beatsPerBar * 2;
+        ghost.track = freeVideoTrack (st.project.seq(), trackAt (d.localPosition.y), ghost.at, ghost.at + ghost.len);
+        ghost.on = true;
+        if (onSeek) onSeek (ghost.at);   // the playhead and preview follow the drop point
+    }
+    repaint();
+}
+
 void Timeline::itemDropped (const SourceDetails& d)
 {
+    ghost.on = false;
     auto desc = d.description.toString();
     const Ticks beat = st.project.song.valid ? secToTicks (st.project.song.beatSec()) : secToTicks (0.5);
     if (desc.startsWith ("transition:"))
@@ -1063,7 +1101,7 @@ void Timeline::itemDropped (const SourceDetails& d)
                 Ticks at = under ? under->start : magnetSnap (secToTicks (std::max (0.0, xToSec (d.localPosition.x))), 0);
                 Ticks len = under ? under->length : beat * st.project.song.beatsPerBar * 2;
                 st.edit ("Add effect");
-                auto id = addEffectClip (st.project.seq(), fx, l.name, at, len);
+                auto id = addEffectClip (st.project.seq(), fx, l.name, at, len, trackAt (d.localPosition.y));
                 if (id.isNotEmpty()) { st.selected = { id }; revealClip (id); }
                 if (onEdited) onEdited();
                 break;
@@ -1084,7 +1122,7 @@ void Timeline::itemDropped (const SourceDetails& d)
         {
             Ticks at = under ? under->start : magnetSnap (secToTicks (std::max (0.0, xToSec (d.localPosition.x))), 0);
             Ticks len = under ? under->length : (up.length > 0 ? up.length : beat * st.project.song.beatsPerBar * 2);
-            auto id = addEffectClip (st.project.seq(), up.fx, up.name.fromLastOccurrenceOf (" / ", false, false), at, len);
+            auto id = addEffectClip (st.project.seq(), up.fx, up.name.fromLastOccurrenceOf (" / ", false, false), at, len, trackAt (d.localPosition.y));
             if (auto* c = st.project.seq().findClip (id)) { auto fx = c->fx; applyUserPreset (*c, up); c->fx = fx; for (auto& [k, v] : up.fx.p) c->fx.set (k, v); st.selected = { id }; revealClip (id); }
         }
         if (onEdited) onEdited();
@@ -1098,7 +1136,7 @@ void Timeline::itemDropped (const SourceDetails& d)
         Ticks at = under ? under->start : magnetSnap (secToTicks (std::max (0.0, xToSec (d.localPosition.x))), 0);
         Ticks len = under ? under->length : beat * st.project.song.beatsPerBar * 2;
         st.edit ("Add LUT");
-        auto id = addEffectClip (st.project.seq(), fx, "LUT " + f.getFileNameWithoutExtension(), at, len);
+        auto id = addEffectClip (st.project.seq(), fx, "LUT " + f.getFileNameWithoutExtension(), at, len, trackAt (d.localPosition.y));
         if (id.isNotEmpty()) { st.selected = { id }; revealClip (id); }
         if (onEdited) onEdited();
         return;

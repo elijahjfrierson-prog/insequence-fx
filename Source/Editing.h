@@ -32,7 +32,8 @@ juce::String paintClip (Sequence& s, const juce::String& templateId, Ticks at, i
 juce::String addMediaClip (Project& p, const juce::String& mediaId, int track, Ticks at, Ticks maxLen = 0);
 int insertVideoTrack (Sequence&);
 // effect layer: a clip with no media whose FX apply to everything under it while it plays (trim/move like any clip)
-juce::String addEffectClip (Sequence&, const FxStack& fx, const juce::String& name, Ticks at, Ticks len);
+juce::String addEffectClip (Sequence&, const FxStack& fx, const juce::String& name, Ticks at, Ticks len, int preferTrack = -1);
+int freeVideoTrack (const Sequence&, int prefer, Ticks a, Ticks b);   // -1 = no room, caller adds a track
 // drops a transition on the cut nearest `at` on a track (it belongs to the incoming clip, so it stays locked to that cut)
 bool setTransitionAtCut (Sequence&, int track, Ticks at, TransitionType, Ticks len, Ticks maxDist);
 // moves the song; with `withSynced` every synced clip, the beat grid and drum events move with it (sync stays intact)
@@ -68,6 +69,7 @@ int liftClips (const Project& p, Sequence& s, const juce::StringArray& ids, bool
 // Every synced take as one full clip on its own hidden, muted video track (raw material under the edit).
 int addTakeLayers (const Project& p, Sequence& s);
 std::vector<int> generateEdits (Project& p, juce::uint32 seed, const juce::String& styleMode = {});
+bool regenerateActive (Project& p, juce::uint32 seed, const juce::String& styleMode = {});   // Randomize: rebuild the active generated edit
 // SEQ (Triller-style): random videos with unrelated audio cut to the song beat in a new "SEQ n" sequence; returns its index or -1
 int buildSeqEdit (Project& p, juce::uint32 seed);
 // stack a fresh generated pass on new video tracks of the current sequence (keeps everything already there); returns clips added

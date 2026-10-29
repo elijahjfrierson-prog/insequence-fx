@@ -58,8 +58,6 @@ ImportResult decodeFiles (const juce::Array<juce::File>& files, const juce::Stri
         else if (m.kind == MediaKind::Video)
         {
             r.thumbs[m.id] = makeThumbnail (f, secToTicks (std::min (1.0, ticksToSec (m.duration) / 2)), 72);
-            m.quality = scoreShotQuality (f);
-            m.moments = scoreMoments (f);
             if (m.hasAudio)
             {
                 std::vector<float> mono;
@@ -134,7 +132,7 @@ MainComponent::MainComponent()
     setLookAndFeel (&lnf);
     juce::LookAndFeel::setDefaultLookAndFeel (&lnf);
     for (auto* c : std::initializer_list<juce::Component*> { &preview, &timeline, &media, &fxlib, &inspector, &mediaTgl, &inspTgl, &maxPrevBtn, &maxTlBtn, &movieBtn, &hscroll, &fileBtn, &saveBtn, &undoBtn, &redoBtn, &importBtn,
-            &presetsBtn, &pluginsBtn, &playBtn, &exportBtn, &snapBtn, &rippleBtn, &magnetBtn, &gridBtn, &chopBtn, &genBtn, &seqBtn, &keepBtn, &delRangeBtn, &zoomIn, &zoomOut,
+            &presetsBtn, &pluginsBtn, &playBtn, &exportBtn, &snapBtn, &rippleBtn, &magnetBtn, &gridBtn, &chopBtn, &genBtn, &randBtn, &seqBtn, &keepBtn, &delRangeBtn, &zoomIn, &zoomOut,
             &seqBox, &aspectBox, &snapBox, &chopBox, &styleBox, &status })
         addAndMakeVisible (c);
     const char* toolHelp[4] = { "E: select, move (drag) and trim (drag clip edges). Drag in the ruler to select a range.",
@@ -193,6 +191,16 @@ MainComponent::MainComponent()
         st.selected.clear();
         status.setText (st.project.sequences[(size_t) i].name + ": your videos are cut to the beat (their sound muted). Pick other SEQ versions in the sequence list.", juce::dontSendNotification);
         refresh (true);
+    };
+    randBtn.setTooltip ("Randomize: rebuilds this generated edit with a brand-new random variation (pace, chops, flashes, transitions). Undo brings the last one back.");
+    randBtn.onClick = [this]
+    {
+        auto style = styleBox.getSelectedItemIndex() > 0 ? styleModes()[styleBox.getSelectedItemIndex() - 1] : juce::String();
+        const auto seed = (juce::uint32) juce::Random::getSystemRandom().nextInt();
+        st.edit ("Randomize");
+        if (regenerateActive (st.project, seed, style)) { st.selected.clear(); status.setText ("Randomized this edit. Press again for another, Ctrl+Z to go back.", juce::dontSendNotification); refresh (true); return; }
+        st.history.undo (st.project);
+        genSeed = seed; generate();
     };
     genBtn.onClick = [this]
     {
@@ -382,8 +390,36 @@ MainComponent::MainComponent()
     startTimerHz (30);
 }
 
+void MainComponent::scoreMediaInBackground()
+{   // SEQ/Generate shot scoring: off the import path, one low-priority pass after the clips are already usable
+    std::vector<std::pair<juce::String, juce::File>> todo;
+    for (auto& m : st.project.media) if (m.kind == MediaKind::Video && ! m.missing && m.moments.empty()) todo.push_back ({ m.id, juce::File (m.path) });
+    if (todo.empty()) return;
+    if (selfTest)
+    {
+        for (auto& [id, f] : todo) if (auto* mi = st.project.findMedia (id)) { mi->quality = scoreShotQuality (f); mi->moments = scoreMoments (f); }
+        return;
+    }
+    juce::Component::SafePointer<MainComponent> sp (this);
+    auto alive = bgAlive;
+    juce::Thread::launch ([todo, sp, alive]
+    {
+        for (auto& [id, f] : todo)
+        {
+            if (! alive->load()) return;
+            const float q = scoreShotQuality (f);
+            auto mo = scoreMoments (f, [alive] { return ! alive->load(); });
+            juce::MessageManager::callAsync ([sp, id = id, q, mo]
+            {
+                if (sp != nullptr) if (auto* mi = sp->st.project.findMedia (id)) { mi->quality = q; if (mi->moments.empty()) mi->moments = mo; }
+            });
+        }
+    });
+}
+
 MainComponent::~MainComponent()
 {
+    bgAlive->store (false);
     stopTimer();
     devices.removeAudioCallback (&player);
     pluginWindows.clear();
@@ -422,7 +458,7 @@ void MainComponent::resized()
     if (showBottom) r.removeFromBottom (6);   // drag bar
     splitY = bottom.getY() - 3;
     for (auto* c : std::initializer_list<juce::Component*> { &timeline, &hscroll, &zoomIn, &zoomOut, &snapBox, &snapBtn, &rippleBtn, &magnetBtn, &gridBtn,
-                                                           &chopBox, &chopBtn, &styleBox, &genBtn, &seqBtn, &keepBtn, &delRangeBtn })
+                                                           &chopBox, &chopBtn, &styleBox, &genBtn, &randBtn, &seqBtn, &keepBtn, &delRangeBtn })
         c->setVisible (showBottom);
     for (auto& b : toolBtn) b.setVisible (showBottom);
     auto bar = bottom.removeFromTop (36).reduced (6, 5);
@@ -432,7 +468,7 @@ void MainComponent::resized()
     bar.removeFromLeft (8);
     place (bar, chopBox, 104); place (bar, chopBtn, 64);
     bar.removeFromLeft (8);
-    place (bar, styleBox, 130); place (bar, genBtn, 150); place (bar, seqBtn, 56);
+    place (bar, styleBox, 130); place (bar, genBtn, 150); place (bar, randBtn, 86); place (bar, seqBtn, 56);
     bar.removeFromLeft (8);
     place (bar, keepBtn, 92); place (bar, delRangeBtn, 100);
     zoomIn.setBounds (bar.removeFromRight (30)); bar.removeFromRight (4); zoomOut.setBounds (bar.removeFromRight (30));
@@ -442,8 +478,11 @@ void MainComponent::resized()
     media.setVisible (side && showMedia); fxlib.setVisible (side && showMedia); inspector.setVisible (side && showInspector);
     if (side && showMedia)
     {
-        auto left = r.removeFromLeft (290);
-        fxlib.setBounds (left.removeFromBottom ((int) (left.getHeight() * 0.42f)));
+        auto left = r.removeFromLeft (juce::jlimit (180, std::max (180, getWidth() / 2), leftW));
+        leftSplitX = r.getX() + 2; r.removeFromLeft (5);   // drag bar
+        auto fxR = left.removeFromBottom (juce::jlimit (80, std::max (80, left.getHeight() - 80), (int) (left.getHeight() * fxFrac)));
+        fxSplitY = fxR.getY() - 3; left.removeFromBottom (5);   // drag bar
+        fxlib.setBounds (fxR);
         media.setBounds (left);
     }
     if (side && showInspector) inspector.setBounds (r.removeFromRight (340));
@@ -526,13 +565,28 @@ void MainComponent::timerCallback()
 
 void MainComponent::mouseMove (const juce::MouseEvent& e)
 {
+    const bool side = ! maxPreview && showMedia && e.y < splitY;
+    if (side && std::abs (e.x - leftSplitX) <= 4) { setMouseCursor (juce::MouseCursor::LeftRightResizeCursor); return; }
+    if (side && e.x < leftSplitX && std::abs (e.y - fxSplitY) <= 4) { setMouseCursor (juce::MouseCursor::UpDownResizeCursor); return; }
     setMouseCursor (! maxPreview && std::abs (e.y - splitY) <= 4 ? juce::MouseCursor::UpDownResizeCursor : juce::MouseCursor::NormalCursor);
 }
 
-void MainComponent::mouseDown (const juce::MouseEvent& e) { draggingSplit = ! maxPreview && std::abs (e.y - splitY) <= 4; }
+void MainComponent::mouseDown (const juce::MouseEvent& e)
+{
+    const bool side = ! maxPreview && showMedia && e.y < splitY;
+    dragPanel = side && std::abs (e.x - leftSplitX) <= 4 ? 1 : side && e.x < leftSplitX && std::abs (e.y - fxSplitY) <= 4 ? 2 : 0;
+    draggingSplit = dragPanel == 0 && ! maxPreview && std::abs (e.y - splitY) <= 4;
+}
 
 void MainComponent::mouseDrag (const juce::MouseEvent& e)
 {
+    if (dragPanel == 1) { leftW = juce::jlimit (180, std::max (180, getWidth() / 2), e.x - 2); resized(); return; }
+    if (dragPanel == 2)
+    {   // effects panel grows upward, media/import panel shrinks
+        const float colTop = 44.0f, colH = (float) std::max (1, splitY - 44);
+        fxFrac = juce::jlimit (0.15f, 0.85f, ((float) splitY - (float) e.y) / colH); juce::ignoreUnused (colTop);
+        resized(); return;
+    }
     if (! draggingSplit) return;
     float avail = (float) std::max (1, getHeight() - 44);
     timelineFrac = juce::jlimit (0.15f, 0.85f, (float) (getHeight() - e.y) / avail);
@@ -663,7 +717,7 @@ void MainComponent::importFiles (const juce::Array<juce::File>& files, std::func
     bool makeSong = allowSong && st.project.songId.isEmpty();
     runTask ("Importing media", [res, files, songId, mono, makeSong] (ProgressCb p, std::function<bool()> c)
              { *res = decodeFiles (files, songId, mono, makeSong, p, c); },
-             [this, res, then] { applyImport (*res); if (then) then(); });
+             [this, res, then] { applyImport (*res); if (then) then(); scoreMediaInBackground(); });
 }
 
 void MainComponent::placeSongClip()

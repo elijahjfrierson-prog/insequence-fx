@@ -170,10 +170,11 @@ void Preview::run()
 
 static bool showsVideo (const Project& p, const Sequence& s, const Clip& c, Ticks t)
 {
-    if (! c.enabled || c.mediaId.isEmpty() || t < c.start || t >= c.end()) return false;
+    if (! c.enabled || (c.mediaId.isEmpty() && c.text.isEmpty()) || t < c.start || t >= c.end()) return false;
     if (c.track < 0 || c.track >= (int) s.tracks.size()) return false;
     auto& tr = s.tracks[(size_t) c.track];
     if (tr.kind != TrackKind::Video || tr.hidden) return false;
+    if (c.text.isNotEmpty()) return true;
     auto* m = p.findMedia (c.mediaId);
     return m != nullptr && m->kind != MediaKind::Audio;
 }
@@ -270,8 +271,8 @@ void Preview::mouseDrag (const juce::MouseEvent& e)
         {
             float dx = p.x - down.x, dy = p.y - down.y;
             if (e.mods.isShiftDown()) { if (std::abs (dx) > std::abs (dy)) dy = 0; else dx = 0; }
-            c->fx.set ("posX", juce::jlimit (-1.0f, 1.0f, v0 ("posX") + dx / (fa.getWidth() * 0.5f)));
-            c->fx.set ("posY", juce::jlimit (-1.0f, 1.0f, v0 ("posY") + dy / (fa.getHeight() * 0.5f)));
+            c->fx.set ("posX", juce::jlimit (-2.0f, 2.0f, v0 ("posX") + dx / (fa.getWidth() * 0.5f)));
+            c->fx.set ("posY", juce::jlimit (-2.0f, 2.0f, v0 ("posY") + dy / (fa.getHeight() * 0.5f)));
             break;
         }
         case Handle::Corner:
@@ -279,13 +280,13 @@ void Preview::mouseDrag (const juce::MouseEvent& e)
             auto l0 = g0.toLocal (down), l = g0.toLocal (p);
             if (e.mods.isShiftDown())
             {
-                c->fx.set ("scaleX", juce::jlimit (0.1f, 4.0f, v0 ("scaleX") * std::abs (l.x) / std::max (1.0f, std::abs (l0.x))));
-                c->fx.set ("scaleY", juce::jlimit (0.1f, 4.0f, v0 ("scaleY") * std::abs (l.y) / std::max (1.0f, std::abs (l0.y))));
+                c->fx.set ("scaleX", juce::jlimit (0.01f, 10.0f, v0 ("scaleX") * std::abs (l.x) / std::max (1.0f, std::abs (l0.x))));
+                c->fx.set ("scaleY", juce::jlimit (0.01f, 10.0f, v0 ("scaleY") * std::abs (l.y) / std::max (1.0f, std::abs (l0.y))));
             }
             else
             {
                 float f = l.getDistanceFromOrigin() / std::max (1.0f, l0.getDistanceFromOrigin());
-                c->fx.set ("scale", juce::jlimit (0.1f, 4.0f, v0 ("scale") * f));
+                c->fx.set ("scale", juce::jlimit (0.01f, 10.0f, v0 ("scale") * f));
             }
             break;
         }

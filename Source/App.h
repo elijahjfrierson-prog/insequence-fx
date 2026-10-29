@@ -187,6 +187,8 @@ public:
     void mouseMagnify (const juce::MouseEvent&, float) override;
     bool isInterestedInDragSource (const SourceDetails&) override { return true; }
     void itemDropped (const SourceDetails&) override;
+    void itemDragMove (const SourceDetails& d) override { updateGhost (d); }
+    void itemDragExit (const SourceDetails&) override { ghost.on = false; repaint(); }
     void zoomBy (float f, int anchorX);
     void ensureVisible (Ticks t);
     void revealClip (const juce::String& id);   // scroll so a new layer / text clip is on screen
@@ -200,6 +202,9 @@ public:
 private:
     static constexpr int kRuler = 28, kHeader = 70;
     int trackY (int i) const;
+    std::vector<int> rowOrder() const;
+    struct Ghost { Ticks at = 0, len = 0; int track = -1; bool on = false; } ghost;
+    void updateGhost (const SourceDetails&);
     struct CutDot { juce::String clipId; int x; juce::Point<int> centre; bool full; };
     std::vector<CutDot> cutDots() const;
 public:

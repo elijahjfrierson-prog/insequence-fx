@@ -101,7 +101,7 @@ private:
     juce::TextButton fileBtn { "File" }, saveBtn { "Save" }, importBtn { "Import" }, presetsBtn { "Presets" },
         pluginsBtn { "Plug-ins" }, playBtn { "Play" }, exportBtn { "EXPORT" },
         toolBtn[4] { juce::TextButton ("E Select"), juce::TextButton ("P Paint"), juce::TextButton ("D Delete"), juce::TextButton ("C Cut") },
-        snapBtn { "S Snap" }, rippleBtn { "R Ripple" }, magnetBtn { "Magnet" }, gridBtn { "B Grid" }, chopBtn { "CHOP" }, genBtn { "GENERATE 3 EDITS" }, seqBtn { "SEQ" },
+        snapBtn { "S Snap" }, rippleBtn { "R Ripple" }, magnetBtn { "Magnet" }, gridBtn { "B Grid" }, chopBtn { "CHOP" }, genBtn { "GENERATE 3 EDITS" }, randBtn { "RANDOMIZE" }, seqBtn { "SEQ" },
         keepBtn { "Keep range" }, delRangeBtn { "Delete range" }, zoomIn { "+" }, zoomOut { "-" };
     juce::ComboBox seqBox, aspectBox, snapBox, chopBox, styleBox;
     juce::Label status;
@@ -112,6 +112,9 @@ private:
     bool selfTest = false;
     bool showMedia = true, showInspector = true, maxPreview = false, maxTimeline = false;
     float timelineFrac = 0.38f;
+    std::shared_ptr<std::atomic<bool>> bgAlive = std::make_shared<std::atomic<bool>> (true);
+    void scoreMediaInBackground();
+    int leftW = 290; float fxFrac = 0.42f; int leftSplitX = -100, fxSplitY = -100; int dragPanel = 0;
     int splitY = 0; bool draggingSplit = false;
     void mouseMove (const juce::MouseEvent&) override;
     void mouseDown (const juce::MouseEvent&) override;
