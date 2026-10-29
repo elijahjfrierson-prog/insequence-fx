@@ -1,3 +1,4 @@
+#include <limits>
 // Headless tests: run with `ISFXTests` (ctest). Every check prints PASS/FAIL; exit code = failures.
 #include "../Source/Model.h"
 #include "../Source/Media.h"
@@ -209,6 +210,57 @@ static Project syntheticProject()
 static void testEditing()
 {
     Project p = syntheticProject();
+    {
+        SongAnalysis rs = p.song;
+        const Ticks r0 = secToTicks (20.0), step = secToTicks (rs.beatSec() / 4.0);
+        for (int k = 1; k <= 6; ++k) rs.events.push_back ({ r0 + step * k + secToTicks (0.001), EventType::HiHat, 0.5f, 0.8f });
+        auto rolls = hatRolls (rs, r0, r0 + secToTicks (2.0));
+        CHECK (rolls.size() >= 6, "hi-hat roll found and cut on every roll hat (" + juce::String ((int) rolls.size()) + ")");
+        CHECK (hatRolls (p.song, 0, secToTicks (10)).empty(), "steady 8th hats are not a roll");
+        {
+            Project q = Project::makeNew(); MediaItem m; m.id = "m"; m.kind = MediaKind::Video; m.duration = secToTicks (30); q.media.push_back (m);
+            auto& s = q.seq(); s.clips.clear();
+            Clip a; a.id = "a"; a.mediaId = "m"; a.start = 0; a.length = secToTicks (1); a.srcIn = secToTicks (5);
+            Clip b = a; b.id = "b"; b.start = secToTicks (1); b.length = secToTicks (2); b.srcIn = secToTicks (29);
+            s.clips = { a, b };
+            CHECK (swapClipSlots (s, q, "a", "b"), "swap shots");
+            auto* A = s.findClip ("a"); auto* Bc = s.findClip ("b");
+            CHECK (A->start == secToTicks (1) && A->length == secToTicks (2) && Bc->start == 0 && Bc->length == secToTicks (1)
+                   && A->srcIn == secToTicks (5) && Bc->srcIn == secToTicks (29), "swapped shots trade slots, cut points stay");
+        }
+        {
+            Clip c; c.start = secToTicks (10); c.length = secToTicks (4); c.srcIn = secToTicks (1);
+            CHECK (c.srcAt (c.start + secToTicks (2)) == secToTicks (3), "no ramp: 1:1 source time");
+            setKey (c, "speed", 0, 1.0f, 0); setKey (c, "speed", secToTicks (4), 0.0f, 0);
+            auto near = [] (Ticks a, double sec) { return std::abs (ticksToSec (a) - sec) < 1e-4; };
+            CHECK (near (c.srcAt (c.end()), 1 + 2.0) && near (c.srcAt (c.start + secToTicks (2)), 1 + 1.5), "linear ramp 100%>0% integrates (2 s of source over 4 s)");
+            c.keys["speed"][0].interp = 2;
+            CHECK (near (c.srcAt (c.end()), 3.0) && c.srcAt (c.start + secToTicks (1)) < c.srcAt (c.start + secToTicks (2)), "eased ramp is monotonic and integrates");
+            c.reverse = true;
+            CHECK (near (c.srcAt (c.start), 3.0 - ticksToSec (1)) && near (c.srcAt (c.end()), 1.0 - ticksToSec (1)), "reverse ramp plays the same source range backwards");
+        }
+        {
+            Frame a, b, o; a.w = b.w = 128; a.h = b.h = 64; a.rgba.assign (128 * 64 * 4, 0); b.rgba = a.rgba; a.pts = 0; b.pts = 1;
+            auto box = [] (Frame& f, int x0) { for (int y = 20; y < 44; ++y) for (int x = x0; x < x0 + 24; ++x) for (int q = 0; q < 3; ++q) f.rgba[((size_t) y * 128 + x) * 4 + q] = 255; };
+            box (a, 40); box (b, 56);
+            interpolateFrames (a, b, 0.5f, false, o);
+            CHECK (o.rgba[((size_t) 32 * 128 + 44) * 4] > 100 && o.rgba[((size_t) 32 * 128 + 44) * 4] < 160, "frame blending mixes both frames");
+            interpolateFrames (a, b, 0.5f, true, o);
+            const int edge = o.rgba[((size_t) 32 * 128 + 50) * 4], left = o.rgba[((size_t) 32 * 128 + 44) * 4];
+            CHECK (edge > 200 && left < 90, "optical flow moves the box halfway instead of ghosting (" + juce::String (edge) + ", " + juce::String (left) + ")");
+        }
+        {
+            auto mid = rolls.size() >= 4 ? rolls[2] : r0;
+            auto left = hatRolls (rs, r0 - secToTicks (1.0), mid), right = hatRolls (rs, mid, r0 + secToTicks (2.0));
+            CHECK (! left.empty() && ! right.empty() && left.size() + right.size() == rolls.size(), "a roll split across two clips still cuts on both sides");
+        }
+        {
+            auto dir = juce::File (__FILE__).getParentDirectory().getSiblingFile ("content").getChildFile ("LUTs");
+            int ok = 0, n = 0; juce::String why;
+            for (auto& f : dir.findChildFiles (juce::File::findFiles, true, "*.cube")) { ++n; Lut3D l; if (l.load (f, why)) ++ok; else std::cout << "  LUT fail " << f.getFileName() << ": " << why << "\n"; }
+            CHECK (n > 0 && ok == n, "every bundled LUT loads (" + juce::String (ok) + "/" + juce::String (n) + ")");
+        }
+    }
     History h;
     auto id = addMediaClip (p, "take1", 0, 0);
     CHECK (id.isNotEmpty() && p.seq().clips.size() == 1, "clip added");
@@ -228,7 +280,49 @@ static void testEditing()
     auto* c = p.seq().findClip (right);
     Ticks before = c->srcIn;
     CHECK (trimClip (p.seq(), p, right, true, c->start + secToTicks (1)) && p.seq().findClip (right)->srcIn == before + secToTicks (1), "T trim left moves source in");
+    if (p.songId.isNotEmpty())
+    {
+        int at = -1; for (int i = 0; i < (int) p.seq().tracks.size(); ++i) if (p.seq().tracks[(size_t) i].kind == TrackKind::Audio) { at = i; break; }
+        auto sid = at >= 0 ? addMediaClip (p, p.songId, at, 0) : juce::String();
+        if (auto* sc = p.seq().findClip (sid))
+        {
+            sc->locked = true;
+            const Ticks s0 = sc->srcIn, e0 = sc->end();
+            CHECK (trimClip (p.seq(), p, sid, true, sc->start + secToTicks (2)) && p.seq().findClip (sid)->srcIn == s0 + secToTicks (2)
+                   && p.seq().findClip (sid)->end() == e0, "song clip: trim start 2 s in (source starts later, end stays)");
+            const auto n0 = p.seq().clips.size();
+            CHECK (splitAt (p.seq(), secToTicks (3), { sid }, p.songId) && p.seq().clips.size() == n0 + 1, "song clip: split like any clip");
+        }
+    }
     CHECK (snapTime (secToTicks (1.0), p, SnapMode::Sixteenth) == p.song.subdivTime (std::llround ((1.0 - 0.3) / (60.0 / 140 / 4)), 4), "snap to 1/16");
+}
+
+static void testSeqEdit()
+{
+    Project p = syntheticProject();
+    for (auto& m : p.media) if (m.id != p.songId) m.sync = SyncInfo();   // unrelated audio: nothing synced
+    const int before = (int) p.sequences.size();
+    const int i = buildSeqEdit (p, 7);
+    CHECK (i == before, "SEQ makes a new sequence");
+    if (i < 0) return;
+    const auto& s = p.sequences[(size_t) i];
+    int vids = 0, onBeat = 0; bool muted = true, repeats = false, inSrc = true; juce::String prev; std::set<juce::String> used;
+    for (auto& c : s.clips) if (s.tracks[(size_t) c.track].kind == TrackKind::Video)
+    {
+        ++vids; used.insert (c.mediaId);
+        if (c.volume != 0.0f) muted = false;
+        if (c.mediaId == prev) repeats = true;
+        prev = c.mediaId;
+        auto* m = p.findMedia (c.mediaId);
+        if (c.srcIn < 0 || c.srcIn + c.length > m->duration) inSrc = false;
+        const double b = p.song.beatAt (c.start);
+        if (std::abs (c.start - p.song.gridTime (std::round (b * 8) / 8)) <= secToTicks (1.0 / p.fps)) ++onBeat;   // 1/32-note grid, within a frame
+    }
+    CHECK (s.name.startsWith ("SEQ") && vids > 8, "SEQ cuts the song into many clips (" << vids << ")");
+    CHECK (muted, "SEQ mutes the videos' own audio");
+    CHECK (! repeats || used.size() < 2, "SEQ never repeats a video back-to-back");
+    CHECK (inSrc, "SEQ clips stay inside their source footage");
+    CHECK (onBeat >= vids * 9 / 10, "SEQ cuts land on the beat grid (" << onBeat << "/" << vids << ")");
 }
 
 static void testChopAndGenerate()
@@ -385,6 +479,21 @@ static double diff (const std::vector<juce::uint8>& a, const std::vector<juce::u
 }
 
 static constexpr int W = 192, H = 108;
+static void testTextClip()
+{
+    Project p = Project::makeNew();
+    auto& s = p.seq();
+    Clip c; c.id = "txt"; c.track = 0; c.start = 0; c.length = secToTicks (2); c.text = "HELLO"; c.name = "TEXT";
+    s.clips.push_back (c);
+    Renderer r; std::vector<juce::uint8> px;
+    r.render (p, s, secToTicks (1), 320, 180, px, 0);
+    int lit = 0;
+    for (size_t i = 0; i + 3 < px.size(); i += 4) if (px[i] > 180 && px[i + 1] > 180 && px[i + 2] > 180) ++lit;
+    CHECK (lit > 50, "text clip renders visible letters (" + juce::String (lit).toStdString() + " px)");
+    ClipGeom g;
+    CHECK (clipGeometry (p, c, 320, 180, g), "text clip has transform geometry (handles in the preview)");
+}
+
 static void testRender()
 {
     auto gradF = writePng ("isfx_grad.png", [] (int x, int y) { return juce::Colour ((juce::uint8) (x * 255 / 319), (juce::uint8) (y * 255 / 179), (juce::uint8) ((x + y) % 256)); });
@@ -413,7 +522,7 @@ static void testRender()
     for (auto& d : sequenceParams())
     {
         juce::String id (d.id);
-        if (id == "lutMix" || id == "grainSize" || id == "trails" || id == "sharpen" || id == "letterboxRatio") continue;   // modifiers / need motion or texture (tested below)
+        if (id == "lutMix" || id == "bf2Warp" || id == "grainSize" || id == "trails" || id == "sharpen" || id == "letterboxRatio") continue;   // modifiers / need motion or texture (tested below)
         Sequence sq = s; float v = d.def > 0.5f * (d.min + d.max) ? d.min : d.max;
         if (id == "contrast" || id == "saturation") v = d.max;
         sq.fx.set (id, v);
@@ -771,6 +880,52 @@ static void benchPlayback (const juce::String& files, int W, int H, int decodeH,
 // ISFX_SOAK="a.mp4:b.mov:c.mov" ISFX_SOAK_Q=1|2|4|8 ISFX_SOAK_SEC=60: the app's playback loop for a long run.
 // The playhead follows the wall clock (looping the clips) and each render shows the newest frame, so a slow frame
 // is dropped rather than slowing playback. Quality tiers decode exactly like Preview (1080 / div, proxies at <= 540).
+static void testPrfpset()
+{
+    auto dir = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("isfx_prf"); dir.deleteRecursively(); dir.createDirectory();
+    auto f = dir.getChildFile ("My_Pack.prfpset");
+    f.replaceWithText (R"(<?xml version="1.0"?><PremiereData Version="3">
+<BinTreeItem ObjectID="2"><Items><Item Index="0" ObjectRef="3"/></Items><TreeItemBase><Name>Root</Name></TreeItemBase></BinTreeItem>
+<BinTreeItem ObjectID="3"><Items><Item Index="0" ObjectRef="7"/></Items><TreeItemBase><Name>Zooms &amp; Hits</Name></TreeItemBase></BinTreeItem>
+<TreeItem ObjectID="7"><TreeItemBase><Name>Zoom OUT</Name><Data ObjectRef="8"/></TreeItemBase></TreeItem>
+<FilterPresetItem ObjectID="8"><FilterPresets><FilterPreset Index="0" ObjectRef="9"/><FilterPreset Index="1" ObjectRef="20"/></FilterPresets></FilterPresetItem>
+<FilterPreset ObjectID="9"><FilterMatchName>AE.ADBE Geometry2</FilterMatchName><Component ObjectRef="10"/><AnchorInPoint>254016000000</AnchorInPoint><AnchorOutPoint>508032000000</AnchorOutPoint></FilterPreset>
+<VideoFilterComponent ObjectID="10"><Component><DisplayName>Transform</DisplayName><Params><Param Index="0" ObjectRef="11"/><Param Index="1" ObjectRef="12"/></Params></Component><MatchName>AE.ADBE Geometry2</MatchName></VideoFilterComponent>
+<VideoComponentParam ObjectID="11"><Name>Scale</Name><Keyframes>254016000000,100.,0,0,0,0,0,0;381024000000,200.,0,0,0,0,0,0;</Keyframes><IsTimeVarying>true</IsTimeVarying><StartKeyframe>-91445760000000000,100.,0,0,0,0,0,0</StartKeyframe></VideoComponentParam>
+<VideoComponentParam ObjectID="12"><Name>Skew</Name><Keyframes>254016000000,0.,0;381024000000,10.,0;</Keyframes><IsTimeVarying>true</IsTimeVarying></VideoComponentParam>
+<FilterPreset ObjectID="20"><FilterMatchName>AE.ADBE Gaussian Blur 2</FilterMatchName><Component ObjectRef="21"/><AnchorInPoint>254016000000</AnchorInPoint><AnchorOutPoint>508032000000</AnchorOutPoint></FilterPreset>
+<VideoFilterComponent ObjectID="21"><Component><DisplayName>Gaussian Blur</DisplayName><Params><Param Index="0" ObjectRef="22"/></Params></Component><MatchName>AE.ADBE Gaussian Blur 2</MatchName></VideoFilterComponent>
+<VideoComponentParam ObjectID="22"><Name>Blurriness</Name><Keyframes></Keyframes><IsTimeVarying>false</IsTimeVarying><StartKeyframe>-91445760000000000,50.,0,0,0,0,0,0</StartKeyframe><CurrentValue>50.</CurrentValue></VideoComponentParam>
+</PremiereData>)");
+    int n = 0;
+    auto summary = importPresetFiles ({ f }, n, dir);
+    CHECK (n == 1, "prfpset: one preset imported");
+    auto ups = loadUserPresets (dir.getChildFile ("Presets"));
+    CHECK (ups.size() == 1 && ups[0].name == "My Pack / Zooms & Hits / Zoom OUT", "prfpset: pack / folder / name kept");
+    if (ups.size() == 1)
+    {
+        auto& u = ups[0];
+        CHECK (u.clip && u.atEnd && u.length == secToTicks (1.0), "prfpset: OUT preset anchored to the clip end, 1 s long");
+        CHECK (u.keys.count ("scale") && u.keys["scale"].size() == 2 && std::abs (u.keys["scale"][1].v - 2.0f) < 1e-4f
+               && u.keys["scale"][1].t == secToTicks (0.5), "prfpset: Transform scale keyframes rebuilt with timing");
+        CHECK (std::abs (u.fx.get ("blur", 0) - 0.25f) < 1e-4f, "prfpset: Gaussian Blur mapped");
+        Clip c; c.start = 0; c.length = secToTicks (3);
+        applyUserPreset (c, u);
+        CHECK (c.keys["scale"][0].t == secToTicks (2.0), "prfpset: OUT keys land at the clip end");
+    }
+    CHECK (summary.contains ("Transform: Skew"), "prfpset: unmapped params are reported, not dropped silently");
+    if (auto real = juce::SystemStats::getEnvironmentVariable ("ISFX_PRF", {}); real.isNotEmpty())
+        for (auto& path : juce::StringArray::fromTokens (real, ":", ""))
+        {
+            juce::StringArray miss; juce::String err;
+            const double t0 = juce::Time::getMillisecondCounterHiRes();
+            int k = importPrfpset (juce::File (path), dir.getChildFile ("Real"), miss, err);
+            std::cout << "  PRF " << juce::File (path).getFileName() << ": " << k << " presets in " << juce::String ((juce::Time::getMillisecondCounterHiRes() - t0) / 1000.0, 1)
+                      << " s, not rebuilt: " << miss.size() << " " << err << "\n";
+        }
+    dir.deleteRecursively();
+}
+
 static void soakPlayback (const juce::String& files, int q, double secs)
 {
     const int tier = std::max (90, 1080 / std::max (1, q));
@@ -805,7 +960,8 @@ static void soakPlayback (const juce::String& files, int q, double secs)
     {
         s.clips.clear();
         const Ticks L = secToTicks (cutSec);
-        loopLen = secToTicks (30);
+        const int nClips = juce::SystemStats::getEnvironmentVariable ("ISFX_SOAK_CLIPS", "0").getIntValue();
+        loopLen = nClips > 0 ? (Ticks) nClips * L : secToTicks (30);
         for (int i = 0; (Ticks) i * L < loopLen; ++i)
         {
             auto& m = p.media[(size_t) i % p.media.size()];
@@ -816,6 +972,26 @@ static void soakPlayback (const juce::String& files, int q, double secs)
         }
         s.sortClips();
         track = (int) s.clips.size();
+    }
+    // ISFX_SOAK_FX=1000: spread that many effects (blur, lens, posterize, invert, keyframed scale/opacity/exposure, speed ramps) over the clips
+    if (const int nfx = juce::SystemStats::getEnvironmentVariable ("ISFX_SOAK_FX", "0").getIntValue(); nfx > 0 && ! s.clips.empty())
+    {
+        for (int i = 0; i < nfx; ++i)
+        {
+            auto& c = s.clips[(size_t) i % s.clips.size()];
+            switch (i % 8)
+            {
+                case 0: c.fx.set ("blur", 0.15f); break;
+                case 1: setKey (c, "lensCurve", 0, 0.0f, 2); setKey (c, "lensCurve", c.length, -0.6f, 2); break;
+                case 2: c.fx.set ("posterizeTime", 12); break;
+                case 3: setKey (c, "scale", 0, 1.0f, 2); setKey (c, "scale", c.length, 1.3f, 2); break;
+                case 4: setKey (c, "opacity", 0, 0.6f, 0); setKey (c, "opacity", c.length, 1.0f, 0); break;
+                case 5: setKey (c, "exposure", 0, 0.8f, 2); setKey (c, "exposure", c.length, 0.0f, 2); break;
+                case 6: setKey (c, "speed", 0, 1.0f, 2); setKey (c, "speed", c.length, 0.4f, 2); c.frameInterp = 1; break;
+                default: c.fx.set ("invert", 0.3f); c.fx.set ("rotation", 4); break;
+            }
+        }
+        std::cout << "SOAK " << s.clips.size() << " clips carrying " << nfx << " effects\n";
     }
     const bool liveMode = juce::SystemStats::getEnvironmentVariable ("ISFX_SOAK_LIVE", "0") == "1";
     if (! lookLibrary().empty()) applyLook (s.fx, lookLibrary()[0], 1.0f);
@@ -861,8 +1037,128 @@ static void soakPlayback (const juce::String& files, int q, double secs)
               << " | RSS start " << rss0 << " MB, end " << rssMB() << " MB, peak " << rssPeak << " MB\n";
 }
 
+static void testStabilizeAndAudio()
+{
+    // synthetic shaky clip: texture shifted by m(f) px and rotated by th(f) rad (clockwise), encoded with our exporter
+    const int W = 320, H = 180;
+    auto mx = [] (int f) { return 6.0 * std::sin (f * 1.3); };
+    auto th = [] (int f) { return 0.03 * std::sin (f * 0.9 + 1.0); };
+    auto tex = [] (double x, double y) { return 128 + 55 * std::sin (x * 0.11) * std::cos (y * 0.13) + 45 * std::sin ((x + 2 * y) * 0.05); };
+    Sequence s = Project::makeDefaultSequence ("x");
+    AudioCache cache;
+    ExportJob job; job.width = W; job.height = H; job.fps = 24; job.mbps = 8;
+    job.output = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("isfx_shake.mp4");
+    Clip c; c.id = "v"; c.mediaId = "none"; c.track = 0; c.start = 0; c.length = secToTicks (3); s.clips.push_back (c);
+    std::atomic<bool> cancel { false }; juce::String err, codec;
+    bool ok = runExport (s, cache, job, [&] (Ticks t, std::vector<juce::uint8>& px)
+    {
+        const int f = (int) ticksToFrame (t, 24);
+        const double cr = std::cos (th (f)), sr = std::sin (th (f));
+        for (int y = 0; y < H; ++y)
+            for (int x = 0; x < W; ++x)
+            {
+                const double ox = x - W / 2.0 - mx (f), oy = y - H / 2.0;
+                const double u = ox * cr + oy * sr, v = -ox * sr + oy * cr;   // inverse of a clockwise rotation (y down)
+                const auto g = (juce::uint8) juce::jlimit (0.0, 255.0, tex (u, v));
+                auto* p = &px[((size_t) y * W + x) * 4]; p[0] = p[1] = p[2] = g; p[3] = 255;
+            }
+        return true;
+    }, nullptr, cancel, err, &codec);
+    CHECK (ok, "write shaky test clip " << err);
+    ShakeFix fix;
+    CHECK (analyzeShake (job.output, 0, secToTicks (3), 1.0, 1.0f, fix) && fix.t.size() > 60, "stabilizer analyses the shaky clip (" << fix.t.size() << " frames)");
+    auto corr = [] (const std::vector<double>& a, const std::vector<double>& b)
+    {
+        double ma = 0, mb = 0; for (size_t i = 0; i < a.size(); ++i) { ma += a[i]; mb += b[i]; } ma /= a.size(); mb /= b.size();
+        double sab = 0, saa = 0, sbb = 0; for (size_t i = 0; i < a.size(); ++i) { sab += (a[i] - ma) * (b[i] - mb); saa += (a[i] - ma) * (a[i] - ma); sbb += (b[i] - mb) * (b[i] - mb); }
+        return sab / std::sqrt (std::max (1e-12, saa * sbb));
+    };
+    std::vector<double> gx, wx, gr, wr;
+    for (size_t i = 15; i + 15 < fix.t.size(); ++i)
+    {
+        const int f = (int) ticksToFrame (fix.t[i], 24);
+        gx.push_back (fix.dx[i]); wx.push_back (-mx (f) / W);
+        gr.push_back (fix.rot[i]); wr.push_back (-th (f) * 180 / 3.14159);
+    }
+    const double cx = gx.empty() ? 0 : corr (gx, wx), cr = gr.empty() ? 0 : corr (gr, wr);
+    CHECK (cx > 0.8, "stabilizer moves the image against the shake (corr " << cx << ")");
+    CHECK (cr > 0.6, "stabilizer counter-rotates against the wobble (corr " << cr << ")");
+    CHECK (fix.zoom > 1.0f && fix.zoom < 1.4f, "stabilizer crop-in " << fix.zoom);
+
+    // audio: fades and a volume line shape the gain; auto-duck drops other sound under the song
+    Clip a; a.length = secToTicks (4); a.volume = 1.0f; a.fadeIn = secToTicks (1); a.fadeOut = secToTicks (1);
+    CHECK (std::abs (volumeGain (a, 0)) < 1e-4 && std::abs (volumeGain (a, secToTicks (0.5)) - 0.5f) < 0.01f
+           && std::abs (volumeGain (a, secToTicks (2)) - 1.0f) < 1e-4 && volumeGain (a, secToTicks (3.5)) < 0.51f, "audio fade in/out ramps");
+    a.fadeIn = a.fadeOut = 0;
+    setKey (a, "volume", 0, 1.0f, 0); setKey (a, "volume", secToTicks (4), 0.0f, 0);
+    CHECK (std::abs (volumeGain (a, secToTicks (2)) - 0.5f) < 0.05f, "volume keyframe line " << volumeGain (a, secToTicks (2)));
+    Sequence q = Project::makeDefaultSequence ("d");
+    auto one = std::make_shared<std::vector<float>> ((size_t) kMixRate * 2 * 2, 0.25f);
+    cache.put ("song", one); cache.put ("vid", one);
+    Clip sc; sc.id = "s"; sc.mediaId = "song"; sc.track = (int) q.tracks.size() - 1; sc.length = secToTicks (2); q.clips.push_back (sc);
+    std::vector<float> L (512), R (512);
+    mixSequence (q, cache, kMixRate / 2, 512, L.data(), R.data(), nullptr);
+    const float songOnly = L[100];
+    Clip vc = sc; vc.id = "v"; vc.mediaId = "vid"; vc.track = 0; q.clips.push_back (vc);
+    mixSequence (q, cache, kMixRate / 2, 512, L.data(), R.data(), nullptr);
+    const float both = L[100];
+    q.duckDb = -12.0f; q.duckKey = "song";
+    mixSequence (q, cache, kMixRate / 2, 512, L.data(), R.data(), nullptr);
+    const float ducked = L[100];
+    CHECK (both > songOnly * 1.9f && std::abs (ducked - songOnly * (1.0f + std::pow (10.0f, -12.0f / 20.0f))) < 0.01f,
+           "auto-duck: video sound drops 12 dB under the song (" << songOnly << " / " << both << " / " << ducked << ")");
+}
+
+static void testDetectCuts()
+{
+    using namespace isfx;
+    const juce::File f ("/tmp/isfx_cuts.mp4");   // red 1s | testsrc 1s | blue 1s (made with ffmpeg CLI when available)
+    if (! f.existsAsFile()) return;
+    auto cuts = detectCuts (f, 0, secToTicks (3.0));
+    std::cout << "cuts:"; for (auto c : cuts) std::cout << " " << ticksToSec (c); std::cout << "\n";
+    CHECK (cuts.size() == 2 && std::abs (ticksToSec (cuts[0]) - 1.0) < 0.02 && std::abs (ticksToSec (cuts[1]) - 2.0) < 0.02,
+           "slice-at-cuts finds the 2 hard cuts frame-exact");
+}
+
+static void testReversePlayback()
+{
+    // reversed clip in live playback: frames come back in descending order, close to the request, without per-frame GOP re-decodes
+    auto file = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("isfx_shake.mp4");
+    PrefetchDecoder pre; pre.reverse = true; juce::String err;
+    CHECK (pre.open (file, 180, err), "open reverse decoder " << err);
+    const Ticks fd = secToTicks (1.0 / 24);
+    int good = 0, n = 0; double worst = 0, inGet = 0; Ticks last = std::numeric_limits<Ticks>::max(); bool mono = true;
+    for (Ticks t = secToTicks (2.9); t > 0; t -= fd, ++n)
+    {
+        const double a = juce::Time::getMillisecondCounterHiRes();
+        auto f = pre.get (t, 40);
+        const double w = juce::Time::getMillisecondCounterHiRes() - a;
+        worst = std::max (worst, w); inGet += w;
+        if (f != nullptr && std::llabs (f->pts - t) <= fd) ++good;
+        if (f != nullptr) { mono = mono && f->pts <= last; last = f->pts; }
+        juce::Thread::sleep (5);
+    }
+    const double ms = inGet;   // time playback spends blocked on the decoder (sleep granularity on CI runners is not ours)
+    CHECK (mono && good >= n * 9 / 10, "reverse playback serves frames backwards (" << good << "/" << n << " on time)");
+    file.deleteFile();
+    CHECK (ms < n * 25.0, "reverse playback keeps up (" << ms / n << " ms/frame, worst wait " << worst << " ms)");
+}
+
 int main (int argc, char** argv)
 {
+    if (auto b = juce::SystemStats::getEnvironmentVariable ("ISFX_PRFPSET_IN", {}); b.isNotEmpty())
+    {   // dev tool: convert .prfpset packs into bundled stock presets (content/Presets/<pack>/)
+        const juce::File out (juce::SystemStats::getEnvironmentVariable ("ISFX_PRFPSET_OUT", {}));
+        for (auto& path : juce::StringArray::fromTokens (b, ";", {}))
+        {
+            juce::File f (path); juce::StringArray miss; juce::String err;
+            auto dir = out.getChildFile (f.getFileNameWithoutExtension().replace ("_", " ").trim());
+            dir.createDirectory();
+            const int n = importPrfpset (f, dir, miss, err);
+            std::printf ("%s: %d presets, %d unmapped %s\n", f.getFileName().toRawUTF8(), n, miss.size(), err.toRawUTF8());
+        }
+        return 0;
+    }
     if (auto b = juce::SystemStats::getEnvironmentVariable ("ISFX_SOAK", {}); b.isNotEmpty())
     {
         soakPlayback (b, juce::SystemStats::getEnvironmentVariable ("ISFX_SOAK_Q", "2").getIntValue(),
@@ -882,12 +1178,25 @@ int main (int argc, char** argv)
     testAnalysis();
     testSync();
     testEditing();
+    testPrfpset();
+    {
+        Clip c; c.start = 0; c.length = secToTicks (4); c.srcIn = 0;
+        setKey (c, "speed", 0, 1.0f, 0); setKey (c, "speed", secToTicks (4), 0.25f, 0);
+        const double at2 = c.srcPos (secToTicks (2));
+        Clip r = c; r.start = secToTicks (2); r.length = secToTicks (2); r.srcIn = (Ticks) at2; shiftKeys (r, secToTicks (2));
+        CHECK (std::abs (r.srcPos (secToTicks (2)) - at2) < secToTicks (0.001) && r.srcPos (secToTicks (3)) > at2, "split speed ramp: right piece continues, no jump back");
+    }
     testDropInBetween();
     testPremiereCommands();
     testChopAndGenerate();
+    testSeqEdit();
     testPersistence();
     testLut();
     testExport();
+    testStabilizeAndAudio();
+    testReversePlayback();
+    testDetectCuts();
+    testTextClip();
     testRender();
     testAutoCutAndPresets();
     testLayoutsStacksAndLayers();
@@ -940,8 +1249,8 @@ int main (int argc, char** argv)
         const size_t tracks0 = rs.tracks.size();
         const int layers = addTakeLayers (rp, rs);
         int hiddenTakes = 0;
-        for (auto& c : rs.clips) if (c.id != "a" && c.id != "b" && rs.tracks[(size_t) c.track].hidden && rs.tracks[(size_t) c.track].mute) ++hiddenTakes;
-        CHECK (layers == 3 && rs.tracks.size() == tracks0 + 3 && hiddenTakes == 3, "all takes sit under the edit on hidden, muted tracks");
+        for (auto& c : rs.clips) if (c.id != "a" && c.id != "b" && ! rs.tracks[(size_t) c.track].hidden && rs.tracks[(size_t) c.track].mute) ++hiddenTakes;
+        CHECK (layers == 3 && rs.tracks.size() == tracks0 + 3 && hiddenTakes == 3, "all takes sit under the edit on visible, muted tracks");
         {
             Sequence ls = rs;
             const auto before = ls.findClip ("a")->mediaId;
@@ -953,6 +1262,27 @@ int main (int argc, char** argv)
             CHECK (liftClips (rp, ls, { takeClip }, false, 3) == 0 && ls.findClip (takeClip) == nullptr, "lift on a take layer just removes it");
             const size_t n0 = ls.clips.size();
             CHECK (liftClips (rp, ls, { "a" }, true, 3) == 0 && ls.findClip ("a") == nullptr && ls.clips.size() == n0 - 1, "extract pulls the clip out");
+        }
+        {
+            Clip kc; kc.id = "k"; kc.start = secToTicks (2); kc.length = secToTicks (4);
+            setKey (kc, "scale", secToTicks (2), 2.0f); setKey (kc, "scale", 0, 1.0f);
+            setKey (kc, "rotation", 0, 0.0f, 1); setKey (kc, "rotation", secToTicks (2), 90.0f);
+            applyKeyframes (kc, secToTicks (3));
+            CHECK (std::abs (kc.fx.get ("scale", 0) - 1.5f) < 1e-4f && kc.fx.get ("rotation", -1) == 0.0f, "keyframes: linear + hold evaluate at clip time");
+            applyKeyframes (kc, secToTicks (10));
+            CHECK (kc.fx.get ("scale", 0) == 2.0f && kc.fx.get ("rotation", 0) == 90.0f, "keyframes clamp to last key");
+            {
+                Sequence ss = Project::makeDefaultSequence ("k"); Clip sc = kc; sc.track = 0; ss.clips = { sc };
+                splitAt (ss, secToTicks (3), {});
+                Clip* rc = nullptr; for (auto& x : ss.clips) if (x.start == secToTicks (3)) rc = &x;
+                if (rc) applyKeyframes (*rc, secToTicks (3.5));
+                CHECK (rc != nullptr && std::abs (rc->fx.get ("scale", 0) - 1.75f) < 1e-4f, "split keeps keyframes at their timeline times");
+            }
+            Project kp = Project::makeNew(); kc.track = 0; kp.seq().clips = { kc };
+            auto kf = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("keys.isfx");
+            juce::String kerr; Project kq;
+            CHECK (saveProject (kp, kf, kerr) && loadProject (kf, kq, kerr) && kq.seq().clips.size() == 1
+                   && kq.seq().clips[0].keys["scale"].size() == 2 && kq.seq().clips[0].keys["rotation"][0].interp == 1, "keyframes saved with the project");
         }
     }
     {

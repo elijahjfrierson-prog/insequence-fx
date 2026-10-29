@@ -1,0 +1,73 @@
+{
+  "format": "InSequenceFX-Preset",
+  "version": 1,
+  "name": "Extreme Lens Transitions / Extreme Lens Transitions / 05 / IN / Extreme Lens Transition 05_2 IN",
+  "kind": "clip",
+  "fx": {
+    "params": {
+      "opacity": 1.0,
+      "posX": 0.001041650772095,
+      "posY": 0.012962937355042,
+      "rotation": -19.0,
+      "scale": 0.939999997615814
+    },
+    "lut": ""
+  },
+  "keys": {
+    "posX": [
+      [
+        0,
+        0.001041650772095,
+        2
+      ],
+      [
+        292435300,
+        0.0,
+        2
+      ]
+    ],
+    "posY": [
+      [
+        0,
+        0.012962937355042,
+        2
+      ],
+      [
+        292435300,
+        0.0,
+        2
+      ]
+    ],
+    "rotation": [
+      [
+        0,
+        -19.0,
+        2
+      ],
+      [
+        124739351,
+        5.0,
+        2
+      ],
+      [
+        271016008,
+        0.0,
+        2
+      ]
+    ],
+    "scale": [
+      [
+        0,
+        0.939999997615814,
+        2
+      ],
+      [
+        292435300,
+        3.0,
+        2
+      ]
+    ]
+  },
+  "length": 329609280,
+  "atEnd": false
+}

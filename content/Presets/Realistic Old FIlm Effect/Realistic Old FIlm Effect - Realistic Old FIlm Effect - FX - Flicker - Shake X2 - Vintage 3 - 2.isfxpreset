@@ -1,0 +1,20 @@
+{
+  "format": "InSequenceFX-Preset",
+  "version": 1,
+  "name": "Realistic Old FIlm Effect / Realistic Old FIlm Effect / FX / Flicker / Shake X2 / Vintage 3 / 2",
+  "kind": "clip",
+  "fx": {
+    "params": {
+      "blur": 0.449999988079071,
+      "contrast": 1.0,
+      "exposure": 1.800000429153442,
+      "highlights": 0.899999976158142,
+      "opacity": 0.150000005960464,
+      "saturation": 0.0,
+      "shadows": -1.5,
+      "temperature": 0.0,
+      "tint": 0.0
+    },
+    "lut": ""
+  }
+}

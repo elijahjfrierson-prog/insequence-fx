@@ -1,0 +1,82 @@
+{
+  "format": "InSequenceFX-Preset",
+  "version": 1,
+  "name": "Furious Cam Transitions 2022-2023 Win / Furious Cam Transitions / 06 / In / Furious Cam _ 2",
+  "kind": "clip",
+  "fx": {
+    "params": {
+      "blur": 0.5,
+      "opacity": 1.0,
+      "posX": -0.21530145406723,
+      "posY": -1.0,
+      "rotation": 70.981773376464844,
+      "scaleX": 1.0,
+      "scaleY": 4.0
+    },
+    "lut": ""
+  },
+  "keys": {
+    "blur": [
+      [
+        0,
+        0.5,
+        2
+      ],
+      [
+        197568000,
+        0.0,
+        2
+      ]
+    ],
+    "posX": [
+      [
+        0,
+        -0.21530145406723,
+        2
+      ],
+      [
+        338688000,
+        -1.0,
+        2
+      ]
+    ],
+    "posY": [
+      [
+        0,
+        -1.0,
+        2
+      ],
+      [
+        338688000,
+        0.0,
+        2
+      ]
+    ],
+    "rotation": [
+      [
+        0,
+        70.981773376464844,
+        2
+      ],
+      [
+        338688000,
+        0.0,
+        2
+      ]
+    ],
+    "scaleY": [
+      [
+        0,
+        4.0,
+        2
+      ],
+      [
+        338688000,
+        3.0,
+        2
+      ]
+    ]
+  },
+  "length": 353152800,
+  "atEnd": false
+}

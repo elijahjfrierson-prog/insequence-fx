@@ -1,0 +1,12 @@
+{
+  "format": "InSequenceFX-Preset",
+  "version": 1,
+  "name": "tinytapes OPIUM LOOKS / @tinytapes OPIUM LOOKS / Black and White Fast Blur (Speed Up Clips and Put this On)",
+  "kind": "clip",
+  "fx": {
+    "params": {
+      "blur": 0.25
+    },
+    "lut": ""
+  }
+}

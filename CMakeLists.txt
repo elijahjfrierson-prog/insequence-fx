@@ -104,6 +104,13 @@ if(NOT ISFX_TESTS_ONLY)
     target_link_libraries(InSequenceFX PRIVATE ${ISFX_LIBS} ISFXData juce::juce_opengl
         PUBLIC juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
     if(APPLE)
+        add_custom_command(TARGET InSequenceFX POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_SOURCE_DIR}/content" "$<TARGET_BUNDLE_CONTENT_DIR:InSequenceFX>/Resources/Content")
+    else()
+        add_custom_command(TARGET InSequenceFX POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_SOURCE_DIR}/content" "$<TARGET_FILE_DIR:InSequenceFX>/Content")
+    endif()
+    if(APPLE)
         set_target_properties(InSequenceFX PROPERTIES BUILD_RPATH "@executable_path/../Frameworks" INSTALL_RPATH "@executable_path/../Frameworks")
         target_link_options(InSequenceFX PRIVATE "-Wl,-rpath,@executable_path/../Frameworks")
     elseif(UNIX)

@@ -1,0 +1,18 @@
+{
+  "format": "InSequenceFX-Preset",
+  "version": 1,
+  "name": "tinytapes OPIUM LOOKS / @tinytapes OPIUM LOOKS / Cam Corder 2",
+  "kind": "clip",
+  "fx": {
+    "params": {
+      "contrast": 1.0,
+      "exposure": 2.0,
+      "highlights": 0.0,
+      "saturation": 0.0,
+      "shadows": -1.0,
+      "temperature": 0.0,
+      "tint": 0.0
+    },
+    "lut": ""
+  }
+}
