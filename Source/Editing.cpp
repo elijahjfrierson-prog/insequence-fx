@@ -100,13 +100,14 @@ std::vector<const MediaItem*> takesCovering (const Project& p, Ticks t, Ticks le
 }
 
 // ------------------------------------------------------------------ basic edits
-bool splitAt (Sequence& s, Ticks t, const juce::StringArray& only)
+bool splitAt (Sequence& s, Ticks t, const juce::StringArray& only, const juce::String& songId)
 {
     bool any = false;
     std::vector<Clip> added;
     for (auto& c : s.clips)
     {
-        if (c.locked || s.tracks[(size_t) c.track].locked) continue;
+        const bool song = songId.isNotEmpty() && c.mediaId == songId;
+        if ((c.locked && ! song) || s.tracks[(size_t) c.track].locked) continue;
         if (! only.isEmpty() && ! only.contains (c.id)) continue;
         if (t <= c.start || t >= c.end()) continue;
         Clip r = c;
@@ -317,7 +318,7 @@ bool moveClips (Sequence& s, const juce::StringArray& ids, Ticks delta, int trac
 bool trimClip (Sequence& s, const Project& p, const juce::String& id, bool left, Ticks e)
 {
     auto* c = s.findClip (id);
-    if (c == nullptr || c->locked) return false;
+    if (c == nullptr || (c->locked && (p.songId.isEmpty() || c->mediaId != p.songId))) return false;   // the song is trimmable
     auto* m = p.findMedia (c->mediaId);
     Ticks mediaLen = m ? m->duration : std::numeric_limits<Ticks>::max() / 4;
     Ticks minLen = secToTicks (1.0 / p.fps);

@@ -771,7 +771,8 @@ void Timeline::mouseDown (const juce::MouseEvent& e)
                 if (c->group != 0)
                     for (auto& o : s.clips) if (o.group == c->group) st.selected.addIfNotAlreadyThere (o.id);
                 dragClip = c->id; dragOrig = edge < 0 ? c->start : edge > 0 ? c->end() : c->start; dragTrack = c->track;
-                drag = c->locked || trackLocked ? Drag::None : edge < 0 ? Drag::TrimL : edge > 0 ? Drag::TrimR : Drag::Move;
+                const bool songEdge = edge != 0 && st.project.songId.isNotEmpty() && c->mediaId == st.project.songId;   // song edges trim like any clip
+                drag = (c->locked && ! songEdge) || trackLocked ? Drag::None : edge < 0 ? Drag::TrimL : edge > 0 ? Drag::TrimR : Drag::Move;
             }
             else
             {   // empty space: click seeks, drag draws a selection box (Shift/Cmd adds to the selection)
@@ -824,7 +825,7 @@ void Timeline::mouseDown (const juce::MouseEvent& e)
             if (c && ! c->locked && ! trackLocked)
             {
                 st.edit ("Cut");
-                splitAt (s, st.snapT (t), { c->id });
+                splitAt (s, st.snapT (t), { c->id }, st.project.songId);
                 if (onEdited) onEdited();
             }
             break;
@@ -1216,7 +1217,10 @@ void Timeline::clipMenu (const juce::String& id)
     m.addItem (5, "Delete", ! lk);
     m.addItem (6, "Ripple Delete  (Shift+Del)", ! lk);
     m.addItem (47, "Pull out of edit (synced take fills the gap)", ! lk);
-    m.addItem (2, "Split at playhead  (Ctrl+K)", ! lk && st.playhead > c->start && st.playhead < c->end());
+    const bool cutOk = (! lk || (st.project.songId.isNotEmpty() && c->mediaId == st.project.songId)) && st.playhead > c->start && st.playhead < c->end();
+    m.addItem (2, "Split at playhead  (Ctrl+K)", cutOk);
+    m.addItem (715, "Trim start to playhead (cut off everything before)", cutOk);
+    m.addItem (716, "Trim end to playhead (cut off everything after)", cutOk);
     m.addItem (100 + (int) AutoCut::HatRoll, "Hi-hat Roll" + (many ? "  (" + juce::String (st.selected.size()) + " clips)" : juce::String()), ! lk && video);
     m.addSubMenu ("Re-cut (Auto Cut)", cut, ! lk);
     m.addSeparator();
@@ -1414,7 +1418,14 @@ void Timeline::clipMenu (const juce::String& id)
         if (r == 12) { st.edit ("Paste"); st.selected = pasteClips (sq, st.clipboard, st.playhead); }
         if (r == 13) { st.edit ("Paste Attributes"); pasteAttributes (sq, st.clipboard.front(), sel); }
         if (r == 14) { st.edit ("Duplicate"); st.selected = duplicateClips (sq, sel); }
-        if (r == 2) { st.edit ("Split"); splitAt (sq, st.playhead, { id }); }
+        if (r == 2) { st.edit ("Split"); splitAt (sq, st.playhead, sel.contains (id) ? sel : juce::StringArray { id }, st.project.songId); }
+        if (r == 715 || r == 716)
+        {   // audio or video: keep only the part from / up to the playhead (e.g. start the song 15 s in)
+            st.edit (r == 715 ? "Trim start" : "Trim end");
+            for (auto& i : sel.contains (id) ? sel : juce::StringArray { id })
+                if (auto* k = sq.findClip (i); k && st.playhead > k->start && st.playhead < k->end())
+                    trimClip (sq, st.project, i, r == 715, st.playhead);
+        }
         if (r == 3) { st.edit ("Speed"); setClipSpeed (sq, st.project, id, 1.0); }
         if (r >= 469 && r < 480) { st.edit ("Speed ramp"); for (auto& i : sel) applySpeedRamp (sq, st.project, i, r - 470); }
         if (r >= 480 && r <= 482) { st.edit ("Frame interpolation"); for (auto& i : sel) if (auto* k = sq.findClip (i); k && ! k->locked) k->frameInterp = r - 480; }

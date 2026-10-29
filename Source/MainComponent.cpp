@@ -618,7 +618,7 @@ bool MainComponent::keyPressed (const juce::KeyPress& k)
         if (c == 'E') { exportDialog(); return true; }
         if (c == 'N') { newProject(); return true; }
         if (c == 'A') { timeline.selectAll(); return true; }
-        if (c == 'K') { st.edit ("Split"); splitAt (s, st.playhead, st.selected); refresh (true); return true; }
+        if (c == 'K') { st.edit ("Split"); splitAt (s, st.playhead, st.selected, st.project.songId); refresh (true); return true; }
         if (c == 'C') { st.clipboard = copyClips (s, st.selected); return true; }
         if (c == 'X' && ! st.selected.isEmpty()) { st.clipboard = copyClips (s, st.selected); st.edit ("Cut"); deleteClips (s, st.selected, false); st.selected.clear(); refresh (true); return true; }
         if (c == 'V' && k.getModifiers().isAltDown())

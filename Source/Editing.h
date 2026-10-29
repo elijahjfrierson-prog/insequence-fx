@@ -22,7 +22,7 @@ std::vector<Ticks> chopPoints (const SongAnalysis& s, Ticks a, Ticks b, ChopMode
 std::vector<const MediaItem*> takesCovering (const Project& p, Ticks t, Ticks len);
 
 // ---- edit operations (all on the active sequence; caller records undo) --------------------
-bool splitAt (Sequence& s, Ticks t, const juce::StringArray& onlyClips = {});
+bool splitAt (Sequence& s, Ticks t, const juce::StringArray& onlyClips = {}, const juce::String& songId = {});   // songId: the song clip can be cut too
 void deleteClips (Sequence& s, const juce::StringArray& ids, bool ripple);
 void deleteRange (Sequence& s, Ticks a, Ticks b, bool ripple, int track = -1);
 void keepRange (Sequence& s, Ticks a, Ticks b);   // removes everything outside [a, b)

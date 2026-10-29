@@ -280,6 +280,20 @@ static void testEditing()
     auto* c = p.seq().findClip (right);
     Ticks before = c->srcIn;
     CHECK (trimClip (p.seq(), p, right, true, c->start + secToTicks (1)) && p.seq().findClip (right)->srcIn == before + secToTicks (1), "T trim left moves source in");
+    if (p.songId.isNotEmpty())
+    {
+        int at = -1; for (int i = 0; i < (int) p.seq().tracks.size(); ++i) if (p.seq().tracks[(size_t) i].kind == TrackKind::Audio) { at = i; break; }
+        auto sid = at >= 0 ? addMediaClip (p, p.songId, at, 0) : juce::String();
+        if (auto* sc = p.seq().findClip (sid))
+        {
+            sc->locked = true;
+            const Ticks s0 = sc->srcIn, e0 = sc->end();
+            CHECK (trimClip (p.seq(), p, sid, true, sc->start + secToTicks (2)) && p.seq().findClip (sid)->srcIn == s0 + secToTicks (2)
+                   && p.seq().findClip (sid)->end() == e0, "song clip: trim start 2 s in (source starts later, end stays)");
+            const auto n0 = p.seq().clips.size();
+            CHECK (splitAt (p.seq(), secToTicks (3), { sid }, p.songId) && p.seq().clips.size() == n0 + 1, "song clip: split like any clip");
+        }
+    }
     CHECK (snapTime (secToTicks (1.0), p, SnapMode::Sixteenth) == p.song.subdivTime (std::llround ((1.0 - 0.3) / (60.0 / 140 / 4)), 4), "snap to 1/16");
 }
 
